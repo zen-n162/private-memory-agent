@@ -73,6 +73,8 @@ class RetrievalFilters:
     boost_terms: tuple[str, ...] = ()
     negative_terms: tuple[str, ...] = ()
     preferred_sources: tuple[str, ...] = ()
+    semantic_top_k: int | None = None
+    semantic_weight: float = 1.0
 
     def normalized_sources(self) -> set[str]:
         sources = {source.strip().lower() for source in self.sources if source.strip()}
@@ -90,6 +92,7 @@ class RetrievalResult:
     evidence: tuple[Evidence, ...]
     packed_evidence: str
     redacted: bool
+    diagnostics: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -100,6 +103,7 @@ class RetrievalResult:
                 for item in self.evidence
             ],
             "packed_evidence": self.packed_evidence,
+            "diagnostics": dict(self.diagnostics),
         }
 
 
@@ -135,31 +139,33 @@ class RetrievalService:
             index_text(self.db_path)
 
         candidates: list[Evidence] = []
+        text_candidates: list[Evidence] = []
+        semantic_candidates: list[Evidence] = []
+        media_candidates: list[Evidence] = []
         if not source_filter or SUPPORTED_EVIDENCE_SOURCES & source_filter:
-            candidates.extend(
-                self._text_evidence(
-                    question,
-                    filters=active_filters,
-                    source_filter=source_filter,
-                    limit=limit * 3,
-                ),
+            text_candidates = self._text_evidence(
+                question,
+                filters=active_filters,
+                source_filter=source_filter,
+                limit=limit * 3,
             )
-            candidates.extend(
-                self._semantic_evidence(
-                    question,
-                    filters=active_filters,
-                    source_filter=source_filter,
-                    limit=limit * 3,
-                ),
+            semantic_limit = active_filters.semantic_top_k or limit * 3
+            semantic_candidates = self._semantic_evidence(
+                question,
+                filters=active_filters,
+                source_filter=source_filter,
+                limit=semantic_limit,
+                semantic_weight=active_filters.semantic_weight,
             )
+            candidates.extend(text_candidates)
+            candidates.extend(semantic_candidates)
         if not source_filter or "photos" in source_filter:
-            candidates.extend(
-                self._media_annotation_evidence(
-                    question,
-                    filters=active_filters,
-                    limit=limit * 3,
-                ),
+            media_candidates = self._media_annotation_evidence(
+                question,
+                filters=active_filters,
+                limit=limit * 3,
             )
+            candidates.extend(media_candidates)
 
         ranked = tuple(
             _select_ranked_evidence(
@@ -176,6 +182,14 @@ class RetrievalService:
             evidence=ranked,
             packed_evidence=pack_evidence_for_prompt(ranked, redact_private=redact_for_display),
             redacted=redact_for_display,
+            diagnostics={
+                "text_candidate_count": len(text_candidates),
+                "semantic_candidate_count": len(semantic_candidates),
+                "media_annotation_candidate_count": len(media_candidates),
+                "candidate_count_after_source_filter": len(candidates),
+                "candidate_count_after_ranking": len(ranked),
+                "final_evidence_count": len(ranked),
+            },
         )
 
     def _text_evidence(
@@ -243,11 +257,18 @@ class RetrievalService:
         filters: RetrievalFilters,
         source_filter: set[str],
         limit: int,
+        semantic_weight: float,
     ) -> list[Evidence]:
         if self.embedding_model is None:
             return []
         try:
-            results = semantic_search(self.db_path, question, self.embedding_model, limit=limit)
+            results = semantic_search(
+                self.db_path,
+                question,
+                self.embedding_model,
+                limit=limit,
+                source_tables=_source_tables_for_filter(source_filter),
+            )
         except (RuntimeError, ValueError, json.JSONDecodeError):
             return []
         metadata = _semantic_source_metadata(self.db_path, results)
@@ -272,7 +293,7 @@ class RetrievalService:
                     snippet=result.snippet,
                     occurred_at=occurred_at,
                     confidence=_clamp_confidence(result.score),
-                    score=max(0.0, result.score) * 0.9,
+                    score=max(0.0, result.score) * 0.9 * max(0.0, semantic_weight),
                     signals=("semantic",),
                     metadata={"retrieval": "semantic", "model_id": self.embedding_model.model_id},
                 ),

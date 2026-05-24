@@ -196,6 +196,27 @@ def test_retrieval_deduplicates_fts_and_semantic_signals(tmp_path):
     note_results = [item for item in result.evidence if item.source_id == ids["note_id"]]
     assert len(note_results) == 1
     assert set(note_results[0].signals) == {"fts", "semantic"}
+    assert result.diagnostics["semantic_candidate_count"] > 0
+
+
+def test_semantic_retrieval_respects_source_filters(tmp_path):
+    db_path = tmp_path / "metadata.sqlite3"
+    ids = seed_evidence_database(db_path)
+    model = FakeEmbeddingModel(vocabulary=("ローカル", "検索", "研究"))
+    index_embeddings(db_path, model)
+    service = RetrievalService(db_path, embedding_model=model)
+
+    result = service.retrieve(
+        "ローカル検索",
+        filters=RetrievalFilters(sources=("notes",), semantic_top_k=10),
+        limit=5,
+        redact_for_display=False,
+    )
+
+    assert result.evidence
+    assert {item.source_kind for item in result.evidence} == {"notes"}
+    assert any(item.source_id == ids["note_id"] for item in result.evidence)
+    assert result.diagnostics["semantic_candidate_count"] >= 1
 
 
 def test_pack_evidence_for_prompt_can_redact_private_text(tmp_path):

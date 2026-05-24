@@ -26,6 +26,8 @@ from private_memory_agent.config.loader import ConfigError, _parse_simple_yaml
 from private_memory_agent.db_diagnostics import diagnose_retrieval_query, inspect_source_coverage
 from private_memory_agent.retrieval import (
     Evidence,
+    FakeEmbeddingModel,
+    HashEmbeddingModel,
     RetrievalFilters,
     RetrievalResult,
     RetrievalService,
@@ -93,6 +95,9 @@ class E2ESmokeQuery:
     judge_relevance: bool = False
     rerank_by_relevance: bool = False
     show_relevance: bool = False
+    semantic_enabled: bool = False
+    semantic_top_k: int | None = None
+    semantic_weight: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -250,6 +255,11 @@ class E2ESmokeQueryResult:
     plan_relevance_should_use_count: int = 0
     plan_relevance_specificity_counts: dict[str, int] = field(default_factory=dict)
     plan_relevance_scores: tuple[dict[str, Any], ...] = ()
+    semantic_enabled: bool = False
+    semantic_model: str = "none"
+    semantic_candidate_count: int = 0
+    semantic_top_k: int | None = None
+    semantic_weight: float = 1.0
     retrieval_stage_counts: dict[str, int] = field(default_factory=dict)
     source_stage_counts: dict[str, dict[str, Any]] = field(default_factory=dict)
     fallback_reason: str | None = None
@@ -305,6 +315,11 @@ class E2ESmokeQueryResult:
             "plan_relevance_should_use_count": self.plan_relevance_should_use_count,
             "plan_relevance_specificity_counts": dict(self.plan_relevance_specificity_counts),
             "plan_relevance_scores": [dict(item) for item in self.plan_relevance_scores],
+            "semantic_enabled": self.semantic_enabled,
+            "semantic_model": self.semantic_model,
+            "semantic_candidate_count": self.semantic_candidate_count,
+            "semantic_top_k": self.semantic_top_k,
+            "semantic_weight": self.semantic_weight,
             "retrieval_stage_counts": dict(self.retrieval_stage_counts),
             "source_stage_counts": {
                 source: dict(counts)
@@ -440,6 +455,8 @@ class E2ESmokeOptions:
     show_model_output_metadata: bool = False
     show_model_output: bool = False
     semantic_model: str = "none"
+    semantic_top_k: int | None = None
+    semantic_weight: float = 1.0
     model_key: str = DEFAULT_E2E_LEADER_MODEL_KEY
     allow_remote: bool = False
 
@@ -458,6 +475,10 @@ class _E2ELeaderRuntime:
 def run_e2e_smoke(options: E2ESmokeOptions) -> E2ESmokeReport:
     """Run a privacy-safe E2E smoke check over existing local metadata."""
 
+    if options.semantic_top_k is not None and options.semantic_top_k <= 0:
+        raise ValueError("semantic_top_k must be positive")
+    if options.semantic_weight < 0:
+        raise ValueError("semantic_weight must be non-negative")
     config = load_config(config_dir=options.config_dir, paths_config=options.paths_config)
     mode = _resolve_mode(options)
     warnings: list[str] = []
@@ -485,6 +506,8 @@ def run_e2e_smoke(options: E2ESmokeOptions) -> E2ESmokeReport:
         )
     if indexes.embeddings_count and options.semantic_model == "none":
         warnings.append("embeddings exist but semantic retrieval is not enabled in this smoke path")
+    if options.semantic_model != "none" and not indexes.embeddings_count:
+        warnings.append("semantic retrieval requested but no persisted embeddings were found")
     if options.show_model_output:
         warnings.append(
             "raw model output preview requested; it may contain private evidence-derived content",
@@ -847,6 +870,14 @@ def format_e2e_smoke_report(report: E2ESmokeReport) -> str:
                     f"allowed_sources={','.join(item.allowed_sources) or 'none'}; "
                     f"validation_error={item.answer_validation_error_class or 'none'}"
                 )
+            if item.semantic_enabled:
+                lines.append(
+                    "    semantic: "
+                    f"model={item.semantic_model}; "
+                    f"candidate_count={item.semantic_candidate_count}; "
+                    f"top_k={item.semantic_top_k}; "
+                    f"weight={item.semantic_weight}"
+                )
             if item.raw_model_output_preview:
                 lines.append(
                     "    raw_model_output_preview: "
@@ -992,7 +1023,11 @@ def _run_query_checks(
     counts: E2ESmokeCounts,
     leader_runtime: _E2ELeaderRuntime | None = None,
 ) -> list[E2ESmokeQueryResult]:
-    service = RetrievalService(db_path, ensure_index=False)
+    service = RetrievalService(
+        db_path,
+        embedding_model=_e2e_embedding_model(options.semantic_model),
+        ensure_index=False,
+    )
     results: list[E2ESmokeQueryResult] = []
     for index, query in enumerate(queries, start=1):
         results.append(
@@ -1033,6 +1068,16 @@ def _run_query_checks(
     return results
 
 
+def _e2e_embedding_model(semantic_model: str):
+    if semantic_model == "none":
+        return None
+    if semantic_model == "fake":
+        return FakeEmbeddingModel()
+    if semantic_model == "hash":
+        return HashEmbeddingModel()
+    raise ValueError("semantic_model must be none, hash, or fake")
+
+
 def _run_one_query_check(
     service: RetrievalService,
     query: E2ESmokeQuery,
@@ -1054,6 +1099,8 @@ def _run_one_query_check(
                 boost_terms=query.boost_terms,
                 negative_terms=query.negative_terms,
                 preferred_sources=query.preferred_sources,
+                semantic_top_k=query.semantic_top_k or options.semantic_top_k,
+                semantic_weight=query.semantic_weight * options.semantic_weight,
             ),
             limit=max(1, options.limit),
             redact_for_display=True,
@@ -1105,6 +1152,15 @@ def _run_one_query_check(
             query=query,
             limit=max(1, options.limit),
         )
+    if retrieval.diagnostics:
+        stage_counts = {
+            **retrieval.diagnostics,
+            **stage_counts,
+        }
+        if "semantic_candidate_count" in retrieval.diagnostics:
+            stage_counts["semantic_candidate_count"] = retrieval.diagnostics[
+                "semantic_candidate_count"
+            ]
     base = {
         "query_label": query_label,
         "sources": query.sources,
@@ -1121,6 +1177,13 @@ def _run_one_query_check(
         "plan_relevance_scores": tuple(score.to_dict() for score in plan_scores)
         if query.show_relevance
         else (),
+        "semantic_enabled": options.semantic_model != "none",
+        "semantic_model": options.semantic_model,
+        "semantic_candidate_count": int(
+            stage_counts.get("semantic_candidate_count", 0),
+        ),
+        "semantic_top_k": query.semantic_top_k or options.semantic_top_k,
+        "semantic_weight": query.semantic_weight * options.semantic_weight,
         "retrieval_stage_counts": stage_counts,
         "source_stage_counts": source_stage_counts,
         "fallback_reason": fallback_reason,

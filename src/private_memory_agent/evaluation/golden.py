@@ -116,6 +116,9 @@ class GoldenEvalOptions:
     minimum_relevance_score: float = 0.6
     require_usable_evidence: bool = False
     relevance_policy: str = "soft"
+    semantic_model: str = "none"
+    semantic_top_k: int | None = None
+    semantic_weight: float = 1.0
     retrieval_planner: RetrievalPlanner | None = None
     model_key: str = DEFAULT_E2E_LEADER_MODEL_KEY
     allow_remote: bool = False
@@ -187,12 +190,21 @@ class GoldenQuestionResult:
     post_repair_usable_evidence_count: int | None = None
     repair_query_count: int = 0
     repair_queries_created_count: int = 0
+    repair_specific_query_count: int = 0
+    repair_generic_query_count: int = 0
+    repair_used_specific_concepts: bool = False
+    repair_used_main_entities: bool = False
     leader_rerank_used: bool = False
     relevance_judged: bool = False
     average_plan_relevance_score: float | None = None
     plan_relevance_should_use_count: int = 0
     plan_relevance_specificity_counts: dict[str, int] = field(default_factory=dict)
     relevance_scores: tuple[dict[str, Any], ...] = ()
+    semantic_enabled: bool = False
+    semantic_model: str = "none"
+    semantic_candidate_count: int = 0
+    semantic_top_k: int | None = None
+    semantic_weight: float = 1.0
     evaluation_focus: tuple[str, ...] = ()
     manual_ratings: dict[str, Any] = field(default_factory=dict)
 
@@ -270,12 +282,21 @@ class GoldenQuestionResult:
             "post_repair_usable_evidence_count": self.post_repair_usable_evidence_count,
             "repair_query_count": self.repair_query_count,
             "repair_queries_created_count": self.repair_queries_created_count,
+            "repair_specific_query_count": self.repair_specific_query_count,
+            "repair_generic_query_count": self.repair_generic_query_count,
+            "repair_used_specific_concepts": self.repair_used_specific_concepts,
+            "repair_used_main_entities": self.repair_used_main_entities,
             "leader_rerank_used": self.leader_rerank_used,
             "relevance_judged": self.relevance_judged,
             "average_plan_relevance_score": self.average_plan_relevance_score,
             "plan_relevance_should_use_count": self.plan_relevance_should_use_count,
             "plan_relevance_specificity_counts": dict(self.plan_relevance_specificity_counts),
             "relevance_scores": [dict(item) for item in self.relevance_scores],
+            "semantic_enabled": self.semantic_enabled,
+            "semantic_model": self.semantic_model,
+            "semantic_candidate_count": self.semantic_candidate_count,
+            "semantic_top_k": self.semantic_top_k,
+            "semantic_weight": self.semantic_weight,
             "evaluation_focus": list(self.evaluation_focus),
             "manual_ratings": dict(self.manual_ratings),
             "passed": self.passed,
@@ -373,6 +394,10 @@ class _RepairDiagnostics:
     post_usable_count: int | None = None
     repair_query_count: int = 0
     repair_queries_created_count: int = 0
+    repair_specific_query_count: int = 0
+    repair_generic_query_count: int = 0
+    repair_used_specific_concepts: bool = False
+    repair_used_main_entities: bool = False
 
 
 def load_golden_questions(
@@ -409,6 +434,12 @@ def run_golden_eval(options: GoldenEvalOptions) -> GoldenEvalReport:
         raise ValueError("minimum_relevance_score must be between 0.0 and 1.0")
     if options.relevance_policy not in {"soft", "strict"}:
         raise ValueError("relevance_policy must be soft or strict")
+    if options.semantic_model not in {"none", "hash", "fake"}:
+        raise ValueError("semantic_model must be none, hash, or fake")
+    if options.semantic_top_k is not None and options.semantic_top_k <= 0:
+        raise ValueError("semantic_top_k must be positive")
+    if options.semantic_weight < 0:
+        raise ValueError("semantic_weight must be non-negative")
     questions_path = _resolve_golden_questions_path(
         options.config_dir,
         questions_config=options.questions_config,
@@ -647,6 +678,9 @@ def _run_e2e_for_golden(
             show_answer=options.show_answer,
             show_snippets=options.show_snippets,
             snippet_chars=options.snippet_chars,
+            semantic_model=options.semantic_model,
+            semantic_top_k=options.semantic_top_k,
+            semantic_weight=options.semantic_weight,
             model_key=options.model_key,
             allow_remote=options.allow_remote,
             no_fallback=True,
@@ -673,6 +707,9 @@ def _e2e_query_from_golden(
         judge_relevance=bool(constrained.plan and (options.leader_rerank or options.show_relevance)),
         rerank_by_relevance=bool(constrained.plan and options.leader_rerank),
         show_relevance=options.show_relevance,
+        semantic_enabled=options.semantic_model != "none",
+        semantic_top_k=options.semantic_top_k,
+        semantic_weight=options.semantic_weight,
     )
 
 
@@ -693,6 +730,7 @@ def _repair_e2e_results_if_needed(
     ):
         if not _needs_retrieval_repair(result, constrained, options):
             continue
+        repair_profile = _repair_query_profile(constrained.plan)
         pre_usable_count = _usable_evidence_count_from_e2e(
             result,
             minimum_relevance_score=options.minimum_relevance_score,
@@ -731,7 +769,11 @@ def _repair_e2e_results_if_needed(
                 repair_query_count=len(constrained.plan.retrieval_queries)
                 if constrained.plan is not None
                 else 0,
-                repair_queries_created_count=_repair_queries_created_count(constrained.plan),
+                repair_queries_created_count=repair_profile["created_count"],
+                repair_specific_query_count=repair_profile["specific_count"],
+                repair_generic_query_count=repair_profile["generic_count"],
+                repair_used_specific_concepts=repair_profile["used_specific_concepts"],
+                repair_used_main_entities=repair_profile["used_main_entities"],
             )
         else:
             repair_diagnostics[question.question_id] = _RepairDiagnostics(
@@ -742,7 +784,11 @@ def _repair_e2e_results_if_needed(
                 repair_query_count=len(constrained.plan.retrieval_queries)
                 if constrained.plan is not None
                 else 0,
-                repair_queries_created_count=_repair_queries_created_count(constrained.plan),
+                repair_queries_created_count=repair_profile["created_count"],
+                repair_specific_query_count=repair_profile["specific_count"],
+                repair_generic_query_count=repair_profile["generic_count"],
+                repair_used_specific_concepts=repair_profile["used_specific_concepts"],
+                repair_used_main_entities=repair_profile["used_main_entities"],
             )
     return tuple(repaired_results), repair_diagnostics
 
@@ -777,14 +823,30 @@ def _repair_reason(result: Any, constrained: _GoldenSourceConstraints) -> str:
     return "planned retrieval was weak"
 
 
-def _repair_queries_created_count(plan: RetrievalPlan | None) -> int:
+def _repair_query_profile(plan: RetrievalPlan | None) -> dict[str, Any]:
     if plan is None:
-        return 0
-    return len(
-        _unique_strings(
-            plan.retrieval_queries + plan.specific_concepts + plan.main_entities,
-        ),
-    )
+        return {
+            "created_count": 0,
+            "specific_count": 0,
+            "generic_count": 0,
+            "used_specific_concepts": False,
+            "used_main_entities": False,
+        }
+    specific_terms = _unique_strings(plan.specific_concepts + plan.main_entities)
+    generic_terms = _unique_strings(plan.generic_concepts)
+    created = _unique_strings(specific_terms or plan.retrieval_queries)
+    generic_count = sum(1 for query in created if normalize_text(query) in _normalized_set(generic_terms))
+    return {
+        "created_count": len(created),
+        "specific_count": max(0, len(created) - generic_count),
+        "generic_count": generic_count,
+        "used_specific_concepts": bool(plan.specific_concepts),
+        "used_main_entities": bool(plan.main_entities),
+    }
+
+
+def _normalized_set(values: tuple[str, ...]) -> set[str]:
+    return {normalize_text(value) for value in values if normalize_text(value)}
 
 
 def _constrained_question(
@@ -1012,6 +1074,10 @@ def _golden_result_from_e2e(
         post_repair_usable_evidence_count=repair_diagnostics.post_usable_count,
         repair_query_count=repair_diagnostics.repair_query_count,
         repair_queries_created_count=repair_diagnostics.repair_queries_created_count,
+        repair_specific_query_count=repair_diagnostics.repair_specific_query_count,
+        repair_generic_query_count=repair_diagnostics.repair_generic_query_count,
+        repair_used_specific_concepts=repair_diagnostics.repair_used_specific_concepts,
+        repair_used_main_entities=repair_diagnostics.repair_used_main_entities,
         leader_rerank_used=bool(options.leader_rerank and constraints.plan is not None),
         relevance_judged=bool(result.plan_relevance_judged),
         average_plan_relevance_score=result.plan_average_relevance_score,
@@ -1020,6 +1086,11 @@ def _golden_result_from_e2e(
         relevance_scores=tuple(dict(score) for score in result.plan_relevance_scores)
         if options.show_relevance
         else (),
+        semantic_enabled=bool(result.semantic_enabled),
+        semantic_model=result.semantic_model,
+        semantic_candidate_count=int(result.semantic_candidate_count or 0),
+        semantic_top_k=result.semantic_top_k,
+        semantic_weight=float(result.semantic_weight or 0.0),
         evaluation_focus=question.evaluation_focus,
         manual_ratings=_manual_rating_placeholders(),
         safe_snippets=_truncate_snippets(keyword_snippets, options.snippet_chars)
@@ -1116,12 +1187,21 @@ def _format_question_markdown(result: GoldenQuestionResult) -> list[str]:
         f"- post_repair_usable_evidence_count: {result.post_repair_usable_evidence_count}",
         f"- repair_query_count: {result.repair_query_count}",
         f"- repair_queries_created_count: {result.repair_queries_created_count}",
+        f"- repair_specific_query_count: {result.repair_specific_query_count}",
+        f"- repair_generic_query_count: {result.repair_generic_query_count}",
+        f"- repair_used_specific_concepts: {str(result.repair_used_specific_concepts).lower()}",
+        f"- repair_used_main_entities: {str(result.repair_used_main_entities).lower()}",
         f"- leader_rerank_used: {str(result.leader_rerank_used).lower()}",
         f"- relevance_judged: {str(result.relevance_judged).lower()}",
         f"- average_plan_relevance_score: {result.average_plan_relevance_score}",
         f"- plan_relevance_should_use_count: {result.plan_relevance_should_use_count}",
         "- plan_relevance_specificity_counts: "
         + _format_counts(result.plan_relevance_specificity_counts),
+        f"- semantic_enabled: {str(result.semantic_enabled).lower()}",
+        f"- semantic_model: {result.semantic_model}",
+        f"- semantic_candidate_count: {result.semantic_candidate_count}",
+        f"- semantic_top_k: {result.semantic_top_k}",
+        f"- semantic_weight: {result.semantic_weight}",
         f"- evaluation_focus: {_format_tuple(result.evaluation_focus)}",
     ]
     if result.plan_metadata.plan is not None:
@@ -1438,6 +1518,12 @@ def _expanded_retrieval_text(
         plan_concepts = plan.specific_concepts + plan.main_entities
         if plan_concepts:
             return " ".join(_unique_strings(plan_concepts)).strip()
+        generic_terms = _normalized_set(plan.generic_concepts)
+        plan_queries = tuple(
+            query
+            for query in plan_queries
+            if normalize_text(query) not in generic_terms
+        )
     keywords = _unique_strings(expected_keywords + optional_keywords + plan_queries + plan_concepts)
     if not keywords:
         return question_text

@@ -9,7 +9,7 @@ from private_memory_agent.e2e import (
     report_to_json,
     run_e2e_smoke,
 )
-from private_memory_agent.retrieval import index_text
+from private_memory_agent.retrieval import HashEmbeddingModel, index_embeddings, index_text
 from private_memory_agent.storage import initialize_database
 
 
@@ -282,6 +282,38 @@ def test_e2e_smoke_line_notes_fake_model_accepts_weak_keyword_evidence(
     assert report.query_results[0].answer_confidence == 0.4
     assert report.query_results[0].evidence_source_counts["notes"] >= 1
     assert set(report.query_results[0].used_sources) == {"line", "notes"}
+
+
+def test_e2e_smoke_semantic_mode_reports_candidate_count(
+    temp_config_factory,
+    tmp_path,
+):
+    config_dir = temp_config_factory()
+    _write_smoke_queries(config_dir, text="ProjectAlpha", sources="line")
+    db_path = tmp_path / "metadata.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        message_id = _insert_line_message(storage, text="ProjectAlpha の準備")
+    finally:
+        storage.close()
+    index_embeddings(db_path, HashEmbeddingModel())
+
+    report = run_e2e_smoke(
+        E2ESmokeOptions(
+            config_dir=config_dir,
+            db_path=db_path,
+            retrieval_only=True,
+            semantic_model="hash",
+            semantic_top_k=5,
+        ),
+    )
+    result = report.query_results[0]
+
+    assert report.ok is True
+    assert result.semantic_enabled is True
+    assert result.semantic_model == "hash"
+    assert result.semantic_candidate_count >= 1
+    assert result.evidence_ids == (f"line_messages:{message_id}",)
 
 
 def test_e2e_real_model_preflights_and_uses_query_limit_timeout(

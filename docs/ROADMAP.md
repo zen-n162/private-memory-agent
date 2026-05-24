@@ -65,6 +65,10 @@ This document outlines the development roadmap for private-memory-agent.
   golden evaluation now distinguishes candidate retrieval from usable evidence,
   reports source, keyword, plan, and final relevance scores separately, and can
   fail strict quality gates when every candidate is generic or weak.
+- Phase 8-M adds semantic repair support:
+  E2E/golden retrieval can opt into persisted local hash embeddings with
+  `--semantic`, reports semantic candidate counts, and expands repair queries
+  from specific plan concepts/main entities instead of generic-only terms.
 
 ## 実データE2E smokeの実行手順
 
@@ -206,3 +210,19 @@ pma eval golden --config configs/paths.local.yaml --retrieval-only \
   --relevance-policy strict \
   --json
 ```
+
+To include local semantic retrieval in the same diagnostic path:
+
+```bash
+pma eval golden --config configs/paths.local.yaml --retrieval-only \
+  --query-id qst_preparation \
+  --leader-plan \
+  --leader-rerank \
+  --retrieval-repair 1 \
+  --semantic \
+  --json
+```
+
+The report keeps repair query text hidden by default and shows only safe counts
+such as `semantic_candidate_count`, `repair_specific_query_count`, and
+`repair_generic_query_count`.

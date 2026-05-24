@@ -321,6 +321,40 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     e2e_smoke_parser.add_argument(
+        "--semantic",
+        dest="semantic_model",
+        action="store_const",
+        const="hash",
+        default="none",
+        help="Enable local hash semantic retrieval over persisted embeddings.",
+    )
+    e2e_smoke_parser.add_argument(
+        "--no-semantic",
+        dest="semantic_model",
+        action="store_const",
+        const="none",
+        help="Disable semantic retrieval.",
+    )
+    e2e_smoke_parser.add_argument(
+        "--semantic-model",
+        dest="semantic_model_choice",
+        choices=("hash", "fake", "none"),
+        default=None,
+        help="Semantic retrieval embedding model for E2E smoke.",
+    )
+    e2e_smoke_parser.add_argument(
+        "--semantic-top-k",
+        type=int,
+        default=None,
+        help="Semantic retrieval candidate limit before merge/ranking.",
+    )
+    e2e_smoke_parser.add_argument(
+        "--semantic-weight",
+        type=float,
+        default=1.0,
+        help="Score multiplier for semantic retrieval candidates.",
+    )
+    e2e_smoke_parser.add_argument(
         "--json",
         action="store_true",
         help="Print a structured privacy-safe JSON report.",
@@ -1216,6 +1250,40 @@ def build_parser() -> argparse.ArgumentParser:
         help="Whether weak usable-evidence relevance is a warning or failure.",
     )
     eval_golden_parser.add_argument(
+        "--semantic",
+        dest="semantic_model",
+        action="store_const",
+        const="hash",
+        default="none",
+        help="Enable local hash semantic retrieval over persisted embeddings.",
+    )
+    eval_golden_parser.add_argument(
+        "--no-semantic",
+        dest="semantic_model",
+        action="store_const",
+        const="none",
+        help="Disable semantic retrieval.",
+    )
+    eval_golden_parser.add_argument(
+        "--semantic-model",
+        dest="semantic_model_choice",
+        choices=("hash", "fake", "none"),
+        default=None,
+        help="Semantic retrieval embedding model for golden evaluation.",
+    )
+    eval_golden_parser.add_argument(
+        "--semantic-top-k",
+        type=int,
+        default=None,
+        help="Semantic retrieval candidate limit before merge/ranking.",
+    )
+    eval_golden_parser.add_argument(
+        "--semantic-weight",
+        type=float,
+        default=1.0,
+        help="Score multiplier for semantic retrieval candidates.",
+    )
+    eval_golden_parser.add_argument(
         "--json",
         action="store_true",
         help="Print a structured privacy-safe JSON report.",
@@ -1338,6 +1406,9 @@ def _e2e_smoke_command(args: argparse.Namespace) -> int:
                 show_snippets=args.show_snippets,
                 show_model_output_metadata=args.show_model_output_metadata,
                 show_model_output=args.show_model_output,
+                semantic_model=_resolve_semantic_model_arg(args),
+                semantic_top_k=args.semantic_top_k,
+                semantic_weight=args.semantic_weight,
                 model_key=args.model_key,
                 allow_remote=args.allow_remote,
             ),
@@ -1841,6 +1912,9 @@ def _eval_golden_command(args: argparse.Namespace) -> int:
                 minimum_relevance_score=args.minimum_relevance_score,
                 require_usable_evidence=args.require_usable_evidence,
                 relevance_policy=args.relevance_policy,
+                semantic_model=_resolve_semantic_model_arg(args),
+                semantic_top_k=args.semantic_top_k,
+                semantic_weight=args.semantic_weight,
                 model_key=args.model_key,
                 allow_remote=args.allow_remote,
             ),
@@ -2262,6 +2336,13 @@ def _build_retrieval_embedding_model(args: argparse.Namespace):
     if args.semantic_model == "fake":
         return FakeEmbeddingModel()
     return HashEmbeddingModel()
+
+
+def _resolve_semantic_model_arg(args: argparse.Namespace) -> str:
+    selected = getattr(args, "semantic_model_choice", None)
+    if selected is not None:
+        return selected
+    return str(getattr(args, "semantic_model", "none") or "none")
 
 
 def _build_privacy_guard(_config) -> PrivacyGuard:

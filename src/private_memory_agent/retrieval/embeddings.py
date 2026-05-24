@@ -386,13 +386,18 @@ def semantic_search(
     *,
     vector_store: VectorStore | None = None,
     limit: int = 10,
+    source_tables: tuple[str, ...] = (),
 ) -> list[SemanticSearchResult]:
     """Search indexed text documents with lightweight embeddings."""
 
     normalized_query = normalize_text(query)
     if not normalized_query:
         return []
-    store = vector_store or build_in_memory_vector_store(db_path, model_id=model.model_id)
+    store = vector_store or build_in_memory_vector_store(
+        db_path,
+        model_id=model.model_id,
+        source_tables=source_tables,
+    )
     query_vector = model.embed_texts([normalized_query])[0]
     hits = store.search(query_vector, limit=limit)
     metadata_by_source = _semantic_metadata_by_source(db_path, hits)
@@ -413,14 +418,26 @@ def semantic_search(
     return results
 
 
-def build_in_memory_vector_store(db_path: Path | str, *, model_id: str) -> InMemoryVectorStore:
+def build_in_memory_vector_store(
+    db_path: Path | str,
+    *,
+    model_id: str,
+    source_tables: tuple[str, ...] = (),
+) -> InMemoryVectorStore:
     """Load persisted embedding rows into an in-memory vector store."""
 
     storage = initialize_database(db_path)
     store = InMemoryVectorStore()
     try:
+        cleaned_source_tables = tuple(dict.fromkeys(table for table in source_tables if table))
+        source_sql = ""
+        params: list[Any] = [model_id]
+        if cleaned_source_tables:
+            placeholders = ", ".join("?" for _ in cleaned_source_tables)
+            source_sql = f" AND e.owner_table IN ({placeholders})"
+            params.extend(cleaned_source_tables)
         rows = storage.connection.execute(
-            """
+            f"""
             SELECT e.owner_table,
                    e.owner_id,
                    e.vector_json,
@@ -435,9 +452,10 @@ def build_in_memory_vector_store(db_path: Path | str, *, model_id: str) -> InMem
               AND e.model_id = ?
               AND e.is_excluded = 0
               AND d.is_excluded = 0
+              {source_sql}
             ORDER BY d.id
             """,
-            (model_id,),
+            tuple(params),
         ).fetchall()
         documents: list[EmbeddedDocument] = []
         for row in rows:

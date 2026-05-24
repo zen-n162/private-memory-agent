@@ -641,3 +641,37 @@ pma search semantic "ローカル" --vector-store qdrant --qdrant-url http://loc
 ```
 
 Do not start Docker automatically from this app.
+
+## Semantic Retrieval In Smoke And Golden Evaluation
+
+Phase 8-M can use persisted local embeddings in E2E smoke and golden
+evaluation. This is optional and local-only:
+
+```bash
+pma eval golden --config configs/paths.local.yaml --retrieval-only \
+  --query-id qst_preparation \
+  --leader-plan \
+  --leader-rerank \
+  --retrieval-repair 1 \
+  --semantic \
+  --json
+```
+
+`--semantic` uses the deterministic hash embedding adapter, so it only works
+well when embeddings were indexed with the matching hash backend:
+
+```bash
+pma index embeddings --config configs/paths.local.yaml --model-backend hash
+```
+
+Controls:
+
+- `--semantic-top-k N`: semantic candidate limit before merge/ranking.
+- `--semantic-weight FLOAT`: score multiplier for semantic candidates.
+- `--no-semantic`: keep retrieval text-only.
+
+Reports show `semantic_candidate_count` and safe counters only. They do not
+print raw LINE text, note bodies, captions, filenames, paths, GPS, EXIF, OCR, or
+full repair queries by default. Real sentence-transformer semantic retrieval
+remains available through explicit indexing/search commands and optional
+integration tests; default unit tests stay model-free.

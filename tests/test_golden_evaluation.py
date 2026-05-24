@@ -10,7 +10,7 @@ from private_memory_agent.evaluation import (
     run_golden_eval,
     write_golden_outputs,
 )
-from private_memory_agent.retrieval import index_text
+from private_memory_agent.retrieval import HashEmbeddingModel, index_embeddings, index_text
 from private_memory_agent.storage import initialize_database
 
 
@@ -1107,6 +1107,100 @@ def test_golden_retrieval_repair_reports_improvement_when_specific_evidence_foun
     assert result.usable_evidence_succeeded is True
     assert result.evidence_ids == (f"line_messages:{specific_id}",)
     assert result.repair_queries_created_count >= 1
+
+
+def test_golden_repair_query_diagnostics_prefer_specific_plan_terms(
+    temp_config_factory,
+    tmp_path,
+):
+    config_dir = temp_config_factory()
+    _write_golden_questions(config_dir, text="研究", sources="line")
+    db_path = tmp_path / "golden.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        _insert_line_message(storage, text="研究の一般的な予定")
+    finally:
+        storage.close()
+    index_text(db_path)
+    planner = FakeRetrievalPlanner(
+        RetrievalPlan(
+            intent="find specific project preparation",
+            main_entities=("ProjectAlpha",),
+            specific_concepts=("SpecificBeta",),
+            generic_concepts=("研究", "予定"),
+            retrieval_queries=("研究",),
+        ),
+    )
+
+    report = run_golden_eval(
+        GoldenEvalOptions(
+            config_dir=config_dir,
+            db_path=db_path,
+            retrieval_only=True,
+            query_id="golden_research",
+            retrieval_planner=planner,
+            leader_rerank=True,
+            retrieval_repair=1,
+            limit=1,
+        ),
+    )
+    result = report.results[0]
+
+    assert result.repair_attempted is True
+    assert result.repair_used_specific_concepts is True
+    assert result.repair_used_main_entities is True
+    assert result.repair_specific_query_count == 2
+    assert result.repair_generic_query_count == 0
+
+
+def test_golden_semantic_retrieval_reports_candidates_and_can_improve_repair(
+    temp_config_factory,
+    tmp_path,
+):
+    config_dir = temp_config_factory()
+    _write_golden_questions(config_dir, text="研究", sources="line")
+    db_path = tmp_path / "golden.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        _insert_line_message(storage, text="研究の一般的な予定")
+        specific_id = _insert_line_message(storage, text="ProjectAlpha の具体的な準備")
+    finally:
+        storage.close()
+    model = HashEmbeddingModel()
+    index_embeddings(db_path, model)
+    planner = FakeRetrievalPlanner(
+        RetrievalPlan(
+            intent="find project evidence",
+            main_entities=("ProjectAlpha",),
+            generic_concepts=("研究",),
+            retrieval_queries=("研究",),
+            evidence_acceptance_criteria=("contains ProjectAlpha",),
+        ),
+    )
+
+    report = run_golden_eval(
+        GoldenEvalOptions(
+            config_dir=config_dir,
+            db_path=db_path,
+            retrieval_only=True,
+            query_id="golden_research",
+            retrieval_planner=planner,
+            leader_rerank=True,
+            retrieval_repair=1,
+            semantic_model="hash",
+            semantic_top_k=5,
+            semantic_weight=1.2,
+            limit=1,
+        ),
+    )
+    result = report.results[0]
+
+    assert result.semantic_enabled is True
+    assert result.semantic_model == "hash"
+    assert result.semantic_candidate_count >= 1
+    assert result.repair_improved is True
+    assert result.usable_evidence_succeeded is True
+    assert result.evidence_ids == (f"line_messages:{specific_id}",)
 
 
 def test_golden_retrieval_repair_reports_no_improvement_for_generic_only(

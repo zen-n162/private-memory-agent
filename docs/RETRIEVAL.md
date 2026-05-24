@@ -388,6 +388,32 @@ improved, the pre/post usable evidence counts, and the count of repair queries
 created. Raw repair query text stays hidden unless the existing `--show-plan`
 diagnostic is explicitly requested.
 
+Phase 8-M adds optional local semantic retrieval to the E2E/golden paths. It
+runs alongside FTS/LIKE retrieval, merges and deduplicates candidates, respects
+source filters, and reports `semantic_candidate_count`. The default
+`--semantic` mode uses deterministic hash embeddings already persisted by
+`pma index embeddings --model-backend hash`; use `--semantic-model fake` only
+for tests or matching fake indexes.
+
+```bash
+pma eval golden --config configs/paths.local.yaml --retrieval-only \
+  --query-id qst_preparation \
+  --leader-plan \
+  --leader-rerank \
+  --retrieval-repair 1 \
+  --semantic \
+  --semantic-top-k 20 \
+  --semantic-weight 1.0 \
+  --json
+```
+
+Repair query expansion now prefers `specific_concepts` and `main_entities` from
+the `RetrievalPlan` and avoids generic-only repair terms when specific terms are
+available. Reports include `repair_specific_query_count`,
+`repair_generic_query_count`, `repair_used_specific_concepts`, and
+`repair_used_main_entities`. Full repair query text remains hidden by default
+because it can contain private local concepts.
+
 Real-model smoke sends a compact redacted evidence packet by default. Use
 `--max-evidence-items` and `--max-evidence-chars` to keep the request small
 while checking endpoint, JSON, evidence-id, and critic behavior. Invalid JSON is
