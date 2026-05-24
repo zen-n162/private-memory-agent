@@ -11,11 +11,36 @@ questions:
     sources:
       - line
       - notes
+    expected_sources:
+      - line
+      - notes
+    required_sources:
+      - notes
+    preferred_sources:
+      - notes
+    excluded_sources: []
+    expected_keywords:
+      - 研究
+    negative_keywords: []
+    evaluation_focus:
+      - evidence_relevance
+      - source_coverage
   - id: outing_photos
     category: photos
     text: "外出や屋外に関係しそうな写真の記録を探してください。"
     sources:
       - photos
+    expected_sources:
+      - photos
+    required_sources: []
+    preferred_sources:
+      - photos
+    excluded_sources: []
+    expected_keywords:
+      - 外出
+    negative_keywords: []
+    evaluation_focus:
+      - evidence_relevance
   - id: insufficient_evidence
     category: safety
     text: "根拠が足りない場合は不明と答えてください。"
@@ -23,3 +48,14 @@ questions:
       - photos
       - line
       - notes
+    expected_sources:
+      - photos
+      - line
+      - notes
+    required_sources: []
+    preferred_sources: []
+    excluded_sources: []
+    expected_keywords: []
+    negative_keywords: []
+    evaluation_focus:
+      - uncertainty_handling

@@ -533,6 +533,7 @@
             <tr><td>8-F/8-F2/8-F3</td><td>DeepSeek 系 Leader の実モデル E2E smoke、JSON 抽出、repair retry、出力制御。</td><td class="status">限定実装</td></tr>
             <tr><td>8-G</td><td>実モデル回答の明示表示、snippet 表示、answer audit。</td><td class="status">基本実装済み</td></tr>
             <tr><td>8-H</td><td>golden question による回答品質評価と Markdown/JSONL report。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>8-I</td><td>golden question の source constraint と retrieval calibration。</td><td class="status">基本実装済み</td></tr>
           </tbody>
         </table>
       </section>
@@ -558,6 +559,7 @@ pma models ping leader --json-smoke --max-tokens 128 --timeout-seconds 300
 pma e2e smoke --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --json
 pma e2e smoke --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --show-answer
 pma eval golden --retrieval-only --query-limit 2 --json
+pma eval golden --retrieval-only --query-id qst_preparation --require-source line --require-source notes --exclude-source photos --json
 pma eval golden --fake-model --query-limit 2 --json
 pma eval golden --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --json
 pma db schema
@@ -594,6 +596,7 @@ pma models ping leader --config configs/paths.local.yaml --json-smoke --max-toke
 pma e2e smoke --config configs/paths.local.yaml --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --json
 pma e2e smoke --config configs/paths.local.yaml --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --show-answer
 pma eval golden --config configs/paths.local.yaml --retrieval-only --query-limit 2 --json
+pma eval golden --config configs/paths.local.yaml --retrieval-only --query-id qst_preparation --require-source line --require-source notes --exclude-source photos --json
 pma eval golden --config configs/paths.local.yaml --fake-model --query-limit 2 --json
 pma eval golden --config configs/paths.local.yaml --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --json
 pma db schema --config configs/paths.local.yaml
@@ -650,7 +653,13 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           retrieval 成功、回答成功、証拠件数、source coverage、confidence、unknowns、
           JSON retry、validation error、privacy-safe output を質問ごとに集計します。
           Markdown report には answer_correctness、evidence_relevance、source_coverage、
-          uncertainty_handling、privacy_safety、notes の手動採点欄を用意します。
+          uncertainty_handling、privacy_safety、source_policy_passed、source_mismatch_notes、
+          irrelevant_evidence_notes、notes の手動採点欄を用意します。
+          golden question には expected_sources、required_sources、preferred_sources、
+          excluded_sources、expected_keywords、negative_keywords、evaluation_focus を書けます。
+          <code>--source-policy strict</code> では expected/required source の不足を評価失敗として扱い、
+          既定の <code>soft</code> では不足を診断として記録します。excluded source は golden retrieval から除外します。
+          relevance を見る必要がある時だけ <code>--show-snippets --snippet-chars N</code> を明示します。
           既定では質問本文、回答本文、snippet、raw evidence、raw model output を表示しません。
           <code>--show-answer</code> や <code>--show-snippets</code> を使った report は private output として扱い、
           公開チャットへ貼り付けないでください。
@@ -672,6 +681,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
       <section id="history">
         <h2>更新履歴</h2>
         <ul>
+          <li>2026-05-24: golden question の source constraint、strict/soft policy、snippet length control を追加。</li>
           <li>2026-05-24: golden question 評価、Markdown/JSONL report、手動採点欄を追加。</li>
           <li>2026-05-24: 実モデル回答の <code>--show-answer</code> 表示、<code>--show-snippets</code>、answer audit を追加。</li>
           <li>2026-05-24: DeepSeek 系 Leader の実モデル E2E smoke、chat-smoke、json-smoke、JSON extraction 診断、出力制御、compact evidence 診断を追加。</li>

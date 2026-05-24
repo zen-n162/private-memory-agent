@@ -106,7 +106,39 @@ errors, privacy-safe output status, and manual rating placeholders:
 - source_coverage
 - uncertainty_handling
 - privacy_safety
+- source_policy_passed
+- source_mismatch_notes
+- irrelevant_evidence_notes
 - notes
+
+Golden questions can also declare source constraints:
+
+```yaml
+expected_sources: [line, notes]
+required_sources: [notes]
+preferred_sources: [line]
+excluded_sources: [photos]
+expected_keywords: [研究]
+negative_keywords: []
+evaluation_focus: [evidence_relevance, source_coverage]
+```
+
+The command line can apply the same constraints for a one-off check:
+
+```bash
+pma eval golden --config configs/paths.local.yaml --retrieval-only \
+  --query-id qst_preparation \
+  --require-source line \
+  --require-source notes \
+  --exclude-source photos \
+  --json
+```
+
+`--source-policy strict` fails the evaluation when expected or required sources
+are missing. The default `soft` policy records missing sources in diagnostics
+without failing solely on source coverage. Excluded sources are filtered from
+golden retrieval. Use `--show-snippets --snippet-chars N` only for local
+relevance inspection.
 
 Markdown and JSONL outputs can be written under ignored local paths:
 

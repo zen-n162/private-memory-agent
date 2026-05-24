@@ -49,6 +49,10 @@ This document outlines the development roadmap for private-memory-agent.
   `configs/golden_questions.example.yaml`, ignored local overrides, and
   `pma eval golden` for retrieval-only, fake-model, and real-model answer
   quality checks with Markdown/JSONL reports and manual rating placeholders.
+- Phase 8-I calibrates golden retrieval:
+  golden questions can declare expected, required, preferred, and excluded
+  sources; `pma eval golden` accepts source constraint flags and reports
+  source-policy diagnostics so irrelevant source coverage is visible.
 
 ## 実データE2E smokeの実行手順
 
@@ -69,6 +73,7 @@ pma models ping leader --config configs/paths.local.yaml --json-smoke --max-toke
 pma e2e smoke --config configs/paths.local.yaml --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --json
 pma e2e smoke --config configs/paths.local.yaml --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --show-answer
 pma eval golden --config configs/paths.local.yaml --retrieval-only --query-limit 2 --json
+pma eval golden --config configs/paths.local.yaml --retrieval-only --query-id qst_preparation --require-source line --require-source notes --exclude-source photos --json
 pma eval golden --config configs/paths.local.yaml --fake-model --query-limit 2 --json
 pma eval golden --config configs/paths.local.yaml --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --json
 pma db schema --config configs/paths.local.yaml
@@ -135,3 +140,19 @@ Default reports hide question text, answer text, snippets, raw evidence, and
 raw model output. Use `--show-answer` only for local review. Use
 `--show-snippets` only when you explicitly need truncated evidence snippets.
 Do not paste private answer reports into public chats.
+
+Golden questions can constrain source coverage:
+
+```yaml
+expected_sources: [line, notes]
+required_sources: [notes]
+preferred_sources: [line]
+excluded_sources: [photos]
+evaluation_focus: [evidence_relevance, source_coverage]
+```
+
+Use `--source-policy strict` when missing expected/required sources should fail
+the evaluation. The default `soft` policy records missing sources and excluded
+source violations in diagnostics without failing solely because an expected
+source is absent. Excluded sources are filtered from golden retrieval before
+evidence is selected.

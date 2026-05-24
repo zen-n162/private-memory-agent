@@ -71,6 +71,33 @@ def _insert_note(storage, *, title="研究メモ", body="研究の進捗をま�
     )
 
 
+def _insert_photo_annotation(storage, *, text="研究写真"):
+    source_id = storage.source_items.insert_source(
+        source_type="photo",
+        source_uri="fixture://golden/photo.jpg",
+        content_sha256="golden-photo-sha",
+    )
+    media_id = storage.media_items.insert_media(
+        source_item_id=source_id,
+        media_type="image",
+        file_path="/private/golden-photo.jpg",
+        sha256="golden-photo-sha",
+        mime_type="image/jpeg",
+        width=120,
+        height=80,
+    )
+    storage.media_annotations.insert(
+        {
+            "media_item_id": media_id,
+            "annotation_type": "vision",
+            "source": "model",
+            "value_text": text,
+            "model_id": "fake-vl",
+        },
+    )
+    return media_id
+
+
 def _leader_models_yaml(model_root):
     return "\n".join(
         [
@@ -101,6 +128,49 @@ def test_golden_question_loader_uses_local_override(temp_config_factory):
         "golden_missing",
     ]
     assert questions[0].sources == ("line", "notes")
+
+
+def test_golden_question_loader_parses_source_constraints(temp_config_factory):
+    config_dir = temp_config_factory()
+    (config_dir / "golden_questions.local.yaml").write_text(
+        "\n".join(
+            [
+                "questions:",
+                "  - id: constrained",
+                "    category: research",
+                "    text: \"研究\"",
+                "    expected_sources:",
+                "      - line",
+                "      - notes",
+                "    required_sources:",
+                "      - notes",
+                "    preferred_sources:",
+                "      - line",
+                "    excluded_sources:",
+                "      - photos",
+                "    expected_keywords:",
+                "      - 研究",
+                "    negative_keywords:",
+                "      - unrelated",
+                "    evaluation_focus:",
+                "      - source_coverage",
+                "    source_policy: strict",
+            ],
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    question = load_golden_questions(config_dir)[0]
+
+    assert question.expected_sources == ("line", "notes")
+    assert question.required_sources == ("notes",)
+    assert question.preferred_sources == ("line",)
+    assert question.excluded_sources == ("photos",)
+    assert question.expected_keywords == ("研究",)
+    assert question.negative_keywords == ("unrelated",)
+    assert question.evaluation_focus == ("source_coverage",)
+    assert question.source_policy == "strict"
 
 
 def test_golden_local_questions_are_covered_by_gitignore():
@@ -208,12 +278,13 @@ def test_golden_show_snippets_requires_explicit_flag(temp_config_factory, tmp_pa
             retrieval_only=True,
             query_id="golden_research",
             show_snippets=True,
+            snippet_chars=40,
         ),
     )
 
     assert hidden.results[0].safe_snippets == ()
     assert shown.results[0].safe_snippets
-    assert len(shown.results[0].safe_snippets[0]["snippet"]) <= 160
+    assert len(shown.results[0].safe_snippets[0]["snippet"]) <= 40
 
 
 def test_golden_query_limit_and_query_id(temp_config_factory, tmp_path):
@@ -251,6 +322,209 @@ def test_golden_query_limit_and_query_id(temp_config_factory, tmp_path):
     assert selected.results[0].question_id == "golden_missing"
 
 
+def test_golden_excluded_photos_are_not_returned_for_line_notes_question(
+    temp_config_factory,
+    tmp_path,
+):
+    config_dir = temp_config_factory()
+    (config_dir / "golden_questions.local.yaml").write_text(
+        "\n".join(
+            [
+                "questions:",
+                "  - id: line_notes_only",
+                "    text: \"研究\"",
+                "    expected_sources: [line, notes]",
+                "    excluded_sources: [photos]",
+            ],
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "golden.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        _insert_photo_annotation(storage, text="研究写真")
+        _insert_line_message(storage, text="研究のLINE")
+        note_id = _insert_note(storage, body="研究のノート")
+    finally:
+        storage.close()
+    index_text(db_path)
+
+    report = run_golden_eval(
+        GoldenEvalOptions(config_dir=config_dir, db_path=db_path, retrieval_only=True),
+    )
+    result = report.results[0]
+
+    assert report.ok is True
+    assert "photos" not in result.evidence_source_counts
+    assert result.requested_sources == ("line", "notes")
+    assert result.excluded_sources == ("photos",)
+    assert result.excluded_source_violations == ()
+    assert f"notes:{note_id}" in result.evidence_ids
+
+
+def test_golden_source_balancing_returns_line_and_notes_when_available(
+    temp_config_factory,
+    tmp_path,
+):
+    config_dir = temp_config_factory()
+    (config_dir / "golden_questions.local.yaml").write_text(
+        "\n".join(
+            [
+                "questions:",
+                "  - id: balanced",
+                "    text: \"研究\"",
+                "    expected_sources: [line, notes]",
+            ],
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "golden.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        for index in range(10):
+            _insert_line_message(storage, text=f"研究のLINE {index}")
+        _insert_note(storage, body="研究のノート")
+    finally:
+        storage.close()
+    index_text(db_path)
+
+    report = run_golden_eval(
+        GoldenEvalOptions(
+            config_dir=config_dir,
+            db_path=db_path,
+            retrieval_only=True,
+            limit=2,
+        ),
+    )
+
+    assert report.ok is True
+    assert report.results[0].evidence_source_counts["line"] >= 1
+    assert report.results[0].evidence_source_counts["notes"] >= 1
+    assert report.results[0].missing_expected_sources == ()
+
+
+def test_golden_strict_source_policy_fails_when_required_source_missing(
+    temp_config_factory,
+    tmp_path,
+):
+    config_dir = temp_config_factory()
+    (config_dir / "golden_questions.local.yaml").write_text(
+        "\n".join(
+            [
+                "questions:",
+                "  - id: strict_missing",
+                "    text: \"研究\"",
+                "    expected_sources: [line]",
+                "    required_sources: [notes]",
+            ],
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "golden.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        _insert_line_message(storage, text="研究のLINE")
+    finally:
+        storage.close()
+    index_text(db_path)
+
+    report = run_golden_eval(
+        GoldenEvalOptions(
+            config_dir=config_dir,
+            db_path=db_path,
+            retrieval_only=True,
+            source_policy="strict",
+        ),
+    )
+
+    assert report.ok is False
+    assert report.results[0].retrieval_succeeded is True
+    assert report.results[0].missing_required_sources == ("notes",)
+    assert report.results[0].retrieval_passed_source_policy is False
+
+
+def test_golden_soft_source_policy_reports_missing_required_without_failing(
+    temp_config_factory,
+    tmp_path,
+):
+    config_dir = temp_config_factory()
+    (config_dir / "golden_questions.local.yaml").write_text(
+        "\n".join(
+            [
+                "questions:",
+                "  - id: soft_missing",
+                "    text: \"研究\"",
+                "    expected_sources: [line]",
+                "    required_sources: [notes]",
+            ],
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "golden.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        _insert_line_message(storage, text="研究のLINE")
+    finally:
+        storage.close()
+    index_text(db_path)
+
+    report = run_golden_eval(
+        GoldenEvalOptions(config_dir=config_dir, db_path=db_path, retrieval_only=True),
+    )
+
+    assert report.ok is True
+    assert report.results[0].missing_required_sources == ("notes",)
+    assert report.results[0].source_policy == "soft"
+    assert report.results[0].retrieval_passed_source_policy is True
+
+
+def test_golden_cli_source_constraints_filter_and_report(capsys, temp_config_factory, tmp_path):
+    config_dir = temp_config_factory()
+    _write_golden_questions(config_dir, text="研究", sources="")
+    db_path = tmp_path / "golden.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        _insert_photo_annotation(storage, text="研究写真")
+        _insert_line_message(storage, text="研究のLINE")
+        _insert_note(storage, body="研究のノート")
+    finally:
+        storage.close()
+    index_text(db_path)
+
+    exit_code = main(
+        [
+            "eval",
+            "golden",
+            "--db",
+            str(db_path),
+            "--config-dir",
+            str(config_dir),
+            "--retrieval-only",
+            "--query-id",
+            "golden_research",
+            "--require-source",
+            "line",
+            "--require-source",
+            "notes",
+            "--exclude-source",
+            "photos",
+            "--json",
+        ],
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    result = payload["results"][0]
+    assert result["requested_sources"] == ["line", "notes"]
+    assert result["required_sources"] == ["line", "notes"]
+    assert result["excluded_sources"] == ["photos"]
+    assert "photos" not in result["evidence_source_counts"]
+
+
 def test_golden_markdown_and_jsonl_outputs_include_manual_placeholders(
     temp_config_factory,
     tmp_path,
@@ -281,6 +555,9 @@ def test_golden_markdown_and_jsonl_outputs_include_manual_placeholders(
 
     assert "answer_correctness" in markdown
     assert "evidence_relevance" in markdown
+    assert "source_policy_passed" in markdown
+    assert "source_mismatch_notes" in markdown
+    assert "irrelevant_evidence_notes" in markdown
     assert json.loads(jsonl_lines[0])["record_type"] == "summary"
     assert json.loads(jsonl_lines[1])["record_type"] == "question"
 

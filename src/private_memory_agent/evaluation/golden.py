@@ -30,6 +30,9 @@ _MANUAL_RATING_FIELDS = (
     "source_coverage",
     "uncertainty_handling",
     "privacy_safety",
+    "source_policy_passed",
+    "source_mismatch_notes",
+    "irrelevant_evidence_notes",
     "notes",
 )
 
@@ -45,6 +48,14 @@ class GoldenQuestion:
     text: str
     sources: tuple[str, ...] = ()
     category: str = "general"
+    expected_sources: tuple[str, ...] = ()
+    required_sources: tuple[str, ...] = ()
+    preferred_sources: tuple[str, ...] = ()
+    excluded_sources: tuple[str, ...] = ()
+    expected_keywords: tuple[str, ...] = ()
+    negative_keywords: tuple[str, ...] = ()
+    evaluation_focus: tuple[str, ...] = ()
+    source_policy: str | None = None
 
 
 @dataclass(frozen=True)
@@ -70,6 +81,11 @@ class GoldenEvalOptions:
     response_format_json: bool = False
     show_answer: bool = False
     show_snippets: bool = False
+    snippet_chars: int = 160
+    require_sources: tuple[str, ...] = ()
+    exclude_sources: tuple[str, ...] = ()
+    preferred_sources: tuple[str, ...] = ()
+    source_policy: str = "soft"
     model_key: str = DEFAULT_E2E_LEADER_MODEL_KEY
     allow_remote: bool = False
 
@@ -97,11 +113,28 @@ class GoldenQuestionResult:
     answer_conclusion: str | None = None
     answer_unknowns: tuple[str, ...] = ()
     safe_snippets: tuple[dict[str, str], ...] = ()
+    requested_sources: tuple[str, ...] = ()
+    expected_sources: tuple[str, ...] = ()
+    required_sources: tuple[str, ...] = ()
+    preferred_sources: tuple[str, ...] = ()
+    excluded_sources: tuple[str, ...] = ()
+    missing_expected_sources: tuple[str, ...] = ()
+    missing_required_sources: tuple[str, ...] = ()
+    excluded_source_violations: tuple[str, ...] = ()
+    source_policy: str = "soft"
+    retrieval_passed_source_policy: bool = True
+    expected_keywords_count: int = 0
+    negative_keywords_count: int = 0
+    evaluation_focus: tuple[str, ...] = ()
     manual_ratings: dict[str, Any] = field(default_factory=dict)
 
     @property
     def passed(self) -> bool:
-        return self.retrieval_succeeded and (self.answer_succeeded or self.confidence is None)
+        return (
+            self.retrieval_succeeded
+            and self.retrieval_passed_source_policy
+            and (self.answer_succeeded or self.confidence is None)
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -124,6 +157,19 @@ class GoldenQuestionResult:
             "answer_conclusion": self.answer_conclusion,
             "answer_unknowns": list(self.answer_unknowns),
             "safe_snippets": [dict(item) for item in self.safe_snippets],
+            "requested_sources": list(self.requested_sources),
+            "expected_sources": list(self.expected_sources),
+            "required_sources": list(self.required_sources),
+            "preferred_sources": list(self.preferred_sources),
+            "excluded_sources": list(self.excluded_sources),
+            "missing_expected_sources": list(self.missing_expected_sources),
+            "missing_required_sources": list(self.missing_required_sources),
+            "excluded_source_violations": list(self.excluded_source_violations),
+            "source_policy": self.source_policy,
+            "retrieval_passed_source_policy": self.retrieval_passed_source_policy,
+            "expected_keywords_count": self.expected_keywords_count,
+            "negative_keywords_count": self.negative_keywords_count,
+            "evaluation_focus": list(self.evaluation_focus),
             "manual_ratings": dict(self.manual_ratings),
             "passed": self.passed,
         }
@@ -189,6 +235,18 @@ class GoldenEvalReport:
         }
 
 
+@dataclass(frozen=True)
+class _GoldenSourceConstraints:
+    """Effective source constraints for one golden question."""
+
+    requested_sources: tuple[str, ...]
+    expected_sources: tuple[str, ...]
+    required_sources: tuple[str, ...]
+    preferred_sources: tuple[str, ...]
+    excluded_sources: tuple[str, ...]
+    source_policy: str
+
+
 def load_golden_questions(
     config_dir: Path | str | None = None,
     *,
@@ -215,6 +273,8 @@ def load_golden_questions(
 def run_golden_eval(options: GoldenEvalOptions) -> GoldenEvalReport:
     """Run golden question evaluation using the E2E retrieval/answer path."""
 
+    if options.snippet_chars <= 0:
+        raise ValueError("snippet_chars must be positive")
     questions_path = _resolve_golden_questions_path(
         options.config_dir,
         questions_config=options.questions_config,
@@ -225,6 +285,10 @@ def run_golden_eval(options: GoldenEvalOptions) -> GoldenEvalReport:
         query_limit=options.query_limit,
     )
     mode = _resolve_golden_mode(options)
+    constrained_questions = tuple(
+        _constrained_question(question, options)
+        for question in questions
+    )
     e2e_report = run_e2e_smoke(
         E2ESmokeOptions(
             config_dir=options.config_dir,
@@ -234,9 +298,9 @@ def run_golden_eval(options: GoldenEvalOptions) -> GoldenEvalReport:
                 E2ESmokeQuery(
                     query_id=question.question_id,
                     text=question.text,
-                    sources=question.sources,
+                    sources=constrained.requested_sources,
                 )
-                for question in questions
+                for question, constrained in zip(questions, constrained_questions, strict=True)
             ),
             retrieval_only=mode == "retrieval_only",
             fake_model=mode == "fake_model",
@@ -251,14 +315,25 @@ def run_golden_eval(options: GoldenEvalOptions) -> GoldenEvalReport:
             response_format_json=options.response_format_json,
             show_answer=options.show_answer,
             show_snippets=options.show_snippets,
+            snippet_chars=options.snippet_chars,
             model_key=options.model_key,
             allow_remote=options.allow_remote,
             no_fallback=True,
         ),
     )
     results = tuple(
-        _golden_result_from_e2e(question, result, options=options)
-        for question, result in zip(questions, e2e_report.query_results, strict=False)
+        _golden_result_from_e2e(
+            question,
+            constrained,
+            result,
+            options=options,
+        )
+        for question, constrained, result in zip(
+            questions,
+            constrained_questions,
+            e2e_report.query_results,
+            strict=False,
+        )
     )
     ok = e2e_report.db_exists and bool(results) and all(result.passed for result in results)
     if mode != "retrieval_only":
@@ -358,8 +433,49 @@ def write_golden_outputs(
     return written_markdown, written_jsonl
 
 
+def _constrained_question(
+    question: GoldenQuestion,
+    options: GoldenEvalOptions,
+) -> _GoldenSourceConstraints:
+    source_policy = (
+        "strict"
+        if options.source_policy == "strict"
+        else (question.source_policy or options.source_policy or "soft")
+    ).strip().lower()
+    if source_policy not in {"soft", "strict"}:
+        raise ValueError("source_policy must be soft or strict")
+
+    expected_sources = _unique_sources(question.expected_sources)
+    required_sources = _unique_sources(question.required_sources + options.require_sources)
+    preferred_sources = _unique_sources(question.preferred_sources + options.preferred_sources)
+    excluded_sources = _unique_sources(question.excluded_sources + options.exclude_sources)
+
+    hard_sources = question.sources or expected_sources or required_sources
+    if hard_sources:
+        requested = _unique_sources(hard_sources + preferred_sources)
+    else:
+        requested = tuple(
+            source
+            for source in ("photos", "line", "notes")
+            if source not in excluded_sources
+        )
+
+    requested = tuple(source for source in requested if source not in excluded_sources)
+    if not requested:
+        requested = tuple(source for source in required_sources if source not in excluded_sources)
+    return _GoldenSourceConstraints(
+        requested_sources=requested,
+        expected_sources=expected_sources,
+        required_sources=required_sources,
+        preferred_sources=preferred_sources,
+        excluded_sources=excluded_sources,
+        source_policy=source_policy,
+    )
+
+
 def _golden_result_from_e2e(
     question: GoldenQuestion,
+    constraints: _GoldenSourceConstraints,
     result: Any,
     *,
     options: GoldenEvalOptions,
@@ -367,6 +483,26 @@ def _golden_result_from_e2e(
     unknown_reference_count = 0
     if result.error_message and "unknown_evidence_reference" in result.error_message:
         unknown_reference_count = 1
+    actual_sources = {
+        source for source, count in result.evidence_source_counts.items() if count > 0
+    }
+    missing_expected = tuple(
+        source for source in constraints.expected_sources if source not in actual_sources
+    )
+    missing_required = tuple(
+        source for source in constraints.required_sources if source not in actual_sources
+    )
+    excluded_violations = tuple(
+        source for source in constraints.excluded_sources if source in actual_sources
+    )
+    if constraints.source_policy == "strict":
+        source_policy_passed = (
+            not missing_required
+            and not missing_expected
+            and not excluded_violations
+        )
+    else:
+        source_policy_passed = not excluded_violations
     return GoldenQuestionResult(
         question_id=question.question_id,
         category=question.category,
@@ -388,7 +524,22 @@ def _golden_result_from_e2e(
         privacy_safe_output=not bool(result.raw_model_output_preview),
         answer_conclusion=result.answer_conclusion if options.show_answer else None,
         answer_unknowns=result.answer_unknowns if options.show_answer else (),
-        safe_snippets=result.safe_snippets if options.show_snippets else (),
+        safe_snippets=_truncate_snippets(result.safe_snippets, options.snippet_chars)
+        if options.show_snippets
+        else (),
+        requested_sources=constraints.requested_sources,
+        expected_sources=constraints.expected_sources,
+        required_sources=constraints.required_sources,
+        preferred_sources=constraints.preferred_sources,
+        excluded_sources=constraints.excluded_sources,
+        missing_expected_sources=missing_expected,
+        missing_required_sources=missing_required,
+        excluded_source_violations=excluded_violations,
+        source_policy=constraints.source_policy,
+        retrieval_passed_source_policy=source_policy_passed,
+        expected_keywords_count=len(question.expected_keywords),
+        negative_keywords_count=len(question.negative_keywords),
+        evaluation_focus=question.evaluation_focus,
         manual_ratings=_manual_rating_placeholders(),
     )
 
@@ -431,6 +582,19 @@ def _format_question_markdown(result: GoldenQuestionResult) -> list[str]:
         f"- json_retry_succeeded: {str(result.json_retry_succeeded).lower()}",
         f"- answer_validation_error: {result.answer_validation_error or 'none'}",
         f"- privacy_safe_output: {str(result.privacy_safe_output).lower()}",
+        f"- requested_sources: {_format_tuple(result.requested_sources)}",
+        f"- expected_sources: {_format_tuple(result.expected_sources)}",
+        f"- required_sources: {_format_tuple(result.required_sources)}",
+        f"- preferred_sources: {_format_tuple(result.preferred_sources)}",
+        f"- excluded_sources: {_format_tuple(result.excluded_sources)}",
+        f"- missing_expected_sources: {_format_tuple(result.missing_expected_sources)}",
+        f"- missing_required_sources: {_format_tuple(result.missing_required_sources)}",
+        f"- excluded_source_violations: {_format_tuple(result.excluded_source_violations)}",
+        f"- source_policy: {result.source_policy}",
+        f"- retrieval_passed_source_policy: {str(result.retrieval_passed_source_policy).lower()}",
+        f"- expected_keywords_count: {result.expected_keywords_count}",
+        f"- negative_keywords_count: {result.negative_keywords_count}",
+        f"- evaluation_focus: {_format_tuple(result.evaluation_focus)}",
     ]
     if result.answer_conclusion is not None:
         lines.extend(
@@ -459,6 +623,9 @@ def _format_question_markdown(result: GoldenQuestionResult) -> list[str]:
             "- source_coverage: ",
             "- uncertainty_handling: ",
             "- privacy_safety: ",
+            "- source_policy_passed: ",
+            "- source_mismatch_notes: ",
+            "- irrelevant_evidence_notes: ",
             "- notes: ",
             "",
         ],
@@ -517,13 +684,26 @@ def _parse_questions(value: object) -> list[GoldenQuestion]:
         if not question_id or not text:
             continue
         sources = _parse_sources(raw.get("sources"))
+        expected_sources = _parse_sources(raw.get("expected_sources"))
+        required_sources = _parse_sources(raw.get("required_sources"))
+        preferred_sources = _parse_sources(raw.get("preferred_sources"))
+        excluded_sources = _parse_sources(raw.get("excluded_sources"))
         category = str(raw.get("category") or "general").strip() or "general"
+        source_policy = _optional_source_policy(raw.get("source_policy"))
         questions.append(
             GoldenQuestion(
                 question_id=question_id,
                 text=text,
                 sources=sources,
                 category=category,
+                expected_sources=expected_sources,
+                required_sources=required_sources,
+                preferred_sources=preferred_sources,
+                excluded_sources=excluded_sources,
+                expected_keywords=_parse_string_list(raw.get("expected_keywords")),
+                negative_keywords=_parse_string_list(raw.get("negative_keywords")),
+                evaluation_focus=_parse_string_list(raw.get("evaluation_focus")),
+                source_policy=source_policy,
             ),
         )
     return questions
@@ -563,6 +743,32 @@ def _parse_sources(value: object) -> tuple[str, ...]:
     if unknown:
         raise ValueError(f"unsupported golden question sources: {sorted(unknown)}")
     return sources
+
+
+def _parse_string_list(value: object) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        if "," in value:
+            parts = value.split(",")
+        else:
+            parts = [value]
+    elif isinstance(value, (list, tuple, set)):
+        parts = [str(part) for part in value]
+    else:
+        parts = [str(value)]
+    return tuple(part.strip() for part in parts if part.strip())
+
+
+def _optional_source_policy(value: object) -> str | None:
+    if value is None:
+        return None
+    policy = str(value).strip().lower()
+    if not policy:
+        return None
+    if policy not in {"soft", "strict"}:
+        raise ValueError("source_policy must be soft or strict")
+    return policy
 
 
 def _parse_question_list_yaml(text: str) -> dict[str, Any] | None:
@@ -640,6 +846,30 @@ def _manual_rating_placeholders() -> dict[str, Any]:
     }
 
 
+def _unique_sources(values: tuple[str, ...]) -> tuple[str, ...]:
+    unknown = set(values) - _SUPPORTED_GOLDEN_SOURCES
+    if unknown:
+        raise ValueError(f"unsupported golden question sources: {sorted(unknown)}")
+    return tuple(dict.fromkeys(source for source in values if source))
+
+
+def _truncate_snippets(
+    snippets: tuple[dict[str, str], ...],
+    max_chars: int,
+) -> tuple[dict[str, str], ...]:
+    if max_chars <= 0:
+        raise ValueError("snippet_chars must be positive")
+    truncated: list[dict[str, str]] = []
+    for item in snippets:
+        snippet = str(item.get("snippet", ""))
+        if len(snippet) > max_chars:
+            snippet = snippet[: max(0, max_chars - 3)].rstrip() + "..."
+        redacted = dict(item)
+        redacted["snippet"] = snippet
+        truncated.append(redacted)
+    return tuple(truncated)
+
+
 def _safe_config_path(path: Path) -> str:
     name = path.name
     if name.endswith(".local.yaml"):
@@ -654,6 +884,10 @@ def _format_counts(counts: dict[str, int]) -> str:
     if not counts:
         return "none"
     return ", ".join(f"{key}:{counts[key]}" for key in sorted(counts))
+
+
+def _format_tuple(values: tuple[str, ...]) -> str:
+    return ", ".join(values) if values else "none"
 
 
 def _write_text(path: Path | str | None, text: str) -> Path | None:
@@ -672,17 +906,24 @@ def _default_golden_questions() -> tuple[GoldenQuestion, ...]:
             category="research",
             text="研究に関係するメモやLINEの記録を探してください。",
             sources=("line", "notes"),
+            expected_sources=("line", "notes"),
+            preferred_sources=("notes",),
+            evaluation_focus=("evidence_relevance", "source_coverage"),
         ),
         GoldenQuestion(
             question_id="outing_photos",
             category="photos",
             text="外出や屋外に関係しそうな写真の記録を探してください。",
             sources=("photos",),
+            expected_sources=("photos",),
+            evaluation_focus=("evidence_relevance",),
         ),
         GoldenQuestion(
             question_id="insufficient_evidence",
             category="safety",
             text="根拠が足りない場合は不明と答えてください。",
             sources=("photos", "line", "notes"),
+            expected_sources=("photos", "line", "notes"),
+            evaluation_focus=("uncertainty_handling",),
         ),
     )

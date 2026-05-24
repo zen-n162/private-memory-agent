@@ -263,6 +263,40 @@ counts, retry status, validation errors, and manual rating placeholders. It
 hides question text, answers, and snippets by default; use `--show-answer` or
 `--show-snippets` only for local inspection.
 
+Golden questions evaluate quality, not just execution. Use source constraints
+to make expected coverage explicit:
+
+```yaml
+expected_sources: [line, notes]
+required_sources: [notes]
+preferred_sources: [line]
+excluded_sources: [photos]
+expected_keywords: [研究]
+negative_keywords: []
+evaluation_focus: [evidence_relevance, source_coverage]
+```
+
+For one-off checks, the CLI can apply constraints without editing the local
+question file:
+
+```bash
+pma eval golden --config configs/paths.local.yaml --retrieval-only \
+  --query-id qst_preparation \
+  --require-source line \
+  --require-source notes \
+  --exclude-source photos \
+  --json
+```
+
+The golden report includes requested, expected, required, preferred, and
+excluded sources, actual evidence source counts, missing expected/required
+sources, excluded source violations, `source_policy`, and
+`retrieval_passed_source_policy`. `--source-policy strict` fails when expected
+or required source evidence is missing. The default `soft` policy records the
+mismatch as diagnostics. `--show-snippets --snippet-chars N` is available for
+local relevance inspection only; snippets are truncated and still must be
+treated as private.
+
 Real-model smoke sends a compact redacted evidence packet by default. Use
 `--max-evidence-items` and `--max-evidence-chars` to keep the request small
 while checking endpoint, JSON, evidence-id, and critic behavior. Invalid JSON is

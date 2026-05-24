@@ -402,6 +402,7 @@ class E2ESmokeOptions:
     response_format_json: bool = False
     show_answer: bool = False
     show_snippets: bool = False
+    snippet_chars: int = 160
     show_model_output_metadata: bool = False
     show_model_output: bool = False
     semantic_model: str = "none"
@@ -1053,7 +1054,10 @@ def _run_one_query_check(
         "retrieval_stage_counts": stage_counts,
         "source_stage_counts": source_stage_counts,
         "fallback_reason": fallback_reason,
-        "safe_snippets": _safe_snippet_display(raw_evidence[: options.limit])
+        "safe_snippets": _safe_snippet_display(
+            raw_evidence[: options.limit],
+            max_chars=options.snippet_chars,
+        )
         if options.show_snippets
         else (),
     }
@@ -1434,7 +1438,11 @@ def _privacy_safe_evidence(evidence: tuple[Evidence, ...]) -> tuple[Evidence, ..
     return guard.redact_evidence(evidence, redact_private=True)
 
 
-def _safe_snippet_display(evidence: tuple[Evidence, ...]) -> tuple[dict[str, str], ...]:
+def _safe_snippet_display(
+    evidence: tuple[Evidence, ...],
+    *,
+    max_chars: int,
+) -> tuple[dict[str, str], ...]:
     """Return explicit, truncated local-only snippets with no paths or metadata."""
 
     guard = PrivacyGuard()
@@ -1446,7 +1454,10 @@ def _safe_snippet_display(evidence: tuple[Evidence, ...]) -> tuple[dict[str, str
             {
                 "evidence_id": item.evidence_id,
                 "source": item.source_kind,
-                "snippet": _truncate_display_text(guard.redact_text(item.snippet), 160),
+                "snippet": _truncate_display_text(
+                    guard.redact_text(item.snippet),
+                    max_chars,
+                ),
             },
         )
     return tuple(snippets)

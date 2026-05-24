@@ -433,6 +433,33 @@ only for local review. Use `--output` for Markdown reports with manual rating
 placeholders and `--output-jsonl` for later machine-readable tracking. Treat
 reports generated with `--show-answer` or `--show-snippets` as private.
 
+When real-model answers keep returning `unknown`, first check golden retrieval
+source coverage. Constrain one question before blaming the leader model:
+
+```bash
+pma eval golden --config configs/paths.local.yaml --retrieval-only \
+  --query-id qst_preparation \
+  --require-source line \
+  --require-source notes \
+  --exclude-source photos \
+  --json
+```
+
+If needed, inspect local snippets explicitly:
+
+```bash
+pma eval golden --config configs/paths.local.yaml --retrieval-only \
+  --query-id qst_preparation \
+  --require-source line \
+  --require-source notes \
+  --exclude-source photos \
+  --show-snippets \
+  --snippet-chars 120
+```
+
+Snippet output may contain private local content. Keep it local and do not
+paste it into public chats.
+
 Real-model E2E uses a compact redacted evidence packet by default. Start with:
 
 ```bash

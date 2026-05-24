@@ -1120,6 +1120,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="Display truncated local evidence snippets in output/report.",
     )
     eval_golden_parser.add_argument(
+        "--snippet-chars",
+        type=int,
+        default=160,
+        help="Maximum characters per displayed snippet when --show-snippets is used.",
+    )
+    eval_golden_parser.add_argument(
+        "--require-source",
+        action="append",
+        choices=("photos", "line", "notes"),
+        default=[],
+        help="Require at least one evidence item from this source. Repeatable.",
+    )
+    eval_golden_parser.add_argument(
+        "--exclude-source",
+        action="append",
+        choices=("photos", "line", "notes"),
+        default=[],
+        help="Exclude this source from golden retrieval. Repeatable.",
+    )
+    eval_golden_parser.add_argument(
+        "--preferred-source",
+        action="append",
+        choices=("photos", "line", "notes"),
+        default=[],
+        help="Mark this source as preferred for golden diagnostics. Repeatable.",
+    )
+    eval_golden_parser.add_argument(
+        "--source-policy",
+        choices=("soft", "strict"),
+        default="soft",
+        help="Whether source coverage mismatches are warnings or failures.",
+    )
+    eval_golden_parser.add_argument(
         "--json",
         action="store_true",
         help="Print a structured privacy-safe JSON report.",
@@ -1729,6 +1762,11 @@ def _eval_golden_command(args: argparse.Namespace) -> int:
                 response_format_json=args.response_format_json,
                 show_answer=args.show_answer,
                 show_snippets=args.show_snippets,
+                snippet_chars=args.snippet_chars,
+                require_sources=tuple(args.require_source),
+                exclude_sources=tuple(args.exclude_source),
+                preferred_sources=tuple(args.preferred_source),
+                source_policy=args.source_policy,
                 model_key=args.model_key,
                 allow_remote=args.allow_remote,
             ),
