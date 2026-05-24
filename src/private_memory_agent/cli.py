@@ -1171,6 +1171,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="Whether missing expected keywords or negative hits fail golden retrieval.",
     )
     eval_golden_parser.add_argument(
+        "--leader-plan",
+        action="store_true",
+        help="Use the configured local leader model to create a retrieval plan.",
+    )
+    eval_golden_parser.add_argument(
+        "--leader-rerank",
+        "--leader-judge-evidence",
+        dest="leader_rerank",
+        action="store_true",
+        help="Use plan-aware deterministic relevance judging to rerank evidence.",
+    )
+    eval_golden_parser.add_argument(
+        "--retrieval-repair",
+        type=int,
+        default=0,
+        help="Retry weak planned retrieval up to this many times.",
+    )
+    eval_golden_parser.add_argument(
+        "--show-plan",
+        action="store_true",
+        help="Display the retrieval plan; may contain private question-derived content.",
+    )
+    eval_golden_parser.add_argument(
+        "--show-relevance",
+        action="store_true",
+        help="Display per-evidence relevance metadata without snippets.",
+    )
+    eval_golden_parser.add_argument(
         "--json",
         action="store_true",
         help="Print a structured privacy-safe JSON report.",
@@ -1788,6 +1816,11 @@ def _eval_golden_command(args: argparse.Namespace) -> int:
                 expected_keywords=tuple(args.expected_keyword),
                 negative_keywords=tuple(args.negative_keyword),
                 keyword_policy=args.keyword_policy,
+                leader_plan=args.leader_plan,
+                leader_rerank=args.leader_rerank,
+                retrieval_repair=args.retrieval_repair,
+                show_plan=args.show_plan,
+                show_relevance=args.show_relevance,
                 model_key=args.model_key,
                 allow_remote=args.allow_remote,
             ),

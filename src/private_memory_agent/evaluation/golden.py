@@ -4,10 +4,17 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from private_memory_agent.agent import (
+    LeaderRetrievalPlanner,
+    RetrievalPlan,
+    RetrievalPlanMetadata,
+    RetrievalPlanner,
+)
+from private_memory_agent.config import load_config
 from private_memory_agent.config.loader import ConfigError, PROJECT_ROOT, _parse_simple_yaml
 from private_memory_agent.e2e import (
     DEFAULT_E2E_DB_PATH,
@@ -21,6 +28,11 @@ from private_memory_agent.e2e import (
     run_e2e_smoke,
 )
 from private_memory_agent.retrieval.text import normalize_text
+from private_memory_agent.runtime import (
+    OpenAICompatibleHTTPClient,
+    endpoint_from_model_spec,
+    preflight_chat_endpoint,
+)
 
 DEFAULT_GOLDEN_QUESTIONS_FILENAME = "golden_questions.example.yaml"
 LOCAL_GOLDEN_QUESTIONS_FILENAME = "golden_questions.local.yaml"
@@ -94,6 +106,12 @@ class GoldenEvalOptions:
     expected_keywords: tuple[str, ...] = ()
     negative_keywords: tuple[str, ...] = ()
     keyword_policy: str = "soft"
+    leader_plan: bool = False
+    leader_rerank: bool = False
+    retrieval_repair: int = 0
+    show_plan: bool = False
+    show_relevance: bool = False
+    retrieval_planner: RetrievalPlanner | None = None
     model_key: str = DEFAULT_E2E_LEADER_MODEL_KEY
     allow_remote: bool = False
 
@@ -142,6 +160,14 @@ class GoldenQuestionResult:
     relevance_score: float = 0.0
     keyword_policy: str = "soft"
     retrieval_passed_keyword_policy: bool = True
+    plan_metadata: RetrievalPlanMetadata = field(default_factory=RetrievalPlanMetadata)
+    retrieval_repair_count: int = 0
+    leader_rerank_used: bool = False
+    relevance_judged: bool = False
+    average_plan_relevance_score: float | None = None
+    plan_relevance_should_use_count: int = 0
+    plan_relevance_specificity_counts: dict[str, int] = field(default_factory=dict)
+    relevance_scores: tuple[dict[str, Any], ...] = ()
     evaluation_focus: tuple[str, ...] = ()
     manual_ratings: dict[str, Any] = field(default_factory=dict)
 
@@ -196,6 +222,14 @@ class GoldenQuestionResult:
             "relevance_score": self.relevance_score,
             "keyword_policy": self.keyword_policy,
             "retrieval_passed_keyword_policy": self.retrieval_passed_keyword_policy,
+            "plan": self.plan_metadata.to_dict(),
+            "retrieval_repair_count": self.retrieval_repair_count,
+            "leader_rerank_used": self.leader_rerank_used,
+            "relevance_judged": self.relevance_judged,
+            "average_plan_relevance_score": self.average_plan_relevance_score,
+            "plan_relevance_should_use_count": self.plan_relevance_should_use_count,
+            "plan_relevance_specificity_counts": dict(self.plan_relevance_specificity_counts),
+            "relevance_scores": [dict(item) for item in self.relevance_scores],
             "evaluation_focus": list(self.evaluation_focus),
             "manual_ratings": dict(self.manual_ratings),
             "passed": self.passed,
@@ -277,6 +311,8 @@ class _GoldenSourceConstraints:
     negative_keywords: tuple[str, ...]
     keyword_policy: str
     retrieval_text: str
+    plan: RetrievalPlan | None = None
+    plan_metadata: RetrievalPlanMetadata = field(default_factory=RetrievalPlanMetadata)
 
 
 def load_golden_questions(
@@ -307,6 +343,8 @@ def run_golden_eval(options: GoldenEvalOptions) -> GoldenEvalReport:
 
     if options.snippet_chars <= 0:
         raise ValueError("snippet_chars must be positive")
+    if options.retrieval_repair < 0:
+        raise ValueError("retrieval_repair must be non-negative")
     questions_path = _resolve_golden_questions_path(
         options.config_dir,
         questions_config=options.questions_config,
@@ -317,45 +355,27 @@ def run_golden_eval(options: GoldenEvalOptions) -> GoldenEvalReport:
         query_limit=options.query_limit,
     )
     mode = _resolve_golden_mode(options)
+    planned = _plan_questions(questions, options)
     constrained_questions = tuple(
-        _constrained_question(question, options)
+        _constrained_question(
+            question,
+            options,
+            plan=planned.get(question.question_id),
+        )
         for question in questions
     )
-    e2e_report = run_e2e_smoke(
-        E2ESmokeOptions(
-            config_dir=options.config_dir,
-            paths_config=options.paths_config,
-            db_path=options.db_path,
-            queries=tuple(
-                E2ESmokeQuery(
-                    query_id=question.question_id,
-                    text=question.text,
-                    sources=constrained.requested_sources,
-                    retrieval_text=constrained.retrieval_text,
-                    expected_terms=constrained.expected_keywords,
-                    boost_terms=constrained.expected_keywords + constrained.optional_keywords,
-                    negative_terms=constrained.negative_keywords,
-                )
-                for question, constrained in zip(questions, constrained_questions, strict=True)
-            ),
-            retrieval_only=mode == "retrieval_only",
-            fake_model=mode == "fake_model",
-            real_model=mode == "real_model",
-            limit=options.limit,
-            timeout_seconds=options.timeout_seconds,
-            max_tokens=options.max_tokens,
-            max_evidence_items=options.max_evidence_items,
-            max_evidence_chars=options.max_evidence_chars,
-            compact_evidence=options.compact_evidence,
-            json_retry=options.json_retry,
-            response_format_json=options.response_format_json,
-            show_answer=options.show_answer,
-            show_snippets=options.show_snippets,
-            snippet_chars=options.snippet_chars,
-            model_key=options.model_key,
-            allow_remote=options.allow_remote,
-            no_fallback=True,
-        ),
+    e2e_report = _run_e2e_for_golden(
+        questions=questions,
+        constrained_questions=constrained_questions,
+        options=options,
+        mode=mode,
+    )
+    e2e_results, repair_counts = _repair_e2e_results_if_needed(
+        questions=questions,
+        constrained_questions=constrained_questions,
+        e2e_results=tuple(e2e_report.query_results),
+        options=options,
+        mode=mode,
     )
     results = tuple(
         _golden_result_from_e2e(
@@ -363,11 +383,12 @@ def run_golden_eval(options: GoldenEvalOptions) -> GoldenEvalReport:
             constrained,
             result,
             options=options,
+            repair_count=repair_counts.get(question.question_id, 0),
         )
         for question, constrained, result in zip(
             questions,
             constrained_questions,
-            e2e_report.query_results,
+            e2e_results,
             strict=False,
         )
     )
@@ -381,7 +402,21 @@ def run_golden_eval(options: GoldenEvalOptions) -> GoldenEvalReport:
         db_exists=e2e_report.db_exists,
         summary=_summary_from_results(results),
         results=results,
-        warnings=tuple(e2e_report.warnings),
+        warnings=tuple(
+            (
+                *e2e_report.warnings,
+                *(
+                    ("retrieval plan display requested; plan text may contain private question-derived content",)
+                    if options.show_plan
+                    else ()
+                ),
+                *(
+                    ("relevance display requested; relevance metadata may reveal private local concepts",)
+                    if options.show_relevance
+                    else ()
+                ),
+            ),
+        ),
     )
 
 
@@ -469,9 +504,164 @@ def write_golden_outputs(
     return written_markdown, written_jsonl
 
 
+def _plan_questions(
+    questions: tuple[GoldenQuestion, ...],
+    options: GoldenEvalOptions,
+) -> dict[str, RetrievalPlan]:
+    if not options.leader_plan and options.retrieval_planner is None:
+        return {}
+    planner = options.retrieval_planner or _build_leader_retrieval_planner(options)
+    planned: dict[str, RetrievalPlan] = {}
+    for question in questions:
+        planned[question.question_id] = planner.plan(question.text)
+    return planned
+
+
+def _build_leader_retrieval_planner(options: GoldenEvalOptions) -> RetrievalPlanner:
+    config = load_config(config_dir=options.config_dir, paths_config=options.paths_config)
+    model_spec = config.model_registry.get(options.model_key)
+    if model_spec is None:
+        raise ValueError("configured leader model key was not found")
+    endpoint = endpoint_from_model_spec(model_spec)
+    if endpoint is None:
+        raise ValueError("configured leader model endpoint_url is missing")
+    preflight = preflight_chat_endpoint(endpoint, allow_remote=options.allow_remote)
+    timeout_seconds = (
+        options.timeout_seconds
+        if options.timeout_seconds is not None
+        else endpoint.request_timeout_seconds or 300.0
+    )
+    client = OpenAICompatibleHTTPClient(
+        base_url=endpoint.base_url,
+        model=preflight.served_model_name,
+        timeout_seconds=timeout_seconds,
+        retries=endpoint.retries,
+        allow_remote=options.allow_remote,
+    )
+    return LeaderRetrievalPlanner(
+        client,
+        model=preflight.served_model_name,
+        max_tokens=min(max(128, options.max_tokens), 1024),
+        temperature=0.0,
+        response_format_json=options.response_format_json,
+    )
+
+
+def _run_e2e_for_golden(
+    *,
+    questions: tuple[GoldenQuestion, ...],
+    constrained_questions: tuple[_GoldenSourceConstraints, ...],
+    options: GoldenEvalOptions,
+    mode: str,
+) -> Any:
+    return run_e2e_smoke(
+        E2ESmokeOptions(
+            config_dir=options.config_dir,
+            paths_config=options.paths_config,
+            db_path=options.db_path,
+            queries=tuple(
+                _e2e_query_from_golden(question, constrained, options=options)
+                for question, constrained in zip(questions, constrained_questions, strict=True)
+            ),
+            retrieval_only=mode == "retrieval_only",
+            fake_model=mode == "fake_model",
+            real_model=mode == "real_model",
+            limit=options.limit,
+            timeout_seconds=options.timeout_seconds,
+            max_tokens=options.max_tokens,
+            max_evidence_items=options.max_evidence_items,
+            max_evidence_chars=options.max_evidence_chars,
+            compact_evidence=options.compact_evidence,
+            json_retry=options.json_retry,
+            response_format_json=options.response_format_json,
+            show_answer=options.show_answer,
+            show_snippets=options.show_snippets,
+            snippet_chars=options.snippet_chars,
+            model_key=options.model_key,
+            allow_remote=options.allow_remote,
+            no_fallback=True,
+        ),
+    )
+
+
+def _e2e_query_from_golden(
+    question: GoldenQuestion,
+    constrained: _GoldenSourceConstraints,
+    *,
+    options: GoldenEvalOptions,
+) -> E2ESmokeQuery:
+    return E2ESmokeQuery(
+        query_id=question.question_id,
+        text=question.text,
+        sources=constrained.requested_sources,
+        retrieval_text=constrained.retrieval_text,
+        expected_terms=constrained.expected_keywords,
+        boost_terms=constrained.expected_keywords + constrained.optional_keywords,
+        negative_terms=constrained.negative_keywords,
+        preferred_sources=constrained.preferred_sources,
+        retrieval_plan=constrained.plan,
+        judge_relevance=bool(constrained.plan and (options.leader_rerank or options.show_relevance)),
+        rerank_by_relevance=bool(constrained.plan and options.leader_rerank),
+        show_relevance=options.show_relevance,
+    )
+
+
+def _repair_e2e_results_if_needed(
+    *,
+    questions: tuple[GoldenQuestion, ...],
+    constrained_questions: tuple[_GoldenSourceConstraints, ...],
+    e2e_results: tuple[Any, ...],
+    options: GoldenEvalOptions,
+    mode: str,
+) -> tuple[tuple[Any, ...], dict[str, int]]:
+    if options.retrieval_repair <= 0:
+        return e2e_results, {}
+    repaired_results = list(e2e_results)
+    repair_counts: dict[str, int] = {}
+    for index, (question, constrained, result) in enumerate(
+        zip(questions, constrained_questions, e2e_results, strict=False),
+    ):
+        if not _needs_retrieval_repair(result, constrained):
+            continue
+        repaired = replace(
+            constrained,
+            retrieval_text=_expanded_retrieval_text(
+                question.text,
+                expected_keywords=constrained.expected_keywords,
+                optional_keywords=constrained.optional_keywords,
+                plan=constrained.plan,
+                repair=True,
+            ),
+        )
+        repair_report = _run_e2e_for_golden(
+            questions=(question,),
+            constrained_questions=(repaired,),
+            options=options,
+            mode=mode,
+        )
+        if repair_report.query_results:
+            repaired_results[index] = repair_report.query_results[0]
+            repair_counts[question.question_id] = 1
+    return tuple(repaired_results), repair_counts
+
+
+def _needs_retrieval_repair(result: Any, constrained: _GoldenSourceConstraints) -> bool:
+    if constrained.plan is None:
+        return False
+    if result.evidence_count == 0:
+        return True
+    if result.plan_relevance_judged and (result.plan_relevance_should_use_count or 0) == 0:
+        return True
+    if constrained.expected_keywords and result.expected_keywords_hit_count == 0:
+        return True
+    return False
+
+
 def _constrained_question(
     question: GoldenQuestion,
     options: GoldenEvalOptions,
+    *,
+    plan: RetrievalPlan | None = None,
 ) -> _GoldenSourceConstraints:
     source_policy = (
         "strict"
@@ -486,13 +676,23 @@ def _constrained_question(
 
     expected_sources = _unique_sources(question.expected_sources)
     required_sources = _unique_sources(question.required_sources + options.require_sources)
-    preferred_sources = _unique_sources(question.preferred_sources + options.preferred_sources)
+    plan_preferences = plan.source_preferences if plan is not None else ()
+    plan_constraints = plan.source_constraints if plan is not None else ()
+    preferred_sources = _unique_sources(
+        question.preferred_sources + options.preferred_sources + plan_preferences,
+    )
     excluded_sources = _unique_sources(question.excluded_sources + options.exclude_sources)
     expected_keywords = _unique_strings(question.expected_keywords + options.expected_keywords)
-    optional_keywords = _unique_strings(question.optional_keywords)
-    negative_keywords = _unique_strings(question.negative_keywords + options.negative_keywords)
+    optional_keywords = _unique_strings(
+        question.optional_keywords + (plan.specific_concepts if plan is not None else ()),
+    )
+    negative_keywords = _unique_strings(
+        question.negative_keywords
+        + options.negative_keywords
+        + (plan.excluded_concepts if plan is not None else ()),
+    )
 
-    hard_sources = question.sources or expected_sources or required_sources
+    hard_sources = question.sources or expected_sources or required_sources or plan_constraints
     if hard_sources:
         requested = _unique_sources(hard_sources + preferred_sources)
     else:
@@ -520,7 +720,13 @@ def _constrained_question(
             question.text,
             expected_keywords=expected_keywords,
             optional_keywords=optional_keywords,
+            plan=plan,
+            repair=False,
         ),
+        plan=plan,
+        plan_metadata=plan.metadata(show_plan=options.show_plan)
+        if plan is not None
+        else RetrievalPlanMetadata(),
     )
 
 
@@ -530,6 +736,7 @@ def _golden_result_from_e2e(
     result: Any,
     *,
     options: GoldenEvalOptions,
+    repair_count: int,
 ) -> GoldenQuestionResult:
     unknown_reference_count = 0
     if result.error_message and "unknown_evidence_reference" in result.error_message:
@@ -620,6 +827,16 @@ def _golden_result_from_e2e(
         relevance_score=relevance_score,
         keyword_policy=constraints.keyword_policy,
         retrieval_passed_keyword_policy=retrieval_passed_keyword_policy,
+        plan_metadata=constraints.plan_metadata,
+        retrieval_repair_count=repair_count,
+        leader_rerank_used=bool(options.leader_rerank and constraints.plan is not None),
+        relevance_judged=bool(result.plan_relevance_judged),
+        average_plan_relevance_score=result.plan_average_relevance_score,
+        plan_relevance_should_use_count=int(result.plan_relevance_should_use_count or 0),
+        plan_relevance_specificity_counts=dict(result.plan_relevance_specificity_counts),
+        relevance_scores=tuple(dict(score) for score in result.plan_relevance_scores)
+        if options.show_relevance
+        else (),
         evaluation_focus=question.evaluation_focus,
         manual_ratings=_manual_rating_placeholders(),
         safe_snippets=_truncate_snippets(keyword_snippets, options.snippet_chars)
@@ -687,8 +904,46 @@ def _format_question_markdown(result: GoldenQuestionResult) -> list[str]:
         f"- evidence_relevance_score: {result.relevance_score}",
         f"- keyword_policy: {result.keyword_policy}",
         f"- retrieval_passed_keyword_policy: {str(result.retrieval_passed_keyword_policy).lower()}",
+        f"- plan_created: {str(result.plan_metadata.plan_created).lower()}",
+        f"- retrieval_query_count: {result.plan_metadata.retrieval_query_count}",
+        f"- main_entity_count: {result.plan_metadata.main_entity_count}",
+        f"- specific_concept_count: {result.plan_metadata.specific_concept_count}",
+        f"- generic_concept_count: {result.plan_metadata.generic_concept_count}",
+        f"- plan_source_preferences: {_format_tuple(result.plan_metadata.source_preferences)}",
+        f"- plan_source_constraints: {_format_tuple(result.plan_metadata.source_constraints)}",
+        f"- evidence_acceptance_criteria_count: {result.plan_metadata.evidence_acceptance_criteria_count}",
+        f"- retrieval_repair_count: {result.retrieval_repair_count}",
+        f"- leader_rerank_used: {str(result.leader_rerank_used).lower()}",
+        f"- relevance_judged: {str(result.relevance_judged).lower()}",
+        f"- average_plan_relevance_score: {result.average_plan_relevance_score}",
+        f"- plan_relevance_should_use_count: {result.plan_relevance_should_use_count}",
+        "- plan_relevance_specificity_counts: "
+        + _format_counts(result.plan_relevance_specificity_counts),
         f"- evaluation_focus: {_format_tuple(result.evaluation_focus)}",
     ]
+    if result.plan_metadata.plan is not None:
+        lines.extend(
+            [
+                "",
+                "#### Retrieval Plan",
+                "",
+                "```json",
+                json.dumps(result.plan_metadata.plan, ensure_ascii=False, indent=2, sort_keys=True),
+                "```",
+            ],
+        )
+    if result.relevance_scores:
+        lines.extend(["", "#### Relevance Scores", ""])
+        lines.extend(
+            (
+                f"- {item.get('evidence_id', 'unknown')}: "
+                f"score={item.get('relevance_score')}; "
+                f"specificity={item.get('specificity')}; "
+                f"should_use={item.get('should_use')}; "
+                f"reason={item.get('reason_category')}"
+            )
+            for item in result.relevance_scores
+        )
     if result.answer_conclusion is not None:
         lines.extend(
             [
@@ -967,8 +1222,16 @@ def _expanded_retrieval_text(
     *,
     expected_keywords: tuple[str, ...],
     optional_keywords: tuple[str, ...],
+    plan: RetrievalPlan | None = None,
+    repair: bool = False,
 ) -> str:
-    keywords = _unique_strings(expected_keywords + optional_keywords)
+    plan_queries: tuple[str, ...] = ()
+    if plan is not None and plan.retrieval_queries:
+        plan_queries = plan.retrieval_queries if repair else plan.retrieval_queries[:1]
+    plan_concepts = ()
+    if plan is not None and repair:
+        plan_concepts = plan.specific_concepts + plan.main_entities
+    keywords = _unique_strings(expected_keywords + optional_keywords + plan_queries + plan_concepts)
     if not keywords:
         return question_text
     return " ".join((question_text, *keywords)).strip()

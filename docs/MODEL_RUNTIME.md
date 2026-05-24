@@ -47,6 +47,34 @@ pma models ping --model vision_common
 
 `pma models ping` calls `/models` only. It does not send LINE messages, note bodies, image metadata, GPS, filenames, or source paths. Non-local endpoint URLs are rejected by default unless explicitly allowed with `--allow-remote`.
 
+## Leader-Guided Retrieval Planning
+
+Phase 8-K can use the configured local leader endpoint before retrieval to
+create a structured retrieval plan:
+
+```bash
+pma eval golden --config configs/paths.local.yaml --retrieval-only --query-id qst_preparation --leader-plan --json
+```
+
+This sends the private question text to the configured local leader model only.
+It does not send source files or raw evidence snippets for planning. The default
+report hides the full plan and prints only counters: plan created, retrieval
+query count, entity/concept counts, source preferences, source constraints, and
+acceptance-criteria count. `--show-plan` is explicit and should be treated as
+private local output.
+
+Plan-aware relevance judging and repair are optional:
+
+```bash
+pma eval golden --config configs/paths.local.yaml --retrieval-only --query-id qst_preparation --leader-plan --leader-rerank --retrieval-repair 1 --json
+```
+
+The default judge is deterministic and local. It can demote generic-only
+evidence, promote evidence matching specific plan concepts, and expose safe
+relevance metadata when `--show-relevance` is used. Full leader-based evidence
+judging can be added later; it should remain opt-in because sending candidate
+snippets to a model is slower and more privacy-sensitive.
+
 ## RTX 4500 Ada Runtime Profiles
 
 Phase 7-B adds advisory runtime profiles for the local NVIDIA RTX 4500 Ada

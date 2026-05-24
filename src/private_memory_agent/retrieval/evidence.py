@@ -72,6 +72,7 @@ class RetrievalFilters:
     until: str | None = None
     boost_terms: tuple[str, ...] = ()
     negative_terms: tuple[str, ...] = ()
+    preferred_sources: tuple[str, ...] = ()
 
     def normalized_sources(self) -> set[str]:
         sources = {source.strip().lower() for source in self.sources if source.strip()}
@@ -167,6 +168,7 @@ class RetrievalService:
                 limit=limit,
                 boost_terms=active_filters.boost_terms,
                 negative_terms=active_filters.negative_terms,
+                preferred_sources=active_filters.preferred_sources,
             ),
         )
         return RetrievalResult(
@@ -414,12 +416,14 @@ def _select_ranked_evidence(
     limit: int,
     boost_terms: tuple[str, ...] = (),
     negative_terms: tuple[str, ...] = (),
+    preferred_sources: tuple[str, ...] = (),
 ) -> list[Evidence]:
     ranked = _rank_and_dedupe(candidates)
     ranked = _apply_keyword_score_adjustments(
         ranked,
         boost_terms=boost_terms,
         negative_terms=negative_terms,
+        preferred_sources=preferred_sources,
     )
     if not source_filter or len(source_filter) <= 1 or limit <= 1:
         return ranked[:limit]
@@ -453,10 +457,12 @@ def _apply_keyword_score_adjustments(
     *,
     boost_terms: tuple[str, ...],
     negative_terms: tuple[str, ...],
+    preferred_sources: tuple[str, ...],
 ) -> list[Evidence]:
     boost = _normalized_terms(boost_terms)
     negative = _normalized_terms(negative_terms)
-    if not boost and not negative:
+    preferred = {source for source in preferred_sources if source in SUPPORTED_EVIDENCE_SOURCES}
+    if not boost and not negative and not preferred:
         return evidence
 
     adjusted: list[Evidence] = []
@@ -469,6 +475,8 @@ def _apply_keyword_score_adjustments(
             score += min(0.45, 0.18 * boost_hits)
         if negative_hits:
             score -= min(0.45, 0.22 * negative_hits)
+        if item.source_kind in preferred:
+            score += 0.08
         signals = list(item.signals)
         metadata = dict(item.metadata)
         if boost_hits:
@@ -477,6 +485,8 @@ def _apply_keyword_score_adjustments(
         if negative_hits:
             signals.append("negative_keyword")
             metadata["negative_keyword_hit_count"] = negative_hits
+        if item.source_kind in preferred:
+            signals.append("source_preference")
         adjusted.append(
             replace(
                 item,

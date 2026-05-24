@@ -57,6 +57,10 @@ This document outlines the development roadmap for private-memory-agent.
   golden questions can declare expected, optional, and negative keywords;
   `pma eval golden` can append CLI keywords, boost matching evidence, penalize
   negative hits, and report privacy-safe keyword/relevance diagnostics.
+- Phase 8-K adds optional leader-guided retrieval planning:
+  the local leader can create a structured retrieval plan, deterministic
+  relevance judging can demote generic-only evidence, and weak planned retrieval
+  can run one repair loop without exposing raw evidence by default.
 
 ## 実データE2E smokeの実行手順
 
@@ -79,6 +83,8 @@ pma e2e smoke --config configs/paths.local.yaml --real-model --query-limit 1 --t
 pma eval golden --config configs/paths.local.yaml --retrieval-only --query-limit 2 --json
 pma eval golden --config configs/paths.local.yaml --retrieval-only --query-id qst_preparation --require-source line --require-source notes --exclude-source photos --json
 pma eval golden --config configs/paths.local.yaml --retrieval-only --query-id qst_preparation --require-source line --require-source notes --exclude-source photos --expected-keyword QST --expected-keyword 面接 --expected-keyword 内定 --json
+pma eval golden --config configs/paths.local.yaml --retrieval-only --query-id qst_preparation --leader-plan --json
+pma eval golden --config configs/paths.local.yaml --retrieval-only --query-id qst_preparation --leader-plan --leader-rerank --retrieval-repair 1 --json
 pma eval golden --config configs/paths.local.yaml --fake-model --query-limit 2 --json
 pma eval golden --config configs/paths.local.yaml --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --json
 pma db schema --config configs/paths.local.yaml
@@ -173,3 +179,9 @@ keywords, boosts matching evidence, penalizes negative hits, and reports
 `relevance_score`, missing expected keywords, and per-evidence keyword hit
 counts without printing raw evidence. Use `--keyword-policy strict` when keyword
 misses should fail a retrieval calibration run.
+
+Leader-guided planning is optional because it calls the local leader model and
+is slower than deterministic retrieval. Use `--leader-plan` to create a
+structured plan, `--leader-rerank` to apply plan-aware deterministic relevance
+judging, and `--retrieval-repair 1` to retry weak evidence with additional plan
+queries. Default output hides the full plan; use `--show-plan` only locally.

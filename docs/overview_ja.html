@@ -535,6 +535,7 @@
             <tr><td>8-H</td><td>golden question による回答品質評価と Markdown/JSONL report。</td><td class="status">基本実装済み</td></tr>
             <tr><td>8-I</td><td>golden question の source constraint と retrieval calibration。</td><td class="status">基本実装済み</td></tr>
             <tr><td>8-J</td><td>golden question の keyword calibration と evidence relevance scoring。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>8-K</td><td>Leader による retrieval plan、plan-aware rerank、弱い検索の repair。</td><td class="status">限定実装</td></tr>
           </tbody>
         </table>
       </section>
@@ -562,6 +563,8 @@ pma e2e smoke --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 51
 pma eval golden --retrieval-only --query-limit 2 --json
 pma eval golden --retrieval-only --query-id qst_preparation --require-source line --require-source notes --exclude-source photos --json
 pma eval golden --retrieval-only --query-id qst_preparation --require-source line --require-source notes --exclude-source photos --expected-keyword QST --expected-keyword 面接 --expected-keyword 内定 --json
+pma eval golden --retrieval-only --query-id qst_preparation --leader-plan --json
+pma eval golden --retrieval-only --query-id qst_preparation --leader-plan --leader-rerank --retrieval-repair 1 --json
 pma eval golden --fake-model --query-limit 2 --json
 pma eval golden --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --json
 pma db schema
@@ -600,6 +603,8 @@ pma e2e smoke --config configs/paths.local.yaml --real-model --query-limit 1 --t
 pma eval golden --config configs/paths.local.yaml --retrieval-only --query-limit 2 --json
 pma eval golden --config configs/paths.local.yaml --retrieval-only --query-id qst_preparation --require-source line --require-source notes --exclude-source photos --json
 pma eval golden --config configs/paths.local.yaml --retrieval-only --query-id qst_preparation --require-source line --require-source notes --exclude-source photos --expected-keyword QST --expected-keyword 面接 --expected-keyword 内定 --json
+pma eval golden --config configs/paths.local.yaml --retrieval-only --query-id qst_preparation --leader-plan --json
+pma eval golden --config configs/paths.local.yaml --retrieval-only --query-id qst_preparation --leader-plan --leader-rerank --retrieval-repair 1 --json
 pma eval golden --config configs/paths.local.yaml --fake-model --query-limit 2 --json
 pma eval golden --config configs/paths.local.yaml --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --json
 pma db schema --config configs/paths.local.yaml
@@ -668,6 +673,12 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           per-evidence keyword hit count、relevance score を raw evidence なしで表示します。
           一回限りの確認には <code>--expected-keyword</code>、<code>--negative-keyword</code>、
           <code>--keyword-policy strict</code> を使えます。
+          さらに <code>--leader-plan</code> を使うと、local Leader model が質問から intent、specific/generic concept、
+          source preference、retrieval query、acceptance criteria を持つ RetrievalPlan を作ります。
+          既定では plan 本文は表示せず、plan_created、query count、entity/concept count などの安全な集計だけを出します。
+          <code>--leader-rerank</code> は plan-aware な deterministic relevance judge で generic-only evidence を下げ、
+          specific concept に合う evidence を上げます。弱い検索には <code>--retrieval-repair 1</code> で追加 query を試せます。
+          <code>--show-plan</code> と <code>--show-relevance</code> は local-only の明示的な診断です。
           relevance を見る必要がある時だけ <code>--show-snippets --snippet-chars N</code> を明示します。
           既定では質問本文、回答本文、snippet、raw evidence、raw model output を表示しません。
           <code>--show-answer</code> や <code>--show-snippets</code> を使った report は private output として扱い、
@@ -690,6 +701,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
       <section id="history">
         <h2>更新履歴</h2>
         <ul>
+          <li>2026-05-25: Leader-guided RetrievalPlan、plan-aware rerank、retrieval repair を追加。</li>
           <li>2026-05-25: golden question の keyword calibration、negative keyword penalty、evidence relevance score を追加。</li>
           <li>2026-05-24: golden question の source constraint、strict/soft policy、snippet length control を追加。</li>
           <li>2026-05-24: golden question 評価、Markdown/JSONL report、手動採点欄を追加。</li>

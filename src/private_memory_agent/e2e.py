@@ -11,11 +11,15 @@ from typing import Any
 
 from private_memory_agent.agent import (
     AnswerValidationError,
+    DeterministicEvidenceRelevanceJudge,
     FakeLeaderChatModelClient,
     LeaderAgent,
     PrivacyGuard,
+    RetrievalPlan,
     build_leader_prompt,
     diagnostics_from_error,
+    relevance_summary,
+    rerank_evidence_by_relevance,
 )
 from private_memory_agent.config import ConfigBundle, load_config
 from private_memory_agent.config.loader import ConfigError, _parse_simple_yaml
@@ -84,6 +88,11 @@ class E2ESmokeQuery:
     expected_terms: tuple[str, ...] = ()
     boost_terms: tuple[str, ...] = ()
     negative_terms: tuple[str, ...] = ()
+    preferred_sources: tuple[str, ...] = ()
+    retrieval_plan: RetrievalPlan | None = None
+    judge_relevance: bool = False
+    rerank_by_relevance: bool = False
+    show_relevance: bool = False
 
 
 @dataclass(frozen=True)
@@ -236,6 +245,11 @@ class E2ESmokeQueryResult:
     missing_expected_keywords: tuple[str, ...] = ()
     negative_keyword_hit_count: int = 0
     evidence_keyword_hit_counts: dict[str, int] = field(default_factory=dict)
+    plan_relevance_judged: bool = False
+    plan_average_relevance_score: float | None = None
+    plan_relevance_should_use_count: int = 0
+    plan_relevance_specificity_counts: dict[str, int] = field(default_factory=dict)
+    plan_relevance_scores: tuple[dict[str, Any], ...] = ()
     retrieval_stage_counts: dict[str, int] = field(default_factory=dict)
     source_stage_counts: dict[str, dict[str, Any]] = field(default_factory=dict)
     fallback_reason: str | None = None
@@ -286,6 +300,11 @@ class E2ESmokeQueryResult:
             "missing_expected_keywords": list(self.missing_expected_keywords),
             "negative_keyword_hit_count": self.negative_keyword_hit_count,
             "evidence_keyword_hit_counts": dict(self.evidence_keyword_hit_counts),
+            "plan_relevance_judged": self.plan_relevance_judged,
+            "plan_average_relevance_score": self.plan_average_relevance_score,
+            "plan_relevance_should_use_count": self.plan_relevance_should_use_count,
+            "plan_relevance_specificity_counts": dict(self.plan_relevance_specificity_counts),
+            "plan_relevance_scores": [dict(item) for item in self.plan_relevance_scores],
             "retrieval_stage_counts": dict(self.retrieval_stage_counts),
             "source_stage_counts": {
                 source: dict(counts)
@@ -1034,6 +1053,7 @@ def _run_one_query_check(
                 sources=query.sources,
                 boost_terms=query.boost_terms,
                 negative_terms=query.negative_terms,
+                preferred_sources=query.preferred_sources,
             ),
             limit=max(1, options.limit),
             redact_for_display=True,
@@ -1051,6 +1071,23 @@ def _run_one_query_check(
         )
 
     raw_evidence = retrieval.evidence
+    plan_scores = ()
+    if query.retrieval_plan is not None and query.judge_relevance:
+        plan_scores = DeterministicEvidenceRelevanceJudge().score(
+            raw_evidence,
+            query.retrieval_plan,
+        )
+        if query.rerank_by_relevance:
+            raw_evidence = rerank_evidence_by_relevance(
+                raw_evidence,
+                plan_scores,
+                limit=max(1, options.limit),
+            )
+            plan_scores = DeterministicEvidenceRelevanceJudge().score(
+                raw_evidence,
+                query.retrieval_plan,
+            )
+    plan_relevance = relevance_summary(plan_scores)
     evidence = _privacy_safe_evidence(raw_evidence)
     evidence_ids = tuple(item.evidence_id for item in evidence[: options.limit])
     source_counts = _evidence_source_counts(evidence)
@@ -1077,6 +1114,13 @@ def _run_one_query_check(
         "used_inventory_fallback": used_inventory_fallback,
         "evidence_source_counts": source_counts,
         **keyword_diagnostics,
+        "plan_relevance_judged": bool(plan_relevance["relevance_judged"]),
+        "plan_average_relevance_score": plan_relevance["average_relevance_score"],
+        "plan_relevance_should_use_count": int(plan_relevance["should_use_count"]),
+        "plan_relevance_specificity_counts": dict(plan_relevance["specificity_counts"]),
+        "plan_relevance_scores": tuple(score.to_dict() for score in plan_scores)
+        if query.show_relevance
+        else (),
         "retrieval_stage_counts": stage_counts,
         "source_stage_counts": source_stage_counts,
         "fallback_reason": fallback_reason,

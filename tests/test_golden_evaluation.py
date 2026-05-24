@@ -1,6 +1,7 @@
 import json
 
 from private_memory_agent.cli import main
+from private_memory_agent.agent import FakeRetrievalPlanner, RetrievalPlan
 from private_memory_agent.evaluation import (
     GoldenEvalOptions,
     format_golden_eval_report,
@@ -840,3 +841,238 @@ def test_golden_show_snippets_lists_matched_keywords_when_explicit(
     assert hidden.results[0].safe_snippets == ()
     assert shown.results[0].safe_snippets[0]["matched_keywords"] == "QST"
     assert len(shown.results[0].safe_snippets[0]["snippet"]) <= 32
+
+
+def test_golden_leader_plan_uses_plan_derived_query_without_showing_plan(
+    temp_config_factory,
+    tmp_path,
+):
+    config_dir = temp_config_factory()
+    _write_golden_questions(config_dir, text="generic question", sources="line")
+    db_path = tmp_path / "golden.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        message_id = _insert_line_message(storage, text="ProjectAlpha specific evidence")
+    finally:
+        storage.close()
+    index_text(db_path)
+    planner = FakeRetrievalPlanner(
+        RetrievalPlan(
+            intent="find project evidence",
+            specific_concepts=("ProjectAlpha",),
+            generic_concepts=("generic",),
+            source_preferences=("line",),
+            source_constraints=("line",),
+            retrieval_queries=("ProjectAlpha",),
+            evidence_acceptance_criteria=("contains ProjectAlpha",),
+        ),
+    )
+
+    report = run_golden_eval(
+        GoldenEvalOptions(
+            config_dir=config_dir,
+            db_path=db_path,
+            retrieval_only=True,
+            query_id="golden_research",
+            retrieval_planner=planner,
+        ),
+    )
+    payload = golden_report_to_json(report)
+    result = report.results[0]
+
+    assert report.ok is True
+    assert result.evidence_ids == (f"line_messages:{message_id}",)
+    assert result.plan_metadata.plan_created is True
+    assert result.plan_metadata.specific_concept_count == 1
+    assert result.plan_metadata.plan is None
+    assert "ProjectAlpha specific evidence" not in payload
+
+
+def test_golden_show_plan_is_explicit(temp_config_factory, tmp_path):
+    config_dir = temp_config_factory()
+    _write_golden_questions(config_dir, text="generic question", sources="line")
+    db_path = tmp_path / "golden.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        _insert_line_message(storage, text="ProjectAlpha specific evidence")
+    finally:
+        storage.close()
+    index_text(db_path)
+    planner = FakeRetrievalPlanner(
+        RetrievalPlan(
+            intent="find project evidence",
+            specific_concepts=("ProjectAlpha",),
+            retrieval_queries=("ProjectAlpha",),
+        ),
+    )
+
+    report = run_golden_eval(
+        GoldenEvalOptions(
+            config_dir=config_dir,
+            db_path=db_path,
+            retrieval_only=True,
+            query_id="golden_research",
+            retrieval_planner=planner,
+            show_plan=True,
+        ),
+    )
+
+    assert report.results[0].plan_metadata.plan is not None
+    assert report.results[0].plan_metadata.plan["specific_concepts"] == ["ProjectAlpha"]
+
+
+def test_golden_leader_rerank_demotes_generic_evidence(temp_config_factory, tmp_path):
+    config_dir = temp_config_factory()
+    _write_golden_questions(config_dir, text="研究", sources="line")
+    db_path = tmp_path / "golden.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        generic_id = _insert_line_message(storage, text="研究の一般的な話")
+        specific_id = _insert_line_message(storage, text="ProjectAlpha の準備")
+    finally:
+        storage.close()
+    index_text(db_path)
+    planner = FakeRetrievalPlanner(
+        RetrievalPlan(
+            intent="find project evidence",
+            specific_concepts=("ProjectAlpha",),
+            generic_concepts=("研究",),
+            retrieval_queries=("研究",),
+        ),
+    )
+
+    report = run_golden_eval(
+        GoldenEvalOptions(
+            config_dir=config_dir,
+            db_path=db_path,
+            retrieval_only=True,
+            query_id="golden_research",
+            retrieval_planner=planner,
+            leader_rerank=True,
+            show_relevance=True,
+            limit=2,
+        ),
+    )
+    result = report.results[0]
+
+    assert result.evidence_ids[0] == f"line_messages:{specific_id}"
+    assert f"line_messages:{generic_id}" in result.evidence_ids
+    assert result.leader_rerank_used is True
+    assert result.relevance_judged is True
+    assert result.plan_relevance_specificity_counts["specific"] == 1
+    assert result.plan_relevance_specificity_counts["generic"] == 1
+    assert result.relevance_scores
+
+
+def test_golden_plan_source_preferences_can_affect_ranking(temp_config_factory, tmp_path):
+    config_dir = temp_config_factory()
+    _write_golden_questions(config_dir, text="研究", sources="line,notes")
+    db_path = tmp_path / "golden.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        _insert_line_message(storage, text="研究の連絡")
+        note_id = _insert_note(storage, body="研究のメモ")
+    finally:
+        storage.close()
+    index_text(db_path)
+    planner = FakeRetrievalPlanner(
+        RetrievalPlan(
+            intent="prefer notes",
+            generic_concepts=("研究",),
+            source_preferences=("notes",),
+            source_constraints=("line", "notes"),
+            retrieval_queries=("研究",),
+        ),
+    )
+
+    report = run_golden_eval(
+        GoldenEvalOptions(
+            config_dir=config_dir,
+            db_path=db_path,
+            retrieval_only=True,
+            query_id="golden_research",
+            retrieval_planner=planner,
+            limit=1,
+        ),
+    )
+
+    assert report.results[0].evidence_ids == (f"notes:{note_id}",)
+
+
+def test_golden_retrieval_repair_runs_second_query_when_first_is_weak(
+    temp_config_factory,
+    tmp_path,
+):
+    config_dir = temp_config_factory()
+    _write_golden_questions(config_dir, text="研究", sources="line")
+    db_path = tmp_path / "golden.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        _insert_line_message(storage, text="ProjectAlpha の準備")
+    finally:
+        storage.close()
+    index_text(db_path)
+    planner = FakeRetrievalPlanner(
+        RetrievalPlan(
+            intent="find project evidence",
+            main_entities=("ProjectAlpha",),
+            generic_concepts=("研究",),
+            retrieval_queries=("研究", "ProjectAlpha"),
+        ),
+    )
+
+    report = run_golden_eval(
+        GoldenEvalOptions(
+            config_dir=config_dir,
+            db_path=db_path,
+            retrieval_only=True,
+            query_id="golden_research",
+            retrieval_planner=planner,
+            leader_rerank=True,
+            retrieval_repair=1,
+        ),
+    )
+    result = report.results[0]
+
+    assert result.retrieval_repair_count == 1
+    assert result.retrieval_succeeded is True
+    assert result.evidence_source_counts["line"] == 1
+
+
+def test_golden_cli_leader_plan_flags_are_privacy_safe(capsys, temp_config_factory, tmp_path):
+    config_dir = temp_config_factory()
+    _write_golden_questions(config_dir, text="研究", sources="line")
+    db_path = tmp_path / "golden.sqlite3"
+    private_text = "研究 private planner evidence"
+    storage = initialize_database(db_path)
+    try:
+        _insert_line_message(storage, text=private_text)
+    finally:
+        storage.close()
+    index_text(db_path)
+
+    exit_code = main(
+        [
+            "eval",
+            "golden",
+            "--db",
+            str(db_path),
+            "--config-dir",
+            str(config_dir),
+            "--retrieval-only",
+            "--query-id",
+            "golden_research",
+            "--expected-keyword",
+            "研究",
+            "--leader-rerank",
+            "--show-relevance",
+            "--json",
+        ],
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert exit_code == 0
+    assert payload["results"][0]["leader_rerank_used"] is False
+    assert payload["results"][0]["plan"]["plan_created"] is False
+    assert private_text not in output

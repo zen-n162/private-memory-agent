@@ -318,6 +318,47 @@ still poor, inspect locally with `--show-snippets --snippet-chars N`; matched
 keywords are listed beside truncated snippets. Treat snippet reports as private
 local output and do not paste them into public chats.
 
+Phase 8-K adds optional leader-guided retrieval planning above these
+deterministic guardrails. The planner asks the configured local leader model to
+turn a question into a structured `RetrievalPlan` with intent, main entities,
+specific concepts, generic concepts, temporal hints, source preferences,
+retrieval queries, excluded concepts, acceptance criteria, and uncertainty
+notes.
+
+```bash
+pma eval golden --config configs/paths.local.yaml --retrieval-only \
+  --query-id qst_preparation \
+  --leader-plan \
+  --json
+```
+
+By default the output does not include raw question text or the full plan. It
+only reports safe counters such as `plan_created`,
+`retrieval_query_count`, `main_entity_count`, `specific_concept_count`,
+`generic_concept_count`, source preferences/constraints, and acceptance-criteria
+count. Use `--show-plan` only locally because plan contents may contain private
+question-derived terms.
+
+Plan-aware relevance judging is separate and opt-in:
+
+```bash
+pma eval golden --config configs/paths.local.yaml --retrieval-only \
+  --query-id qst_preparation \
+  --leader-plan \
+  --leader-rerank \
+  --retrieval-repair 1 \
+  --show-relevance \
+  --json
+```
+
+The deterministic relevance judge can demote generic-only evidence and promote
+evidence matching specific plan concepts. `--retrieval-repair N` allows a weak
+planned retrieval to retry with additional plan queries and then merge the
+result through the same privacy-safe report path. Source constraints and keyword
+diagnostics still apply: they are deterministic guardrails, while leader
+planning is an optional intelligent query-understanding layer that is slower and
+requires a local leader endpoint.
+
 Real-model smoke sends a compact redacted evidence packet by default. Use
 `--max-evidence-items` and `--max-evidence-chars` to keep the request small
 while checking endpoint, JSON, evidence-id, and critic behavior. Invalid JSON is
