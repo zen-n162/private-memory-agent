@@ -532,6 +532,7 @@
             <tr><td>8-E</td><td>ノート証拠の検索カバレッジ回復と require-source 診断。</td><td class="status">基本実装済み</td></tr>
             <tr><td>8-F/8-F2/8-F3</td><td>DeepSeek 系 Leader の実モデル E2E smoke、JSON 抽出、repair retry、出力制御。</td><td class="status">限定実装</td></tr>
             <tr><td>8-G</td><td>実モデル回答の明示表示、snippet 表示、answer audit。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>8-H</td><td>golden question による回答品質評価と Markdown/JSONL report。</td><td class="status">基本実装済み</td></tr>
           </tbody>
         </table>
       </section>
@@ -556,6 +557,9 @@ pma models ping leader --chat-smoke --max-tokens 64 --timeout-seconds 300
 pma models ping leader --json-smoke --max-tokens 128 --timeout-seconds 300
 pma e2e smoke --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --json
 pma e2e smoke --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --show-answer
+pma eval golden --retrieval-only --query-limit 2 --json
+pma eval golden --fake-model --query-limit 2 --json
+pma eval golden --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --json
 pma db schema
 pma retrieve audit --json
 pma annotate photos --limit 1 --show-errors --fail-fast --timeout-seconds 300
@@ -589,6 +593,9 @@ pma models ping leader --config configs/paths.local.yaml --chat-smoke --max-toke
 pma models ping leader --config configs/paths.local.yaml --json-smoke --max-tokens 128 --timeout-seconds 300
 pma e2e smoke --config configs/paths.local.yaml --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --json
 pma e2e smoke --config configs/paths.local.yaml --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --show-answer
+pma eval golden --config configs/paths.local.yaml --retrieval-only --query-limit 2 --json
+pma eval golden --config configs/paths.local.yaml --fake-model --query-limit 2 --json
+pma eval golden --config configs/paths.local.yaml --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --json
 pma db schema --config configs/paths.local.yaml
 pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
         <p>
@@ -636,6 +643,18 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           実モデル smoke では、既定でコンパクトな redacted evidence packet を送り、timeout、max tokens、
           prompt size、送信した証拠件数を安全な診断として表示します。
         </p>
+        <p>
+          回答品質を継続的に見る場合は <code>configs/golden_questions.example.yaml</code> を雛形にし、
+          private な質問は Git から除外される <code>configs/golden_questions.local.yaml</code> に置きます。
+          <code>pma eval golden</code> は retrieval-only、fake-model、real-model の順で確認でき、
+          retrieval 成功、回答成功、証拠件数、source coverage、confidence、unknowns、
+          JSON retry、validation error、privacy-safe output を質問ごとに集計します。
+          Markdown report には answer_correctness、evidence_relevance、source_coverage、
+          uncertainty_handling、privacy_safety、notes の手動採点欄を用意します。
+          既定では質問本文、回答本文、snippet、raw evidence、raw model output を表示しません。
+          <code>--show-answer</code> や <code>--show-snippets</code> を使った report は private output として扱い、
+          公開チャットへ貼り付けないでください。
+        </p>
       </section>
 
       <section id="limitations">
@@ -653,6 +672,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
       <section id="history">
         <h2>更新履歴</h2>
         <ul>
+          <li>2026-05-24: golden question 評価、Markdown/JSONL report、手動採点欄を追加。</li>
           <li>2026-05-24: 実モデル回答の <code>--show-answer</code> 表示、<code>--show-snippets</code>、answer audit を追加。</li>
           <li>2026-05-24: DeepSeek 系 Leader の実モデル E2E smoke、chat-smoke、json-smoke、JSON extraction 診断、出力制御、compact evidence 診断を追加。</li>
           <li>2026-05-24: fake-model smoke が LINE/ノート証拠でも Evidence Critic を通るように更新。</li>

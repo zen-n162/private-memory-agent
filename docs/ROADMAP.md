@@ -45,6 +45,10 @@ This document outlines the development roadmap for private-memory-agent.
   local answers without evidence snippets, `--show-snippets` is a separate
   private debugging flag, and `answer_audit` summarizes answer success,
   validation, retry, confidence, evidence-reference, and source coverage.
+- Phase 8-H adds golden question evaluation:
+  `configs/golden_questions.example.yaml`, ignored local overrides, and
+  `pma eval golden` for retrieval-only, fake-model, and real-model answer
+  quality checks with Markdown/JSONL reports and manual rating placeholders.
 
 ## 実データE2E smokeの実行手順
 
@@ -64,6 +68,9 @@ pma models ping leader --config configs/paths.local.yaml --chat-smoke --max-toke
 pma models ping leader --config configs/paths.local.yaml --json-smoke --max-tokens 128 --timeout-seconds 300
 pma e2e smoke --config configs/paths.local.yaml --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --json
 pma e2e smoke --config configs/paths.local.yaml --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --show-answer
+pma eval golden --config configs/paths.local.yaml --retrieval-only --query-limit 2 --json
+pma eval golden --config configs/paths.local.yaml --fake-model --query-limit 2 --json
+pma eval golden --config configs/paths.local.yaml --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --json
 pma db schema --config configs/paths.local.yaml
 pma retrieve audit --config configs/paths.local.yaml --json
 ```
@@ -95,3 +102,36 @@ If notes exist but do not appear in retrieved evidence, run the diagnose command
 and inspect `source_stage_counts.notes`. It reports note candidate counts and
 whether notes were dropped because they had no candidates, were filtered out, or
 were ranked out.
+
+## Golden Question Evaluation
+
+Use `configs/golden_questions.example.yaml` as the public template and create
+`configs/golden_questions.local.yaml` for private local questions. The local
+file is ignored by Git. Keep question ids non-private if you plan to share
+reports.
+
+Start with retrieval-only and fake-model checks:
+
+```bash
+pma eval golden --config configs/paths.local.yaml --retrieval-only --query-limit 2 --json
+pma eval golden --config configs/paths.local.yaml --fake-model --query-limit 2 --json
+```
+
+Then run one real-model question:
+
+```bash
+pma eval golden --config configs/paths.local.yaml --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --json
+```
+
+Markdown and JSONL reports can be written under ignored local paths:
+
+```bash
+pma eval golden --config configs/paths.local.yaml --retrieval-only --query-limit 2 \
+  --output data/local/reports/golden_eval.md \
+  --output-jsonl data/local/reports/golden_eval.jsonl
+```
+
+Default reports hide question text, answer text, snippets, raw evidence, and
+raw model output. Use `--show-answer` only for local review. Use
+`--show-snippets` only when you explicitly need truncated evidence snippets.
+Do not paste private answer reports into public chats.

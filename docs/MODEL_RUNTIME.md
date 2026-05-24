@@ -416,6 +416,23 @@ section with counts for successful answers, validation errors, retry usage,
 average confidence, evidence-reference coverage, unknown evidence references,
 and answer source coverage.
 
+For repeatable answer-quality review, use golden questions. The safe template
+is `configs/golden_questions.example.yaml`; private local questions belong in
+`configs/golden_questions.local.yaml`, which is ignored by Git. Golden
+evaluation reuses the same retrieval, evidence packing, leader model, JSON
+validation, and privacy controls as E2E smoke:
+
+```bash
+pma eval golden --config configs/paths.local.yaml --retrieval-only --query-limit 2 --json
+pma eval golden --config configs/paths.local.yaml --fake-model --query-limit 2 --json
+pma eval golden --config configs/paths.local.yaml --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --json
+```
+
+Default golden reports hide question text and answer text. Use `--show-answer`
+only for local review. Use `--output` for Markdown reports with manual rating
+placeholders and `--output-jsonl` for later machine-readable tracking. Treat
+reports generated with `--show-answer` or `--show-snippets` as private.
+
 Real-model E2E uses a compact redacted evidence packet by default. Start with:
 
 ```bash

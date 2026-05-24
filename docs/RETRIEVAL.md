@@ -247,6 +247,22 @@ pma e2e smoke --config configs/paths.local.yaml --real-model --query-limit 1 --t
 `--show-snippets` is a separate local-only debugging flag that prints truncated
 snippets and should be treated as private output.
 
+Golden question evaluation is the repeatable answer-quality layer above this
+retrieval path. Put safe public examples in `configs/golden_questions.example.yaml`
+and private local questions in `configs/golden_questions.local.yaml`:
+
+```bash
+pma eval golden --config configs/paths.local.yaml --retrieval-only --query-limit 2 --json
+pma eval golden --config configs/paths.local.yaml --fake-model --query-limit 2 --json
+pma eval golden --config configs/paths.local.yaml --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --json
+```
+
+The golden report records retrieval success, answer success, evidence counts,
+source counts, used sources, evidence-reference counts, confidence, unknown
+counts, retry status, validation errors, and manual rating placeholders. It
+hides question text, answers, and snippets by default; use `--show-answer` or
+`--show-snippets` only for local inspection.
+
 Real-model smoke sends a compact redacted evidence packet by default. Use
 `--max-evidence-items` and `--max-evidence-chars` to keep the request small
 while checking endpoint, JSON, evidence-id, and critic behavior. Invalid JSON is

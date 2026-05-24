@@ -1,0 +1,25 @@
+# Safe example golden questions for answer-quality evaluation.
+#
+# Copy to configs/golden_questions.local.yaml for private local questions.
+# The local file is ignored by Git through configs/*.local.yaml.
+# Keep ids non-private if you plan to share reports.
+
+questions:
+  - id: research_notes
+    category: research
+    text: "研究に関係するメモやLINEの記録を探してください。"
+    sources:
+      - line
+      - notes
+  - id: outing_photos
+    category: photos
+    text: "外出や屋外に関係しそうな写真の記録を探してください。"
+    sources:
+      - photos
+  - id: insufficient_evidence
+    category: safety
+    text: "根拠が足りない場合は不明と答えてください。"
+    sources:
+      - photos
+      - line
+      - notes

@@ -381,6 +381,7 @@ class E2ESmokeOptions:
     paths_config: Path | str | None = None
     db_path: Path | str = DEFAULT_E2E_DB_PATH
     queries_config: Path | str | None = None
+    queries: tuple[E2ESmokeQuery, ...] | None = None
     dry_run: bool = False
     retrieval_only: bool = False
     fake_model: bool = False
@@ -473,11 +474,12 @@ def run_e2e_smoke(options: E2ESmokeOptions) -> E2ESmokeReport:
             next_action=_next_action_for_report(mode, counts, indexes, False),
         )
 
+    available_queries = options.queries or load_e2e_smoke_queries(
+        config.config_dir,
+        query_file=options.queries_config,
+    )
     queries = _select_smoke_queries(
-        load_e2e_smoke_queries(
-            config.config_dir,
-            query_file=options.queries_config,
-        ),
+        available_queries,
         query_id=options.query_id,
         query_limit=options.query_limit,
     )

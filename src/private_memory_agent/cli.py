@@ -51,7 +51,14 @@ from private_memory_agent.entities import (
     list_entities,
     resolve_text_annotation_entities,
 )
-from private_memory_agent.evaluation import run_synthetic_eval
+from private_memory_agent.evaluation import (
+    GoldenEvalOptions,
+    format_golden_eval_report,
+    golden_report_to_json,
+    run_golden_eval,
+    run_synthetic_eval,
+    write_golden_outputs,
+)
 from private_memory_agent.ingestion import ingest_line_exports, ingest_notes, ingest_photos
 from private_memory_agent.models import ModelRegistry
 from private_memory_agent.retrieval import (
@@ -994,6 +1001,142 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print only aggregate metrics and failed case ids.",
     )
     eval_run_parser.set_defaults(func=_eval_run_command)
+    eval_golden_parser = eval_subparsers.add_parser(
+        "golden",
+        help="Run local golden-question answer quality evaluation.",
+    )
+    _add_config_dir_argument(eval_golden_parser)
+    eval_golden_parser.add_argument(
+        "--db",
+        type=Path,
+        default=DEFAULT_E2E_DB_PATH,
+        help="SQLite database path to evaluate.",
+    )
+    eval_golden_parser.add_argument(
+        "--questions-config",
+        type=Path,
+        default=None,
+        help="Optional golden question YAML file.",
+    )
+    eval_golden_parser.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_E2E_QUERY_LIMIT,
+        help="Maximum evidence items per golden question.",
+    )
+    eval_golden_parser.add_argument(
+        "--retrieval-only",
+        action="store_true",
+        help="Evaluate retrieval and evidence IDs without answer generation.",
+    )
+    golden_model_mode = eval_golden_parser.add_mutually_exclusive_group()
+    golden_model_mode.add_argument(
+        "--fake-model",
+        action="store_true",
+        help="Use deterministic fake answer generation.",
+    )
+    golden_model_mode.add_argument(
+        "--real-model",
+        action="store_true",
+        help="Use the configured local leader endpoint.",
+    )
+    eval_golden_parser.add_argument(
+        "--query-limit",
+        type=int,
+        default=None,
+        help="Limit how many golden questions are evaluated.",
+    )
+    eval_golden_parser.add_argument(
+        "--query-id",
+        default=None,
+        help="Run only the golden question with this id.",
+    )
+    eval_golden_parser.add_argument(
+        "--model-key",
+        default=DEFAULT_E2E_LEADER_MODEL_KEY,
+        help="Configured leader model id for --real-model.",
+    )
+    eval_golden_parser.add_argument(
+        "--allow-remote",
+        action="store_true",
+        help="Allow non-local endpoint URLs for --real-model.",
+    )
+    eval_golden_parser.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=None,
+        help="Request timeout for real-model answer generation.",
+    )
+    eval_golden_parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=DEFAULT_E2E_REAL_MODEL_MAX_TOKENS,
+        help="Maximum tokens for real-model answer generation.",
+    )
+    eval_golden_parser.add_argument(
+        "--max-evidence-items",
+        type=int,
+        default=DEFAULT_E2E_MAX_EVIDENCE_ITEMS,
+        help="Maximum evidence items sent to the real-model prompt.",
+    )
+    eval_golden_parser.add_argument(
+        "--max-evidence-chars",
+        type=int,
+        default=DEFAULT_E2E_MAX_EVIDENCE_CHARS,
+        help="Maximum characters in the compact real-model evidence packet.",
+    )
+    eval_golden_parser.add_argument(
+        "--compact-evidence",
+        dest="compact_evidence",
+        action="store_true",
+        default=True,
+        help="Use a compact redacted evidence packet for answer generation.",
+    )
+    eval_golden_parser.add_argument(
+        "--no-compact-evidence",
+        dest="compact_evidence",
+        action="store_false",
+        help="Use the normal redacted evidence packet instead of compact metadata.",
+    )
+    eval_golden_parser.add_argument(
+        "--json-retry",
+        type=int,
+        default=1,
+        help="Retry real-model structured answer generation after invalid JSON.",
+    )
+    eval_golden_parser.add_argument(
+        "--response-format-json",
+        action="store_true",
+        help="Request OpenAI-compatible JSON response format for real-model evaluation.",
+    )
+    eval_golden_parser.add_argument(
+        "--show-answer",
+        action="store_true",
+        help="Display structured answer text in output/report.",
+    )
+    eval_golden_parser.add_argument(
+        "--show-snippets",
+        action="store_true",
+        help="Display truncated local evidence snippets in output/report.",
+    )
+    eval_golden_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print a structured privacy-safe JSON report.",
+    )
+    eval_golden_parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Optional Markdown report output path.",
+    )
+    eval_golden_parser.add_argument(
+        "--output-jsonl",
+        type=Path,
+        default=None,
+        help="Optional JSONL report output path.",
+    )
+    eval_golden_parser.set_defaults(func=_eval_golden_command)
 
     api_parser = subparsers.add_parser("api", help="Run the local-only FastAPI API.")
     api_subparsers = api_parser.add_subparsers(dest="api_command")
@@ -1561,6 +1704,48 @@ def _eval_run_command(args: argparse.Namespace) -> int:
     payload = result.summary_dict() if args.summary else result.to_dict()
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
     return 0 if result.passed else 1
+
+
+def _eval_golden_command(args: argparse.Namespace) -> int:
+    try:
+        report = run_golden_eval(
+            GoldenEvalOptions(
+                config_dir=args.config_dir,
+                paths_config=args.config,
+                db_path=args.db,
+                questions_config=args.questions_config,
+                retrieval_only=args.retrieval_only,
+                fake_model=args.fake_model,
+                real_model=args.real_model,
+                query_limit=args.query_limit,
+                query_id=args.query_id,
+                limit=args.limit,
+                timeout_seconds=args.timeout_seconds,
+                max_tokens=args.max_tokens,
+                max_evidence_items=args.max_evidence_items,
+                max_evidence_chars=args.max_evidence_chars,
+                compact_evidence=args.compact_evidence,
+                json_retry=args.json_retry,
+                response_format_json=args.response_format_json,
+                show_answer=args.show_answer,
+                show_snippets=args.show_snippets,
+                model_key=args.model_key,
+                allow_remote=args.allow_remote,
+            ),
+        )
+        write_golden_outputs(
+            report,
+            markdown_path=args.output,
+            jsonl_path=args.output_jsonl,
+        )
+    except (RuntimeError, ValueError) as exc:
+        print(f"Golden eval failed: {_safe_cli_error_message(exc)}")
+        return 2
+    if args.json:
+        print(golden_report_to_json(report))
+    else:
+        print(format_golden_eval_report(report))
+    return 0 if report.ok else 1
 
 
 def _api_serve_command(args: argparse.Namespace) -> int:
