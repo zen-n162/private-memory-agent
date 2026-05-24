@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from private_memory_agent.retrieval.embeddings import EmbeddingModel, semantic_search
+from private_memory_agent.retrieval.rerankers import EvidenceReranker, rerank_evidence
 from private_memory_agent.retrieval.text import (
     extract_query_terms,
     index_text,
@@ -115,10 +116,14 @@ class RetrievalService:
         db_path: Path | str,
         *,
         embedding_model: EmbeddingModel | None = None,
+        reranker: EvidenceReranker | None = None,
+        rerank_top_k: int | None = None,
         ensure_index: bool = True,
     ) -> None:
         self.db_path = Path(db_path).expanduser()
         self.embedding_model = embedding_model
+        self.reranker = reranker
+        self.rerank_top_k = rerank_top_k
         self.ensure_index = ensure_index
 
     def retrieve(
@@ -167,16 +172,29 @@ class RetrievalService:
             )
             candidates.extend(media_candidates)
 
-        ranked = tuple(
+        rerank_top_k = self.rerank_top_k or limit
+        pool_limit = max(limit, rerank_top_k if self.reranker is not None else limit)
+        ranked_pool = tuple(
             _select_ranked_evidence(
                 candidates,
                 source_filter=source_filter,
-                limit=limit,
+                limit=pool_limit,
                 boost_terms=active_filters.boost_terms,
                 negative_terms=active_filters.negative_terms,
                 preferred_sources=active_filters.preferred_sources,
             ),
         )
+        if self.reranker is not None:
+            ranked = tuple(
+                rerank_evidence(
+                    question,
+                    ranked_pool,
+                    self.reranker,
+                    top_k=rerank_top_k,
+                )[:limit],
+            )
+        else:
+            ranked = ranked_pool[:limit]
         return RetrievalResult(
             question=question,
             evidence=ranked,
@@ -189,6 +207,9 @@ class RetrievalService:
                 "candidate_count_after_source_filter": len(candidates),
                 "candidate_count_after_ranking": len(ranked),
                 "final_evidence_count": len(ranked),
+                "reranked_candidate_count": min(len(ranked_pool), rerank_top_k)
+                if self.reranker is not None
+                else 0,
             },
         )
 
@@ -295,7 +316,11 @@ class RetrievalService:
                     confidence=_clamp_confidence(result.score),
                     score=max(0.0, result.score) * 0.9 * max(0.0, semantic_weight),
                     signals=("semantic",),
-                    metadata={"retrieval": "semantic", "model_id": self.embedding_model.model_id},
+                    metadata={
+                        "retrieval": "semantic",
+                        "model_id": self.embedding_model.model_id,
+                        "semantic_embedding_model_id": self.embedding_model.model_id,
+                    },
                 ),
             )
         return evidence
@@ -679,5 +704,12 @@ def _optional_string(value: object) -> str | None:
 
 
 def _display_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
-    allowed_keys = {"retrieval", "model_id", "merged_signals", "sensitive", "privacy_flags"}
+    allowed_keys = {
+        "retrieval",
+        "model_id",
+        "semantic_embedding_model_id",
+        "merged_signals",
+        "sensitive",
+        "privacy_flags",
+    }
     return {key: value for key, value in metadata.items() if key in allowed_keys}

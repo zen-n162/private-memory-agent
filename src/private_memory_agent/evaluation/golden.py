@@ -27,6 +27,7 @@ from private_memory_agent.e2e import (
     E2ESmokeQuery,
     run_e2e_smoke,
 )
+from private_memory_agent.retrieval import RERANKER_MODEL_CHOICES, SEMANTIC_MODEL_CHOICES
 from private_memory_agent.retrieval.text import normalize_text
 from private_memory_agent.runtime import (
     OpenAICompatibleHTTPClient,
@@ -119,6 +120,8 @@ class GoldenEvalOptions:
     semantic_model: str = "none"
     semantic_top_k: int | None = None
     semantic_weight: float = 1.0
+    reranker: str = "none"
+    rerank_top_k: int | None = None
     retrieval_planner: RetrievalPlanner | None = None
     model_key: str = DEFAULT_E2E_LEADER_MODEL_KEY
     allow_remote: bool = False
@@ -202,9 +205,13 @@ class GoldenQuestionResult:
     relevance_scores: tuple[dict[str, Any], ...] = ()
     semantic_enabled: bool = False
     semantic_model: str = "none"
+    semantic_embedding_model_id: str | None = None
     semantic_candidate_count: int = 0
     semantic_top_k: int | None = None
     semantic_weight: float = 1.0
+    reranker: str = "none"
+    reranker_model_id: str | None = None
+    reranked_candidate_count: int = 0
     evaluation_focus: tuple[str, ...] = ()
     manual_ratings: dict[str, Any] = field(default_factory=dict)
 
@@ -294,9 +301,13 @@ class GoldenQuestionResult:
             "relevance_scores": [dict(item) for item in self.relevance_scores],
             "semantic_enabled": self.semantic_enabled,
             "semantic_model": self.semantic_model,
+            "semantic_embedding_model_id": self.semantic_embedding_model_id,
             "semantic_candidate_count": self.semantic_candidate_count,
             "semantic_top_k": self.semantic_top_k,
             "semantic_weight": self.semantic_weight,
+            "reranker": self.reranker,
+            "reranker_model_id": self.reranker_model_id,
+            "reranked_candidate_count": self.reranked_candidate_count,
             "evaluation_focus": list(self.evaluation_focus),
             "manual_ratings": dict(self.manual_ratings),
             "passed": self.passed,
@@ -434,12 +445,18 @@ def run_golden_eval(options: GoldenEvalOptions) -> GoldenEvalReport:
         raise ValueError("minimum_relevance_score must be between 0.0 and 1.0")
     if options.relevance_policy not in {"soft", "strict"}:
         raise ValueError("relevance_policy must be soft or strict")
-    if options.semantic_model not in {"none", "hash", "fake"}:
-        raise ValueError("semantic_model must be none, hash, or fake")
+    if options.semantic_model not in SEMANTIC_MODEL_CHOICES:
+        allowed = ", ".join(SEMANTIC_MODEL_CHOICES)
+        raise ValueError(f"semantic_model must be one of: {allowed}")
     if options.semantic_top_k is not None and options.semantic_top_k <= 0:
         raise ValueError("semantic_top_k must be positive")
     if options.semantic_weight < 0:
         raise ValueError("semantic_weight must be non-negative")
+    if options.reranker not in RERANKER_MODEL_CHOICES:
+        allowed = ", ".join(RERANKER_MODEL_CHOICES)
+        raise ValueError(f"reranker must be one of: {allowed}")
+    if options.rerank_top_k is not None and options.rerank_top_k <= 0:
+        raise ValueError("rerank_top_k must be positive")
     questions_path = _resolve_golden_questions_path(
         options.config_dir,
         questions_config=options.questions_config,
@@ -681,6 +698,8 @@ def _run_e2e_for_golden(
             semantic_model=options.semantic_model,
             semantic_top_k=options.semantic_top_k,
             semantic_weight=options.semantic_weight,
+            reranker=options.reranker,
+            rerank_top_k=options.rerank_top_k,
             model_key=options.model_key,
             allow_remote=options.allow_remote,
             no_fallback=True,
@@ -710,6 +729,8 @@ def _e2e_query_from_golden(
         semantic_enabled=options.semantic_model != "none",
         semantic_top_k=options.semantic_top_k,
         semantic_weight=options.semantic_weight,
+        reranker=options.reranker,
+        rerank_top_k=options.rerank_top_k,
     )
 
 
@@ -1088,9 +1109,13 @@ def _golden_result_from_e2e(
         else (),
         semantic_enabled=bool(result.semantic_enabled),
         semantic_model=result.semantic_model,
+        semantic_embedding_model_id=result.semantic_embedding_model_id,
         semantic_candidate_count=int(result.semantic_candidate_count or 0),
         semantic_top_k=result.semantic_top_k,
         semantic_weight=float(result.semantic_weight or 0.0),
+        reranker=result.reranker,
+        reranker_model_id=result.reranker_model_id,
+        reranked_candidate_count=int(result.reranked_candidate_count or 0),
         evaluation_focus=question.evaluation_focus,
         manual_ratings=_manual_rating_placeholders(),
         safe_snippets=_truncate_snippets(keyword_snippets, options.snippet_chars)
@@ -1199,9 +1224,13 @@ def _format_question_markdown(result: GoldenQuestionResult) -> list[str]:
         + _format_counts(result.plan_relevance_specificity_counts),
         f"- semantic_enabled: {str(result.semantic_enabled).lower()}",
         f"- semantic_model: {result.semantic_model}",
+        f"- semantic_embedding_model_id: {result.semantic_embedding_model_id or 'none'}",
         f"- semantic_candidate_count: {result.semantic_candidate_count}",
         f"- semantic_top_k: {result.semantic_top_k}",
         f"- semantic_weight: {result.semantic_weight}",
+        f"- reranker: {result.reranker}",
+        f"- reranker_model_id: {result.reranker_model_id or 'none'}",
+        f"- reranked_candidate_count: {result.reranked_candidate_count}",
         f"- evaluation_focus: {_format_tuple(result.evaluation_focus)}",
     ]
     if result.plan_metadata.plan is not None:

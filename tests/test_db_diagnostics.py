@@ -156,6 +156,10 @@ def test_source_coverage_labels_physical_text_index_and_embedding_sources(tmp_pa
     assert coverage.text.text_documents_source_breakdown["notes"] == 1
     assert coverage.embeddings.embedding_source_breakdown_available is True
     assert coverage.embeddings.embedding_source_breakdown == {"line": 1, "notes": 1}
+    assert coverage.embeddings.embedding_model_breakdown == {"fake": 2}
+    assert coverage.embeddings.embedding_model_source_breakdown == {
+        "fake": {"line": 1, "notes": 1},
+    }
 
 
 def test_embedding_source_breakdown_reports_unavailable_when_no_mapping(tmp_path):
@@ -176,6 +180,37 @@ def test_embedding_source_breakdown_reports_unavailable_when_no_mapping(tmp_path
     assert coverage.embeddings.embeddings_count == 1
     assert coverage.embeddings.embedding_source_breakdown_available is False
     assert "does not store source_type" in coverage.embeddings.reason
+
+
+def test_retrieval_audit_reports_selected_embedding_model_coverage(tmp_path):
+    db_path = tmp_path / "metadata.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        note_id = storage.notes.insert_note(
+            source_item_id=None,
+            note_id="audit-note",
+            title="研究",
+            body_text="研究メモ",
+        )
+        storage.embeddings.insert_embedding(
+            owner_table="notes",
+            owner_id=note_id,
+            embedding_type="text",
+            model_id="ruri-v3-310m",
+            dimensions=2,
+            vector_json="[1,0]",
+        )
+    finally:
+        storage.close()
+    from private_memory_agent.db_diagnostics import run_retrieval_audit
+
+    report = run_retrieval_audit(
+        db_path,
+        selected_semantic_model_id="ruri-v3-310m",
+    )
+
+    assert report.selected_semantic_model_id == "ruri-v3-310m"
+    assert report.selected_semantic_model_has_embeddings is True
 
 
 def test_media_annotation_diagnostics_report_direct_retrieval_not_text_index(tmp_path):

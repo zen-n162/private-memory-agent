@@ -621,17 +621,29 @@ Real text embeddings are optional. Default unit tests and basic CLI checks use f
 Configured local model candidates:
 
 - `text_embedding`: `embedding/ruri-v3-310m`
+- `text_embedding_ruri_130m`: `embedding/ruri-v3-130m`
 - `text_embedding_bge_m3`: `embedding/bge-m3`
 - `text_embedding_qwen_06b`: `qwen/Qwen3-Embedding-0.6B`
+- `text_reranker`: `reranker/ruri-v3-reranker-310m`
+- `text_reranker_qwen_06b`: `qwen/Qwen3-Reranker-0.6B`
 
 Use real local embeddings only when the model directory already exists under the configured model root:
 
 ```bash
-pma index embeddings --model-backend sentence-transformers --model-key text_embedding
-pma search semantic "ローカル" --model-backend sentence-transformers --model-key text_embedding
+pma index embeddings --config configs/paths.local.yaml \
+  --model ruri-v3-310m \
+  --source line \
+  --source notes \
+  --skip-existing
+pma search semantic "ローカル" --config configs/paths.local.yaml --model ruri-v3-310m
 ```
 
 The SentenceTransformers adapter imports heavy libraries lazily, sets offline environment defaults, and rejects missing model paths. It does not download models.
+Install the optional local model runtime dependencies only when needed:
+
+```bash
+python -m pip install -e ".[local-models]"
+```
 
 Qdrant is optional and must already be running:
 
@@ -645,7 +657,8 @@ Do not start Docker automatically from this app.
 ## Semantic Retrieval In Smoke And Golden Evaluation
 
 Phase 8-M can use persisted local embeddings in E2E smoke and golden
-evaluation. This is optional and local-only:
+evaluation. Phase 8-N adds real embedding aliases and optional local rerankers.
+This is optional and local-only:
 
 ```bash
 pma eval golden --config configs/paths.local.yaml --retrieval-only \
@@ -654,6 +667,8 @@ pma eval golden --config configs/paths.local.yaml --retrieval-only \
   --leader-rerank \
   --retrieval-repair 1 \
   --semantic \
+  --semantic-model ruri-v3-310m \
+  --reranker none \
   --json
 ```
 
@@ -666,12 +681,18 @@ pma index embeddings --config configs/paths.local.yaml --model-backend hash
 
 Controls:
 
+- `--semantic-model MODEL`: `hash`, `fake`, `ruri-v3-310m`,
+  `ruri-v3-130m`, `bge-m3`, or `qwen3-embedding-0.6b`.
 - `--semantic-top-k N`: semantic candidate limit before merge/ranking.
 - `--semantic-weight FLOAT`: score multiplier for semantic candidates.
+- `--reranker MODEL`: `none`, `fake`, `ruri-v3-reranker-310m`, or
+  `qwen3-reranker-0.6b`.
+- `--rerank-top-k N`: number of top candidates to rerank locally.
 - `--no-semantic`: keep retrieval text-only.
 
-Reports show `semantic_candidate_count` and safe counters only. They do not
-print raw LINE text, note bodies, captions, filenames, paths, GPS, EXIF, OCR, or
+Reports show `semantic_candidate_count`, `semantic_embedding_model_id`,
+`reranker_model_id`, and safe counters only. They do not print raw LINE text,
+note bodies, captions, filenames, paths, GPS, EXIF, OCR, raw embedding input, or
 full repair queries by default. Real sentence-transformer semantic retrieval
-remains available through explicit indexing/search commands and optional
-integration tests; default unit tests stay model-free.
+requires explicit indexing/search commands and optional integration tests;
+default unit tests stay model-free.

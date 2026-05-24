@@ -62,6 +62,9 @@ class EmbeddingIndexResult:
     documents_embedded: int
     model_id: str
     dimensions: int
+    candidate_documents: int = 0
+    skipped_existing: int = 0
+    source_tables: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -82,6 +85,25 @@ class SemanticSearchResult:
             "snippet": self.snippet,
             "score": self.score,
         }
+
+
+SUPPORTED_EMBEDDING_SOURCES = {
+    "line": ("line_messages",),
+    "line_messages": ("line_messages",),
+    "notes": ("notes",),
+    "photos": ("media_items",),
+    "media": ("media_items",),
+    "media_items": ("media_items",),
+    "media_annotations": ("media_items",),
+}
+
+SEMANTIC_MODEL_ALIASES = {
+    "ruri-v3-310m": "text_embedding",
+    "ruri-v3-130m": "text_embedding_ruri_130m",
+    "bge-m3": "text_embedding_bge_m3",
+    "qwen3-embedding-0.6b": "text_embedding_qwen_06b",
+}
+SEMANTIC_MODEL_CHOICES = ("none", "hash", "fake", *SEMANTIC_MODEL_ALIASES)
 
 
 class FakeEmbeddingModel:
@@ -184,6 +206,58 @@ class SentenceTransformersEmbeddingModel:
         except TypeError:
             self._model = SentenceTransformer(str(self.model_path), **kwargs)
         return self._model
+
+
+def build_semantic_embedding_model(
+    semantic_model: str,
+    *,
+    config: Any | None = None,
+    dimensions: int = 32,
+    device: str | None = None,
+) -> EmbeddingModel | None:
+    """Build a semantic embedding model from a safe alias or config key.
+
+    Hash/fake models are lightweight test/dev backends. Real models are loaded
+    only when explicitly selected and resolved through the configured model
+    registry. This function never downloads model files.
+    """
+
+    normalized = normalize_semantic_model_name(semantic_model)
+    if normalized == "none":
+        return None
+    if normalized == "fake":
+        return FakeEmbeddingModel()
+    if normalized == "hash":
+        return HashEmbeddingModel(dimensions=dimensions)
+    if config is None:
+        raise ValueError("config is required for real semantic embedding models")
+    model_key = SEMANTIC_MODEL_ALIASES.get(normalized, normalized)
+    model_spec = config.model_registry.get(model_key)
+    if model_spec is None:
+        raise ValueError(f"configured embedding model key was not found: {model_key}")
+    if model_spec.provider != "sentence_transformers":
+        raise ValueError("semantic embedding model provider must be sentence_transformers")
+    return SentenceTransformersEmbeddingModel(
+        model_spec.resolved_path,
+        model_id=normalized,
+        device=device,
+    )
+
+
+def normalize_semantic_model_name(value: str | None) -> str:
+    """Normalize public semantic model aliases used by CLI/config."""
+
+    normalized = str(value or "none").strip().lower().replace("_", "-")
+    if normalized == "qwen3-embedding-0-6b":
+        return "qwen3-embedding-0.6b"
+    return normalized
+
+
+def is_supported_semantic_model(value: str | None) -> bool:
+    """Return whether a semantic model alias is understood."""
+
+    normalized = normalize_semantic_model_name(value)
+    return normalized in SEMANTIC_MODEL_CHOICES or bool(normalized)
 
 
 class InMemoryVectorStore:
@@ -312,20 +386,53 @@ def index_embeddings(
     model: EmbeddingModel,
     *,
     vector_store: VectorStore | None = None,
+    source_tables: tuple[str, ...] = (),
+    skip_existing: bool = False,
 ) -> EmbeddingIndexResult:
     """Embed indexed text documents and persist local embedding records."""
 
     index_text(db_path)
     storage = initialize_database(db_path)
     try:
-        rows = storage.connection.execute(
+        cleaned_source_tables = normalize_embedding_source_tables(source_tables)
+        source_sql = ""
+        params: list[Any] = []
+        if cleaned_source_tables:
+            placeholders = ", ".join("?" for _ in cleaned_source_tables)
+            source_sql = f" AND d.source_table IN ({placeholders})"
+            params.extend(cleaned_source_tables)
+        missing_sql = ""
+        if skip_existing:
+            missing_sql = """
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM embeddings e
+                    WHERE e.owner_table = d.source_table
+                      AND e.owner_id = d.source_id
+                      AND e.embedding_type = 'text'
+                      AND e.model_id = ?
+                      AND e.is_excluded = 0
+                )
             """
-            SELECT id, source_table, source_id, title, body, snippet_text, normalized_text
-            FROM text_search_documents
-            WHERE is_excluded = 0
+            params.append(model.model_id)
+        rows = storage.connection.execute(
+            f"""
+            SELECT d.id, d.source_table, d.source_id, d.title, d.body, d.snippet_text, d.normalized_text
+            FROM text_search_documents d
+            WHERE d.is_excluded = 0
+              {source_sql}
+              {missing_sql}
             ORDER BY id
             """,
+            tuple(params),
         ).fetchall()
+        skipped_existing = 0
+        if skip_existing:
+            skipped_existing = _count_existing_embeddings(
+                storage.connection,
+                model_id=model.model_id,
+                source_tables=cleaned_source_tables,
+            )
         texts = [row["normalized_text"] or "" for row in rows]
         vectors = model.embed_texts(texts)
         if any(len(vector) != model.dimensions for vector in vectors):
@@ -333,10 +440,23 @@ def index_embeddings(
 
         embedded_documents: list[EmbeddedDocument] = []
         with storage.transaction():
-            storage.connection.execute(
-                "DELETE FROM embeddings WHERE embedding_type = ? AND model_id = ?",
-                ("text", model.model_id),
-            )
+            if not skip_existing:
+                if cleaned_source_tables:
+                    placeholders = ", ".join("?" for _ in cleaned_source_tables)
+                    storage.connection.execute(
+                        f"""
+                        DELETE FROM embeddings
+                        WHERE embedding_type = ?
+                          AND model_id = ?
+                          AND owner_table IN ({placeholders})
+                        """,
+                        ("text", model.model_id, *cleaned_source_tables),
+                    )
+                else:
+                    storage.connection.execute(
+                        "DELETE FROM embeddings WHERE embedding_type = ? AND model_id = ?",
+                        ("text", model.model_id),
+                    )
             for row, vector in zip(rows, vectors, strict=True):
                 metadata = {
                     "text_search_document_id": int(row["id"]),
@@ -374,9 +494,51 @@ def index_embeddings(
             documents_embedded=len(embedded_documents),
             model_id=model.model_id,
             dimensions=model.dimensions,
+            candidate_documents=len(rows) + skipped_existing,
+            skipped_existing=skipped_existing,
+            source_tables=cleaned_source_tables,
         )
     finally:
         storage.close()
+
+
+def normalize_embedding_source_tables(sources: tuple[str, ...]) -> tuple[str, ...]:
+    tables: list[str] = []
+    for source in sources:
+        key = str(source).strip().lower()
+        if not key:
+            continue
+        mapped = SUPPORTED_EMBEDDING_SOURCES.get(key)
+        if mapped is None:
+            raise ValueError(f"unsupported embedding source: {source}")
+        tables.extend(mapped)
+    return tuple(dict.fromkeys(tables))
+
+
+def _count_existing_embeddings(
+    connection: Any,
+    *,
+    model_id: str,
+    source_tables: tuple[str, ...],
+) -> int:
+    source_sql = ""
+    params: list[Any] = [model_id]
+    if source_tables:
+        placeholders = ", ".join("?" for _ in source_tables)
+        source_sql = f" AND e.owner_table IN ({placeholders})"
+        params.extend(source_tables)
+    row = connection.execute(
+        f"""
+        SELECT COUNT(*) AS count
+        FROM embeddings e
+        WHERE e.embedding_type = 'text'
+          AND e.model_id = ?
+          AND e.is_excluded = 0
+          {source_sql}
+        """,
+        tuple(params),
+    ).fetchone()
+    return int(row["count"]) if row is not None else 0
 
 
 def semantic_search(

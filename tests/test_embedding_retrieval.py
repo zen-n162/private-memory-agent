@@ -11,10 +11,16 @@ from private_memory_agent.retrieval.embeddings import (
     HashEmbeddingModel,
     InMemoryVectorStore,
     SentenceTransformersEmbeddingModel,
+    build_semantic_embedding_model,
     build_in_memory_vector_store,
     cosine_similarity,
     index_embeddings,
+    normalize_embedding_source_tables,
     semantic_search,
+)
+from private_memory_agent.retrieval.rerankers import (
+    SentenceTransformersReranker,
+    build_evidence_reranker,
 )
 from private_memory_agent.storage import initialize_database
 
@@ -107,6 +113,107 @@ def test_index_embeddings_persists_embedding_records(tmp_path):
         storage.close()
 
 
+def test_index_embeddings_filters_sources_and_skips_existing(tmp_path):
+    db_path = tmp_path / "metadata.sqlite3"
+    seed_database(db_path)
+    model = FakeEmbeddingModel(vocabulary=("ローカル", "こんにちは", "買い物"))
+
+    first = index_embeddings(
+        db_path,
+        model,
+        source_tables=("notes",),
+        skip_existing=True,
+    )
+    second = index_embeddings(
+        db_path,
+        model,
+        source_tables=("notes",),
+        skip_existing=True,
+    )
+
+    storage = initialize_database(db_path)
+    try:
+        rows = storage.connection.execute(
+            "SELECT owner_table, model_id FROM embeddings ORDER BY id",
+        ).fetchall()
+        assert {row["owner_table"] for row in rows} == {"notes"}
+        assert {row["model_id"] for row in rows} == {model.model_id}
+    finally:
+        storage.close()
+    assert first.documents_embedded >= 1
+    assert first.source_tables == ("notes",)
+    assert second.documents_embedded == 0
+    assert second.skipped_existing == first.documents_embedded
+
+
+def test_embedding_source_aliases_are_normalized():
+    assert normalize_embedding_source_tables(("line", "media_annotations", "notes")) == (
+        "line_messages",
+        "media_items",
+        "notes",
+    )
+
+
+def test_real_semantic_model_alias_resolves_without_loading_weights(
+    temp_config_factory,
+    tmp_path,
+):
+    model_root = tmp_path / "models"
+    (model_root / "embedding" / "ruri-v3-310m").mkdir(parents=True)
+    config_dir = temp_config_factory(
+        model_root=model_root,
+        models_yaml="\n".join(
+            [
+                f"model_root: {model_root}",
+                "text_embedding:",
+                "  provider: sentence_transformers",
+                "  role: text_embedding",
+                "  model_dir: embedding/ruri-v3-310m",
+                "  enabled: true",
+            ],
+        ),
+    )
+
+    from private_memory_agent.config import load_config
+
+    config = load_config(config_dir=config_dir)
+    model = build_semantic_embedding_model("ruri-v3-310m", config=config)
+
+    assert isinstance(model, SentenceTransformersEmbeddingModel)
+    assert model.model_id == "ruri-v3-310m"
+    assert model._model is None
+
+
+def test_real_reranker_alias_resolves_without_loading_weights(
+    temp_config_factory,
+    tmp_path,
+):
+    model_root = tmp_path / "models"
+    (model_root / "reranker" / "ruri-v3-reranker-310m").mkdir(parents=True)
+    config_dir = temp_config_factory(
+        model_root=model_root,
+        models_yaml="\n".join(
+            [
+                f"model_root: {model_root}",
+                "text_reranker:",
+                "  provider: sentence_transformers",
+                "  role: text_reranker",
+                "  model_dir: reranker/ruri-v3-reranker-310m",
+                "  enabled: true",
+            ],
+        ),
+    )
+
+    from private_memory_agent.config import load_config
+
+    config = load_config(config_dir=config_dir)
+    reranker = build_evidence_reranker("ruri-v3-reranker-310m", config=config)
+
+    assert isinstance(reranker, SentenceTransformersReranker)
+    assert reranker.model_id == "ruri-v3-reranker-310m"
+    assert reranker._model is None
+
+
 def test_semantic_search_with_fake_embeddings_finds_japanese_note(tmp_path):
     db_path = tmp_path / "metadata.sqlite3"
     seed_database(db_path)
@@ -186,3 +293,27 @@ def test_cli_index_embeddings_and_semantic_search_with_hash_backend(capsys, tmp_
     assert payload["query"] == "こんにちは"
     assert payload["results"]
     assert payload["results"][0]["source_table"] in {"line_messages", "notes"}
+
+
+def test_cli_index_embeddings_supports_model_alias_source_and_skip_existing(capsys, tmp_path):
+    db_path = tmp_path / "metadata.sqlite3"
+    seed_database(db_path)
+
+    exit_code = main(
+        [
+            "index",
+            "embeddings",
+            "--db",
+            str(db_path),
+            "--model",
+            "fake",
+            "--source",
+            "notes",
+            "--skip-existing",
+        ],
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "model_id=fake-embedding-v1" in output
+    assert "sources=notes" in output

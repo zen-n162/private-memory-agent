@@ -26,11 +26,11 @@ from private_memory_agent.config.loader import ConfigError, _parse_simple_yaml
 from private_memory_agent.db_diagnostics import diagnose_retrieval_query, inspect_source_coverage
 from private_memory_agent.retrieval import (
     Evidence,
-    FakeEmbeddingModel,
-    HashEmbeddingModel,
     RetrievalFilters,
     RetrievalResult,
     RetrievalService,
+    build_evidence_reranker,
+    build_semantic_embedding_model,
     pack_evidence_for_prompt,
 )
 from private_memory_agent.retrieval.text import normalize_text
@@ -98,6 +98,8 @@ class E2ESmokeQuery:
     semantic_enabled: bool = False
     semantic_top_k: int | None = None
     semantic_weight: float = 1.0
+    reranker: str = "none"
+    rerank_top_k: int | None = None
 
 
 @dataclass(frozen=True)
@@ -141,6 +143,8 @@ class E2EIndexStatus:
     embeddings_derived_from: tuple[str, ...] = ()
     embedding_source_breakdown_available: bool = False
     embedding_source_breakdown: dict[str, int] = field(default_factory=dict)
+    embedding_model_breakdown: dict[str, int] = field(default_factory=dict)
+    embedding_model_source_breakdown: dict[str, dict[str, int]] = field(default_factory=dict)
     vector_index_status: str = "not_checked"
     media_annotations_in_text_index_count: int = 0
     media_annotations_searchable: bool | None = None
@@ -162,6 +166,11 @@ class E2EIndexStatus:
             "embeddings_derived_from": list(self.embeddings_derived_from),
             "embedding_source_breakdown_available": self.embedding_source_breakdown_available,
             "embedding_source_breakdown": dict(self.embedding_source_breakdown),
+            "embedding_model_breakdown": dict(self.embedding_model_breakdown),
+            "embedding_model_source_breakdown": {
+                model_id: dict(counts)
+                for model_id, counts in self.embedding_model_source_breakdown.items()
+            },
             "vector_index_status": self.vector_index_status,
             "media_annotations_in_text_index_count": self.media_annotations_in_text_index_count,
             "media_annotations_searchable": self.media_annotations_searchable,
@@ -257,9 +266,13 @@ class E2ESmokeQueryResult:
     plan_relevance_scores: tuple[dict[str, Any], ...] = ()
     semantic_enabled: bool = False
     semantic_model: str = "none"
+    semantic_embedding_model_id: str | None = None
     semantic_candidate_count: int = 0
     semantic_top_k: int | None = None
     semantic_weight: float = 1.0
+    reranker: str = "none"
+    reranker_model_id: str | None = None
+    reranked_candidate_count: int = 0
     retrieval_stage_counts: dict[str, int] = field(default_factory=dict)
     source_stage_counts: dict[str, dict[str, Any]] = field(default_factory=dict)
     fallback_reason: str | None = None
@@ -317,9 +330,13 @@ class E2ESmokeQueryResult:
             "plan_relevance_scores": [dict(item) for item in self.plan_relevance_scores],
             "semantic_enabled": self.semantic_enabled,
             "semantic_model": self.semantic_model,
+            "semantic_embedding_model_id": self.semantic_embedding_model_id,
             "semantic_candidate_count": self.semantic_candidate_count,
             "semantic_top_k": self.semantic_top_k,
             "semantic_weight": self.semantic_weight,
+            "reranker": self.reranker,
+            "reranker_model_id": self.reranker_model_id,
+            "reranked_candidate_count": self.reranked_candidate_count,
             "retrieval_stage_counts": dict(self.retrieval_stage_counts),
             "source_stage_counts": {
                 source: dict(counts)
@@ -457,6 +474,8 @@ class E2ESmokeOptions:
     semantic_model: str = "none"
     semantic_top_k: int | None = None
     semantic_weight: float = 1.0
+    reranker: str = "none"
+    rerank_top_k: int | None = None
     model_key: str = DEFAULT_E2E_LEADER_MODEL_KEY
     allow_remote: bool = False
 
@@ -479,6 +498,8 @@ def run_e2e_smoke(options: E2ESmokeOptions) -> E2ESmokeReport:
         raise ValueError("semantic_top_k must be positive")
     if options.semantic_weight < 0:
         raise ValueError("semantic_weight must be non-negative")
+    if options.rerank_top_k is not None and options.rerank_top_k <= 0:
+        raise ValueError("rerank_top_k must be positive")
     config = load_config(config_dir=options.config_dir, paths_config=options.paths_config)
     mode = _resolve_mode(options)
     warnings: list[str] = []
@@ -508,6 +529,15 @@ def run_e2e_smoke(options: E2ESmokeOptions) -> E2ESmokeReport:
         warnings.append("embeddings exist but semantic retrieval is not enabled in this smoke path")
     if options.semantic_model != "none" and not indexes.embeddings_count:
         warnings.append("semantic retrieval requested but no persisted embeddings were found")
+    selected_embedding_model_id = _expected_semantic_embedding_model_id(options.semantic_model)
+    if (
+        options.semantic_model != "none"
+        and indexes.embedding_model_breakdown
+        and selected_embedding_model_id not in indexes.embedding_model_breakdown
+    ):
+        warnings.append(
+            "selected semantic model has no persisted embeddings; run pma index embeddings",
+        )
     if options.show_model_output:
         warnings.append(
             "raw model output preview requested; it may contain private evidence-derived content",
@@ -874,9 +904,17 @@ def format_e2e_smoke_report(report: E2ESmokeReport) -> str:
                 lines.append(
                     "    semantic: "
                     f"model={item.semantic_model}; "
+                    f"embedding_model_id={item.semantic_embedding_model_id or 'none'}; "
                     f"candidate_count={item.semantic_candidate_count}; "
                     f"top_k={item.semantic_top_k}; "
                     f"weight={item.semantic_weight}"
+                )
+            if item.reranker != "none":
+                lines.append(
+                    "    reranker: "
+                    f"model={item.reranker}; "
+                    f"model_id={item.reranker_model_id or 'none'}; "
+                    f"reranked_candidate_count={item.reranked_candidate_count}"
                 )
             if item.raw_model_output_preview:
                 lines.append(
@@ -1002,6 +1040,8 @@ def _inspect_database(db_path: Path) -> tuple[E2ESmokeCounts, E2EIndexStatus]:
             embeddings_derived_from=embeddings.embeddings_derived_from,
             embedding_source_breakdown_available=embeddings.embedding_source_breakdown_available,
             embedding_source_breakdown=embeddings.embedding_source_breakdown,
+            embedding_model_breakdown=embeddings.embedding_model_breakdown,
+            embedding_model_source_breakdown=embeddings.embedding_model_source_breakdown,
             vector_index_status="available" if embeddings.embeddings_count > 0 else "not_available",
             media_annotations_in_text_index_count=media.media_annotations_in_text_index_count,
             media_annotations_searchable=media.media_annotations_searchable,
@@ -1025,7 +1065,9 @@ def _run_query_checks(
 ) -> list[E2ESmokeQueryResult]:
     service = RetrievalService(
         db_path,
-        embedding_model=_e2e_embedding_model(options.semantic_model),
+        embedding_model=_e2e_embedding_model(options.semantic_model, config=config),
+        reranker=build_evidence_reranker(options.reranker, config=config),
+        rerank_top_k=options.rerank_top_k,
         ensure_index=False,
     )
     results: list[E2ESmokeQueryResult] = []
@@ -1068,14 +1110,16 @@ def _run_query_checks(
     return results
 
 
-def _e2e_embedding_model(semantic_model: str):
-    if semantic_model == "none":
-        return None
-    if semantic_model == "fake":
-        return FakeEmbeddingModel()
+def _e2e_embedding_model(semantic_model: str, *, config: ConfigBundle):
+    return build_semantic_embedding_model(semantic_model, config=config)
+
+
+def _expected_semantic_embedding_model_id(semantic_model: str) -> str:
     if semantic_model == "hash":
-        return HashEmbeddingModel()
-    raise ValueError("semantic_model must be none, hash, or fake")
+        return "hash-embedding-v1"
+    if semantic_model == "fake":
+        return "fake-embedding-v1"
+    return semantic_model
 
 
 def _run_one_query_check(
@@ -1179,11 +1223,15 @@ def _run_one_query_check(
         else (),
         "semantic_enabled": options.semantic_model != "none",
         "semantic_model": options.semantic_model,
+        "semantic_embedding_model_id": getattr(service.embedding_model, "model_id", None),
         "semantic_candidate_count": int(
             stage_counts.get("semantic_candidate_count", 0),
         ),
         "semantic_top_k": query.semantic_top_k or options.semantic_top_k,
         "semantic_weight": query.semantic_weight * options.semantic_weight,
+        "reranker": options.reranker,
+        "reranker_model_id": getattr(service.reranker, "model_id", None),
+        "reranked_candidate_count": int(stage_counts.get("reranked_candidate_count", 0)),
         "retrieval_stage_counts": stage_counts,
         "source_stage_counts": source_stage_counts,
         "fallback_reason": fallback_reason,

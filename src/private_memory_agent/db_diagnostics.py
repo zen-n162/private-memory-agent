@@ -152,6 +152,8 @@ class EmbeddingDiagnostics:
     embeddings_derived_from: tuple[str, ...]
     embedding_source_breakdown_available: bool
     embedding_source_breakdown: dict[str, int] = field(default_factory=dict)
+    embedding_model_breakdown: dict[str, int] = field(default_factory=dict)
+    embedding_model_source_breakdown: dict[str, dict[str, int]] = field(default_factory=dict)
     reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -162,6 +164,11 @@ class EmbeddingDiagnostics:
             "embeddings_derived_from": list(self.embeddings_derived_from),
             "embedding_source_breakdown_available": self.embedding_source_breakdown_available,
             "embedding_source_breakdown": dict(self.embedding_source_breakdown),
+            "embedding_model_breakdown": dict(self.embedding_model_breakdown),
+            "embedding_model_source_breakdown": {
+                model_id: dict(counts)
+                for model_id, counts in self.embedding_model_source_breakdown.items()
+            },
             "reason": self.reason,
         }
 
@@ -289,6 +296,8 @@ class RetrievalAuditReport:
     source_coverage: SourceCoverageDiagnostics | None = None
     retrieval_coverage: RetrievalCoverageSummary = field(default_factory=RetrievalCoverageSummary)
     query_diagnostics: tuple[RetrievalStageDiagnostics, ...] = ()
+    selected_semantic_model_id: str | None = None
+    selected_semantic_model_has_embeddings: bool | None = None
     warnings: tuple[str, ...] = ()
     privacy: dict[str, str] = field(
         default_factory=lambda: {
@@ -305,6 +314,8 @@ class RetrievalAuditReport:
             else self.source_coverage.to_dict(),
             "retrieval_coverage": self.retrieval_coverage.to_dict(),
             "query_diagnostics": [item.to_dict() for item in self.query_diagnostics],
+            "selected_semantic_model_id": self.selected_semantic_model_id,
+            "selected_semantic_model_has_embeddings": self.selected_semantic_model_has_embeddings,
             "warnings": list(self.warnings),
             "privacy": dict(self.privacy),
         }
@@ -388,6 +399,7 @@ def run_retrieval_audit(
     queries: tuple[tuple[str, str, tuple[str, ...]], ...] = (),
     *,
     limit: int = 5,
+    selected_semantic_model_id: str | None = None,
 ) -> RetrievalAuditReport:
     """Audit retrieval stages without printing private query or source text."""
 
@@ -407,11 +419,20 @@ def run_retrieval_audit(
     )
     if coverage.embeddings.embeddings_count:
         warnings.append("embeddings exist but semantic retrieval is not enabled in this audit path")
+    has_selected_embeddings: bool | None = None
+    if selected_semantic_model_id:
+        has_selected_embeddings = (
+            selected_semantic_model_id in coverage.embeddings.embedding_model_breakdown
+        )
+        if not has_selected_embeddings:
+            warnings.append("selected semantic model has no persisted embeddings")
     return RetrievalAuditReport(
         db_exists=True,
         source_coverage=coverage,
         retrieval_coverage=_coverage_summary_from_diagnostics(diagnostics),
         query_diagnostics=diagnostics,
+        selected_semantic_model_id=selected_semantic_model_id,
+        selected_semantic_model_has_embeddings=has_selected_embeddings,
         warnings=tuple(dict.fromkeys(warnings)),
     )
 
@@ -639,6 +660,7 @@ def _embedding_diagnostics(connection: sqlite3.Connection) -> EmbeddingDiagnosti
         )
     count = _count_known_table(connection, "embeddings", "is_excluded = 0")
     columns = set(_columns(connection, "embeddings"))
+    model_breakdown = _embedding_model_breakdown(connection, columns)
     if "source_type" in columns:
         rows = connection.execute(
             """
@@ -656,6 +678,12 @@ def _embedding_diagnostics(connection: sqlite3.Connection) -> EmbeddingDiagnosti
             embeddings_derived_from=("embeddings",),
             embedding_source_breakdown_available=True,
             embedding_source_breakdown={str(row["source_type"]): int(row["count"]) for row in rows},
+            embedding_model_breakdown=model_breakdown,
+            embedding_model_source_breakdown=_embedding_model_source_breakdown(
+                connection,
+                columns,
+                source_column="source_type",
+            ),
         )
     if "owner_table" not in columns:
         return EmbeddingDiagnostics(
@@ -664,6 +692,7 @@ def _embedding_diagnostics(connection: sqlite3.Connection) -> EmbeddingDiagnosti
             embeddings_count_kind="physical_table",
             embeddings_derived_from=("embeddings",),
             embedding_source_breakdown_available=False,
+            embedding_model_breakdown=model_breakdown,
             reason="embeddings table does not store source_type and no join mapping was found",
         )
     rows = connection.execute(
@@ -691,10 +720,65 @@ def _embedding_diagnostics(connection: sqlite3.Connection) -> EmbeddingDiagnosti
         embeddings_derived_from=("embeddings.owner_table",),
         embedding_source_breakdown_available=bool(by_source),
         embedding_source_breakdown=by_source,
+        embedding_model_breakdown=model_breakdown,
+        embedding_model_source_breakdown=_embedding_model_source_breakdown(
+            connection,
+            columns,
+            source_column="owner_table",
+            owner_table_mapping=True,
+        ),
         reason=None
         if by_source
         else "embeddings table does not store source_type and no join mapping was found",
     )
+
+
+def _embedding_model_breakdown(
+    connection: sqlite3.Connection,
+    columns: set[str],
+) -> dict[str, int]:
+    if "model_id" not in columns:
+        return {}
+    rows = connection.execute(
+        """
+        SELECT COALESCE(model_id, '<unknown>') AS model_id, COUNT(*) AS count
+        FROM embeddings
+        WHERE is_excluded = 0
+        GROUP BY COALESCE(model_id, '<unknown>')
+        ORDER BY model_id
+        """,
+    ).fetchall()
+    return {str(row["model_id"]): int(row["count"]) for row in rows}
+
+
+def _embedding_model_source_breakdown(
+    connection: sqlite3.Connection,
+    columns: set[str],
+    *,
+    source_column: str,
+    owner_table_mapping: bool = False,
+) -> dict[str, dict[str, int]]:
+    if "model_id" not in columns or source_column not in columns:
+        return {}
+    rows = connection.execute(
+        f"""
+        SELECT COALESCE(model_id, '<unknown>') AS model_id,
+               {source_column} AS source_value,
+               COUNT(*) AS count
+        FROM embeddings
+        WHERE is_excluded = 0
+        GROUP BY COALESCE(model_id, '<unknown>'), {source_column}
+        ORDER BY model_id, source_value
+        """,
+    ).fetchall()
+    breakdown: dict[str, dict[str, int]] = {}
+    for row in rows:
+        source = str(row["source_value"])
+        if owner_table_mapping:
+            source = EMBEDDING_OWNER_SOURCE_MAP.get(source, source)
+        model_counts = breakdown.setdefault(str(row["model_id"]), {})
+        model_counts[source] = model_counts.get(source, 0) + int(row["count"])
+    return breakdown
 
 
 def _media_annotation_diagnostics(

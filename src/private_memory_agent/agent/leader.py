@@ -17,6 +17,7 @@ from private_memory_agent.agent.guardrails import (
 from private_memory_agent.retrieval import (
     EmbeddingModel,
     Evidence,
+    EvidenceReranker,
     RetrievalFilters,
     RetrievalResult,
     RetrievalService,
@@ -355,6 +356,8 @@ def run_query_flow(
     db_path: Path | str,
     leader_agent: LeaderAgent,
     embedding_model: EmbeddingModel | None = None,
+    reranker: EvidenceReranker | None = None,
+    rerank_top_k: int | None = None,
     filters: RetrievalFilters | None = None,
     limit: int = 8,
     redact_for_display: bool = True,
@@ -362,7 +365,12 @@ def run_query_flow(
 ) -> QueryFlowResult:
     """Run retrieval plus leader answer without autonomous planning."""
 
-    retrieval = RetrievalService(db_path, embedding_model=embedding_model).retrieve(
+    retrieval = RetrievalService(
+        db_path,
+        embedding_model=embedding_model,
+        reranker=reranker,
+        rerank_top_k=rerank_top_k,
+    ).retrieve(
         question,
         filters=filters,
         limit=limit,

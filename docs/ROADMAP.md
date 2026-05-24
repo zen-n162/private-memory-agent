@@ -69,6 +69,11 @@ This document outlines the development roadmap for private-memory-agent.
   E2E/golden retrieval can opt into persisted local hash embeddings with
   `--semantic`, reports semantic candidate counts, and expands repair queries
   from specific plan concepts/main entities instead of generic-only terms.
+- Phase 8-N adds real semantic model selection:
+  `pma index embeddings --model ruri-v3-310m --source line --source notes`
+  builds resume-safe local embeddings, E2E/golden can select
+  `--semantic-model ruri-v3-310m`, and optional local rerankers can be selected
+  with `--reranker`.
 
 ## 実データE2E smokeの実行手順
 
@@ -220,9 +225,32 @@ pma eval golden --config configs/paths.local.yaml --retrieval-only \
   --leader-rerank \
   --retrieval-repair 1 \
   --semantic \
+  --semantic-model ruri-v3-310m \
   --json
 ```
 
 The report keeps repair query text hidden by default and shows only safe counts
 such as `semantic_candidate_count`, `repair_specific_query_count`, and
 `repair_generic_query_count`.
+
+Build real local embeddings only when the model directory exists:
+
+```bash
+pma index embeddings --config configs/paths.local.yaml \
+  --model ruri-v3-310m \
+  --source line \
+  --source notes \
+  --skip-existing
+```
+
+Optional reranking stays explicit:
+
+```bash
+pma eval golden --config configs/paths.local.yaml --retrieval-only \
+  --query-id qst_preparation \
+  --semantic \
+  --semantic-model ruri-v3-310m \
+  --reranker ruri-v3-reranker-310m \
+  --rerank-top-k 20 \
+  --json
+```

@@ -21,9 +21,10 @@ def test_repository_example_config_has_local_first_defaults(monkeypatch):
     assert config.app.allow_network is False
     assert config.app.log_private_data is False
     assert config.paths.model_root == DEFAULT_MODEL_ROOT
-    assert len(config.model_registry) == 11
+    assert len(config.model_registry) == 13
     assert {spec.model_id for spec in config.model_registry if spec.role == "text_embedding"} == {
         "text_embedding",
+        "text_embedding_ruri_130m",
         "text_embedding_bge_m3",
         "text_embedding_qwen_06b",
     }

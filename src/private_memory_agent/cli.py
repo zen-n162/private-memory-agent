@@ -65,11 +65,16 @@ from private_memory_agent.retrieval import (
     FakeEmbeddingModel,
     HashEmbeddingModel,
     QdrantVectorStore,
+    RERANKER_MODEL_CHOICES,
     RetrievalFilters,
     RetrievalService,
+    SEMANTIC_MODEL_CHOICES,
     SentenceTransformersEmbeddingModel,
+    build_evidence_reranker,
+    build_semantic_embedding_model,
     index_embeddings,
     index_text,
+    normalize_semantic_model_name,
     search_text,
     semantic_search,
 )
@@ -338,7 +343,7 @@ def build_parser() -> argparse.ArgumentParser:
     e2e_smoke_parser.add_argument(
         "--semantic-model",
         dest="semantic_model_choice",
-        choices=("hash", "fake", "none"),
+        choices=SEMANTIC_MODEL_CHOICES,
         default=None,
         help="Semantic retrieval embedding model for E2E smoke.",
     )
@@ -353,6 +358,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=1.0,
         help="Score multiplier for semantic retrieval candidates.",
+    )
+    e2e_smoke_parser.add_argument(
+        "--reranker",
+        choices=RERANKER_MODEL_CHOICES,
+        default="none",
+        help="Optional local evidence reranker.",
+    )
+    e2e_smoke_parser.add_argument(
+        "--rerank-top-k",
+        type=int,
+        default=None,
+        help="Number of top retrieval candidates to rerank.",
     )
     e2e_smoke_parser.add_argument(
         "--json",
@@ -495,6 +512,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="SQLite database path to index.",
     )
     _add_embedding_arguments(index_embeddings_parser)
+    index_embeddings_parser.add_argument(
+        "--source",
+        action="append",
+        choices=(
+            "line",
+            "line_messages",
+            "notes",
+            "photos",
+            "media",
+            "media_items",
+            "media_annotations",
+        ),
+        default=[],
+        help="Limit embedding indexing to one source. Repeatable.",
+    )
+    index_embeddings_parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Resume-safe mode: skip embeddings already stored for the selected model.",
+    )
     _add_vector_store_arguments(index_embeddings_parser)
     index_embeddings_parser.set_defaults(func=_index_embeddings_command)
 
@@ -577,9 +614,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     retrieve_parser.add_argument(
         "--semantic-model",
-        choices=("none", "hash", "fake"),
+        choices=SEMANTIC_MODEL_CHOICES,
         default="none",
         help="Optional lightweight semantic retrieval model for persisted embeddings.",
+    )
+    retrieve_parser.add_argument(
+        "--reranker",
+        choices=RERANKER_MODEL_CHOICES,
+        default="none",
+        help="Optional local evidence reranker.",
+    )
+    retrieve_parser.add_argument(
+        "--rerank-top-k",
+        type=int,
+        default=None,
+        help="Number of top retrieval candidates to rerank.",
     )
     retrieve_parser.add_argument(
         "--show-private",
@@ -622,9 +671,21 @@ def build_parser() -> argparse.ArgumentParser:
     query_parser.add_argument("--until", default=None, help="Maximum evidence date/time.")
     query_parser.add_argument(
         "--semantic-model",
-        choices=("none", "hash", "fake"),
+        choices=SEMANTIC_MODEL_CHOICES,
         default="none",
         help="Optional lightweight semantic retrieval model for persisted embeddings.",
+    )
+    query_parser.add_argument(
+        "--reranker",
+        choices=RERANKER_MODEL_CHOICES,
+        default="none",
+        help="Optional local evidence reranker.",
+    )
+    query_parser.add_argument(
+        "--rerank-top-k",
+        type=int,
+        default=None,
+        help="Number of top retrieval candidates to rerank.",
     )
     query_parser.add_argument(
         "--client",
@@ -1267,7 +1328,7 @@ def build_parser() -> argparse.ArgumentParser:
     eval_golden_parser.add_argument(
         "--semantic-model",
         dest="semantic_model_choice",
-        choices=("hash", "fake", "none"),
+        choices=SEMANTIC_MODEL_CHOICES,
         default=None,
         help="Semantic retrieval embedding model for golden evaluation.",
     )
@@ -1282,6 +1343,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=1.0,
         help="Score multiplier for semantic retrieval candidates.",
+    )
+    eval_golden_parser.add_argument(
+        "--reranker",
+        choices=RERANKER_MODEL_CHOICES,
+        default="none",
+        help="Optional local evidence reranker for golden evaluation.",
+    )
+    eval_golden_parser.add_argument(
+        "--rerank-top-k",
+        type=int,
+        default=None,
+        help="Number of top retrieval candidates to rerank.",
     )
     eval_golden_parser.add_argument(
         "--json",
@@ -1409,6 +1482,8 @@ def _e2e_smoke_command(args: argparse.Namespace) -> int:
                 semantic_model=_resolve_semantic_model_arg(args),
                 semantic_top_k=args.semantic_top_k,
                 semantic_weight=args.semantic_weight,
+                reranker=args.reranker,
+                rerank_top_k=args.rerank_top_k,
                 model_key=args.model_key,
                 allow_remote=args.allow_remote,
             ),
@@ -1558,7 +1633,13 @@ def _index_embeddings_command(args: argparse.Namespace) -> int:
     try:
         model = _build_embedding_model(args)
         vector_store = _build_vector_store(args, vector_size=getattr(model, "dimensions", None))
-        result = index_embeddings(args.db, model, vector_store=vector_store)
+        result = index_embeddings(
+            args.db,
+            model,
+            vector_store=vector_store,
+            source_tables=tuple(args.source),
+            skip_existing=args.skip_existing,
+        )
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         print(f"Embedding index failed: {exc}")
         return 2
@@ -1600,7 +1681,12 @@ def _retrieve_command(args: argparse.Namespace) -> int:
                 (f"query_{index}", query.text, query.sources)
                 for index, query in enumerate(smoke_queries, start=1)
             )
-            report = run_retrieval_audit(args.db, query_specs, limit=args.limit)
+            report = run_retrieval_audit(
+                args.db,
+                query_specs,
+                limit=args.limit,
+                selected_semantic_model_id=_semantic_model_id_for_diagnostics(args.semantic_model),
+            )
         except (RuntimeError, ValueError) as exc:
             print(f"Retrieval audit failed: {_safe_cli_error_message(exc)}")
             return 2
@@ -1615,7 +1701,12 @@ def _retrieve_command(args: argparse.Namespace) -> int:
     try:
         config = load_config(config_dir=args.config_dir, paths_config=args.config)
         embedding_model = _build_retrieval_embedding_model(args)
-        service = RetrievalService(args.db, embedding_model=embedding_model)
+        service = RetrievalService(
+            args.db,
+            embedding_model=embedding_model,
+            reranker=_build_retrieval_reranker(args, config),
+            rerank_top_k=args.rerank_top_k,
+        )
         redact = not (args.show_private and config.app.log_private_data)
         result = service.retrieve(
             args.question,
@@ -1646,6 +1737,8 @@ def _query_command(args: argparse.Namespace) -> int:
             db_path=args.db,
             leader_agent=leader_agent,
             embedding_model=_build_retrieval_embedding_model(args),
+            reranker=_build_retrieval_reranker(args, config),
+            rerank_top_k=args.rerank_top_k,
             filters=RetrievalFilters(
                 sources=tuple(args.source),
                 since=args.since,
@@ -1915,6 +2008,8 @@ def _eval_golden_command(args: argparse.Namespace) -> int:
                 semantic_model=_resolve_semantic_model_arg(args),
                 semantic_top_k=args.semantic_top_k,
                 semantic_weight=args.semantic_weight,
+                reranker=args.reranker,
+                rerank_top_k=args.rerank_top_k,
                 model_key=args.model_key,
                 allow_remote=args.allow_remote,
             ),
@@ -1967,6 +2062,15 @@ def _add_config_dir_argument(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_embedding_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--model",
+        choices=tuple(choice for choice in SEMANTIC_MODEL_CHOICES if choice != "none"),
+        default=None,
+        help=(
+            "Public semantic model alias. Overrides --model-backend/--model-key "
+            "when provided."
+        ),
+    )
     parser.add_argument(
         "--model-backend",
         choices=("hash", "fake", "sentence-transformers"),
@@ -2229,8 +2333,11 @@ def _format_embedding_index_result(result, *, vector_store: str) -> str:
     return (
         "Embedding index complete: "
         f"documents_embedded={result.documents_embedded}; "
+        f"candidate_documents={result.candidate_documents}; "
+        f"skipped_existing={result.skipped_existing}; "
         f"model_id={result.model_id}; "
         f"dimensions={result.dimensions}; "
+        f"sources={','.join(result.source_tables) or 'all'}; "
         f"vector_store={vector_store}"
     )
 
@@ -2309,6 +2416,15 @@ def _format_text_annotation_result(result) -> str:
 
 
 def _build_embedding_model(args: argparse.Namespace):
+    selected_model = getattr(args, "model", None)
+    if selected_model is not None:
+        config = load_config(config_dir=args.config_dir, paths_config=args.config)
+        return build_semantic_embedding_model(
+            selected_model,
+            config=config,
+            dimensions=args.dimensions,
+            device=args.device,
+        )
     if args.model_backend == "fake":
         return FakeEmbeddingModel()
     if args.model_backend == "hash":
@@ -2331,18 +2447,30 @@ def _build_embedding_model(args: argparse.Namespace):
 
 
 def _build_retrieval_embedding_model(args: argparse.Namespace):
-    if args.semantic_model == "none":
+    config = load_config(config_dir=args.config_dir, paths_config=args.config)
+    return build_semantic_embedding_model(args.semantic_model, config=config)
+
+
+def _build_retrieval_reranker(args: argparse.Namespace, config):
+    return build_evidence_reranker(getattr(args, "reranker", "none"), config=config)
+
+
+def _semantic_model_id_for_diagnostics(semantic_model: str) -> str | None:
+    normalized = normalize_semantic_model_name(semantic_model)
+    if normalized == "none":
         return None
-    if args.semantic_model == "fake":
-        return FakeEmbeddingModel()
-    return HashEmbeddingModel()
+    if normalized == "hash":
+        return "hash-embedding-v1"
+    if normalized == "fake":
+        return "fake-embedding-v1"
+    return normalized
 
 
 def _resolve_semantic_model_arg(args: argparse.Namespace) -> str:
     selected = getattr(args, "semantic_model_choice", None)
     if selected is not None:
-        return selected
-    return str(getattr(args, "semantic_model", "none") or "none")
+        return normalize_semantic_model_name(selected)
+    return normalize_semantic_model_name(getattr(args, "semantic_model", "none"))
 
 
 def _build_privacy_guard(_config) -> PrivacyGuard:

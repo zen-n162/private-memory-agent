@@ -40,6 +40,7 @@ Phase 2-B and 2-C add embedding interfaces and optional vector stores:
 - `InMemoryVectorStore`: process-local vector store for tests.
 - `SentenceTransformersEmbeddingModel`: optional local adapter loaded only when explicitly selected.
 - `QdrantVectorStore`: optional Qdrant adapter loaded only when explicitly selected.
+- `EvidenceReranker`: optional local reranker interface.
 
 Embedding vectors are persisted in the local `embeddings` table as JSON. This is not a production vector database and does not require Qdrant, FAISS, GPU, or network access by default.
 
@@ -53,9 +54,15 @@ pma search semantic "ローカル"
 Use a real local sentence-transformers-compatible model:
 
 ```bash
-pma index embeddings --model-backend sentence-transformers --model-key text_embedding
-pma search semantic "ローカル" --model-backend sentence-transformers --model-key text_embedding
+pma index embeddings --model ruri-v3-310m --source line --source notes --skip-existing
+pma search semantic "ローカル" --model ruri-v3-310m
 ```
+
+Supported public aliases resolve through `configs/models.example.yaml` and the
+local model root: `ruri-v3-310m`, `ruri-v3-130m`, `bge-m3`, and
+`qwen3-embedding-0.6b`. Hash and fake embeddings remain for tests/dev only.
+Real indexing is explicit, resume-safe with `--skip-existing`, and prints
+counts only.
 
 Use Qdrant only when the service is already running:
 
@@ -388,12 +395,22 @@ improved, the pre/post usable evidence counts, and the count of repair queries
 created. Raw repair query text stays hidden unless the existing `--show-plan`
 diagnostic is explicitly requested.
 
-Phase 8-M adds optional local semantic retrieval to the E2E/golden paths. It
+Phase 8-M adds optional local semantic retrieval to the E2E/golden paths. Phase
+8-N lets that path use configured real local embedding aliases. It
 runs alongside FTS/LIKE retrieval, merges and deduplicates candidates, respects
 source filters, and reports `semantic_candidate_count`. The default
 `--semantic` mode uses deterministic hash embeddings already persisted by
 `pma index embeddings --model-backend hash`; use `--semantic-model fake` only
-for tests or matching fake indexes.
+for tests or matching fake indexes. For real semantic retrieval, build matching
+embeddings first and select the same alias:
+
+```bash
+pma index embeddings --config configs/paths.local.yaml \
+  --model ruri-v3-310m \
+  --source line \
+  --source notes \
+  --skip-existing
+```
 
 ```bash
 pma eval golden --config configs/paths.local.yaml --retrieval-only \
@@ -402,10 +419,26 @@ pma eval golden --config configs/paths.local.yaml --retrieval-only \
   --leader-rerank \
   --retrieval-repair 1 \
   --semantic \
+  --semantic-model ruri-v3-310m \
   --semantic-top-k 20 \
   --semantic-weight 1.0 \
   --json
 ```
+
+Optional local reranking can be layered on top of merged candidates:
+
+```bash
+pma eval golden --config configs/paths.local.yaml --retrieval-only \
+  --query-id qst_preparation \
+  --semantic \
+  --semantic-model ruri-v3-310m \
+  --reranker ruri-v3-reranker-310m \
+  --rerank-top-k 20 \
+  --json
+```
+
+Rerankers are local-only and are not loaded in unit tests. Default output shows
+`semantic_embedding_model_id`, `reranker_model_id`, and safe counts only.
 
 Repair query expansion now prefers `specific_concepts` and `main_entities` from
 the `RetrievalPlan` and avoids generic-only repair terms when specific terms are
@@ -478,4 +511,5 @@ pytest -q -m qdrant
 
 ## Future Work
 
-Later phases may add Japanese tokenization, production vector backends, reranking, and evidence-grounded answer generation.
+Later phases may add Japanese tokenization, production vector backends, stronger
+reranker quality evaluation, and richer evidence-grounded answer generation.

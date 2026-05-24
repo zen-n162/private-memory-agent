@@ -1190,6 +1190,8 @@ def test_golden_semantic_retrieval_reports_candidates_and_can_improve_repair(
             semantic_model="hash",
             semantic_top_k=5,
             semantic_weight=1.2,
+            reranker="fake",
+            rerank_top_k=2,
             limit=1,
         ),
     )
@@ -1197,7 +1199,11 @@ def test_golden_semantic_retrieval_reports_candidates_and_can_improve_repair(
 
     assert result.semantic_enabled is True
     assert result.semantic_model == "hash"
+    assert result.semantic_embedding_model_id == "hash-embedding-v1"
     assert result.semantic_candidate_count >= 1
+    assert result.reranker == "fake"
+    assert result.reranker_model_id == "fake-reranker-v1"
+    assert result.reranked_candidate_count >= 1
     assert result.repair_improved is True
     assert result.usable_evidence_succeeded is True
     assert result.evidence_ids == (f"line_messages:{specific_id}",)

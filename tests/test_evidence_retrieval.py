@@ -3,6 +3,7 @@ import json
 from private_memory_agent.cli import main
 from private_memory_agent.retrieval import (
     FakeEmbeddingModel,
+    FakeEvidenceReranker,
     RetrievalFilters,
     RetrievalService,
     index_embeddings,
@@ -217,6 +218,21 @@ def test_semantic_retrieval_respects_source_filters(tmp_path):
     assert {item.source_kind for item in result.evidence} == {"notes"}
     assert any(item.source_id == ids["note_id"] for item in result.evidence)
     assert result.diagnostics["semantic_candidate_count"] >= 1
+
+
+def test_retrieval_service_reports_fake_reranker_diagnostics(tmp_path):
+    db_path = tmp_path / "metadata.sqlite3"
+    seed_evidence_database(db_path)
+    service = RetrievalService(
+        db_path,
+        reranker=FakeEvidenceReranker(),
+        rerank_top_k=3,
+    )
+
+    result = service.retrieve("ローカル検索", limit=3, redact_for_display=True)
+
+    assert result.evidence
+    assert result.diagnostics["reranked_candidate_count"] == 3
 
 
 def test_pack_evidence_for_prompt_can_redact_private_text(tmp_path):
