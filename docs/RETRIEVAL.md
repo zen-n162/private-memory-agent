@@ -272,6 +272,7 @@ required_sources: [notes]
 preferred_sources: [line]
 excluded_sources: [photos]
 expected_keywords: [研究]
+optional_keywords: [予定, 準備]
 negative_keywords: []
 evaluation_focus: [evidence_relevance, source_coverage]
 ```
@@ -285,6 +286,9 @@ pma eval golden --config configs/paths.local.yaml --retrieval-only \
   --require-source line \
   --require-source notes \
   --exclude-source photos \
+  --expected-keyword QST \
+  --expected-keyword 面接 \
+  --expected-keyword 内定 \
   --json
 ```
 
@@ -296,6 +300,23 @@ or required source evidence is missing. The default `soft` policy records the
 mismatch as diagnostics. `--show-snippets --snippet-chars N` is available for
 local relevance inspection only; snippets are truncated and still must be
 treated as private.
+
+Source constraints solve source coverage, not relevance. Phase 8-J adds golden
+keyword calibration for this second step. `expected_keywords` and repeated
+`--expected-keyword KEY` values are appended to the golden retrieval query and
+boost matching evidence. `optional_keywords` also help retrieval and ranking
+but are not treated as required hits. `negative_keywords` and repeated
+`--negative-keyword KEY` values penalize evidence that looks off-topic. The
+report records `expected_keywords_hit_count`,
+`expected_keyword_hit_evidence_count`, `missing_expected_keywords`,
+`negative_keyword_hit_count`, per-evidence keyword hit counts, and a simple
+`relevance_score` from 0.0 to 1.0. Use `--keyword-policy strict` when missing
+expected keywords or negative keyword hits should fail a golden retrieval check.
+
+Keyword diagnostics intentionally do not print evidence text. If relevance is
+still poor, inspect locally with `--show-snippets --snippet-chars N`; matched
+keywords are listed beside truncated snippets. Treat snippet reports as private
+local output and do not paste them into public chats.
 
 Real-model smoke sends a compact redacted evidence packet by default. Use
 `--max-evidence-items` and `--max-evidence-chars` to keep the request small

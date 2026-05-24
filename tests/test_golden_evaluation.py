@@ -150,6 +150,8 @@ def test_golden_question_loader_parses_source_constraints(temp_config_factory):
                 "      - photos",
                 "    expected_keywords:",
                 "      - 研究",
+                "    optional_keywords:",
+                "      - 準備",
                 "    negative_keywords:",
                 "      - unrelated",
                 "    evaluation_focus:",
@@ -168,6 +170,7 @@ def test_golden_question_loader_parses_source_constraints(temp_config_factory):
     assert question.preferred_sources == ("line",)
     assert question.excluded_sources == ("photos",)
     assert question.expected_keywords == ("研究",)
+    assert question.optional_keywords == ("準備",)
     assert question.negative_keywords == ("unrelated",)
     assert question.evaluation_focus == ("source_coverage",)
     assert question.source_policy == "strict"
@@ -405,6 +408,128 @@ def test_golden_source_balancing_returns_line_and_notes_when_available(
     assert report.results[0].missing_expected_sources == ()
 
 
+def test_golden_expected_keyword_boost_ranks_matching_evidence_first(
+    temp_config_factory,
+    tmp_path,
+):
+    config_dir = temp_config_factory()
+    (config_dir / "golden_questions.local.yaml").write_text(
+        "\n".join(
+            [
+                "questions:",
+                "  - id: keyword_rank",
+                "    text: \"研究\"",
+                "    sources: line",
+                "    expected_keywords:",
+                "      - QST",
+            ],
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "golden.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        non_match_id = _insert_line_message(storage, text="研究の一般的な連絡")
+        match_id = _insert_line_message(storage, text="研究 QST 面接 準備の連絡")
+    finally:
+        storage.close()
+    index_text(db_path)
+
+    report = run_golden_eval(
+        GoldenEvalOptions(
+            config_dir=config_dir,
+            db_path=db_path,
+            retrieval_only=True,
+            limit=2,
+        ),
+    )
+    result = report.results[0]
+
+    assert report.ok is True
+    assert result.evidence_ids[0] == f"line_messages:{match_id}"
+    assert f"line_messages:{non_match_id}" in result.evidence_ids
+    assert result.expected_keywords_hit_count == 1
+    assert result.expected_keyword_hit_evidence_count == 1
+    assert result.evidence_keyword_hit_counts[f"line_messages:{match_id}"] == 1
+    assert result.evidence_keyword_hit_counts[f"line_messages:{non_match_id}"] == 0
+    assert result.relevance_score > 0.7
+
+
+def test_golden_missing_expected_keywords_are_reported_and_strict_policy_fails(
+    temp_config_factory,
+    tmp_path,
+):
+    config_dir = temp_config_factory()
+    _write_golden_questions(config_dir, text="研究", sources="line")
+    db_path = tmp_path / "golden.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        _insert_line_message(storage, text="研究の一般的な連絡")
+    finally:
+        storage.close()
+    index_text(db_path)
+
+    report = run_golden_eval(
+        GoldenEvalOptions(
+            config_dir=config_dir,
+            db_path=db_path,
+            retrieval_only=True,
+            query_id="golden_research",
+            expected_keywords=("QST",),
+            keyword_policy="strict",
+        ),
+    )
+
+    assert report.ok is False
+    assert report.results[0].retrieval_succeeded is True
+    assert report.results[0].missing_expected_keywords == ("QST",)
+    assert report.results[0].retrieval_passed_keyword_policy is False
+    assert report.results[0].relevance_score < 0.8
+
+
+def test_golden_negative_keyword_penalty_is_reported(temp_config_factory, tmp_path):
+    config_dir = temp_config_factory()
+    (config_dir / "golden_questions.local.yaml").write_text(
+        "\n".join(
+            [
+                "questions:",
+                "  - id: negative_keyword",
+                "    text: \"研究\"",
+                "    sources: line",
+                "    expected_keywords: [研究]",
+                "    negative_keywords: [unrelated]",
+            ],
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "golden.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        _insert_line_message(storage, text="研究 unrelated diagnostic")
+    finally:
+        storage.close()
+    index_text(db_path)
+
+    soft = run_golden_eval(
+        GoldenEvalOptions(config_dir=config_dir, db_path=db_path, retrieval_only=True),
+    )
+    strict = run_golden_eval(
+        GoldenEvalOptions(
+            config_dir=config_dir,
+            db_path=db_path,
+            retrieval_only=True,
+            keyword_policy="strict",
+        ),
+    )
+
+    assert soft.results[0].negative_keyword_hit_count == 1
+    assert soft.results[0].retrieval_passed_keyword_policy is True
+    assert strict.ok is False
+    assert strict.results[0].retrieval_passed_keyword_policy is False
+
+
 def test_golden_strict_source_policy_fails_when_required_source_missing(
     temp_config_factory,
     tmp_path,
@@ -512,6 +637,10 @@ def test_golden_cli_source_constraints_filter_and_report(capsys, temp_config_fac
             "notes",
             "--exclude-source",
             "photos",
+            "--expected-keyword",
+            "研究",
+            "--negative-keyword",
+            "unrelated",
             "--json",
         ],
     )
@@ -523,6 +652,10 @@ def test_golden_cli_source_constraints_filter_and_report(capsys, temp_config_fac
     assert result["required_sources"] == ["line", "notes"]
     assert result["excluded_sources"] == ["photos"]
     assert "photos" not in result["evidence_source_counts"]
+    assert result["expected_keywords_count"] == 1
+    assert result["expected_keywords_hit_count"] == 1
+    assert result["negative_keywords_count"] == 1
+    assert result["relevance_score"] > 0
 
 
 def test_golden_markdown_and_jsonl_outputs_include_manual_placeholders(
@@ -556,6 +689,9 @@ def test_golden_markdown_and_jsonl_outputs_include_manual_placeholders(
     assert "answer_correctness" in markdown
     assert "evidence_relevance" in markdown
     assert "source_policy_passed" in markdown
+    assert "evidence_relevance_score" in markdown
+    assert "expected_keywords_hit_count" in markdown
+    assert "missing_expected_keywords" in markdown
     assert "source_mismatch_notes" in markdown
     assert "irrelevant_evidence_notes" in markdown
     assert json.loads(jsonl_lines[0])["record_type"] == "summary"
@@ -664,3 +800,43 @@ def test_golden_eval_cli_json_and_markdown_are_privacy_safe(
     assert private_text not in output
     assert private_text not in output_path.read_text(encoding="utf-8")
     assert str(tmp_path) not in output
+
+
+def test_golden_show_snippets_lists_matched_keywords_when_explicit(
+    temp_config_factory,
+    tmp_path,
+):
+    config_dir = temp_config_factory()
+    _write_golden_questions(config_dir, text="研究", sources="line")
+    db_path = tmp_path / "golden.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        _insert_line_message(storage, text="研究 QST の準備をした。")
+    finally:
+        storage.close()
+    index_text(db_path)
+
+    hidden = run_golden_eval(
+        GoldenEvalOptions(
+            config_dir=config_dir,
+            db_path=db_path,
+            retrieval_only=True,
+            query_id="golden_research",
+            expected_keywords=("QST",),
+        ),
+    )
+    shown = run_golden_eval(
+        GoldenEvalOptions(
+            config_dir=config_dir,
+            db_path=db_path,
+            retrieval_only=True,
+            query_id="golden_research",
+            expected_keywords=("QST",),
+            show_snippets=True,
+            snippet_chars=32,
+        ),
+    )
+
+    assert hidden.results[0].safe_snippets == ()
+    assert shown.results[0].safe_snippets[0]["matched_keywords"] == "QST"
+    assert len(shown.results[0].safe_snippets[0]["snippet"]) <= 32

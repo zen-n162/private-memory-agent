@@ -1153,6 +1153,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Whether source coverage mismatches are warnings or failures.",
     )
     eval_golden_parser.add_argument(
+        "--expected-keyword",
+        action="append",
+        default=[],
+        help="Append an expected keyword used for golden retrieval/relevance diagnostics.",
+    )
+    eval_golden_parser.add_argument(
+        "--negative-keyword",
+        action="append",
+        default=[],
+        help="Append a negative keyword that penalizes golden evidence relevance.",
+    )
+    eval_golden_parser.add_argument(
+        "--keyword-policy",
+        choices=("soft", "strict"),
+        default="soft",
+        help="Whether missing expected keywords or negative hits fail golden retrieval.",
+    )
+    eval_golden_parser.add_argument(
         "--json",
         action="store_true",
         help="Print a structured privacy-safe JSON report.",
@@ -1767,6 +1785,9 @@ def _eval_golden_command(args: argparse.Namespace) -> int:
                 exclude_sources=tuple(args.exclude_source),
                 preferred_sources=tuple(args.preferred_source),
                 source_policy=args.source_policy,
+                expected_keywords=tuple(args.expected_keyword),
+                negative_keywords=tuple(args.negative_keyword),
+                keyword_policy=args.keyword_policy,
                 model_key=args.model_key,
                 allow_remote=args.allow_remote,
             ),

@@ -53,6 +53,10 @@ This document outlines the development roadmap for private-memory-agent.
   golden questions can declare expected, required, preferred, and excluded
   sources; `pma eval golden` accepts source constraint flags and reports
   source-policy diagnostics so irrelevant source coverage is visible.
+- Phase 8-J calibrates golden evidence relevance:
+  golden questions can declare expected, optional, and negative keywords;
+  `pma eval golden` can append CLI keywords, boost matching evidence, penalize
+  negative hits, and report privacy-safe keyword/relevance diagnostics.
 
 ## 実データE2E smokeの実行手順
 
@@ -74,6 +78,7 @@ pma e2e smoke --config configs/paths.local.yaml --real-model --query-limit 1 --t
 pma e2e smoke --config configs/paths.local.yaml --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --show-answer
 pma eval golden --config configs/paths.local.yaml --retrieval-only --query-limit 2 --json
 pma eval golden --config configs/paths.local.yaml --retrieval-only --query-id qst_preparation --require-source line --require-source notes --exclude-source photos --json
+pma eval golden --config configs/paths.local.yaml --retrieval-only --query-id qst_preparation --require-source line --require-source notes --exclude-source photos --expected-keyword QST --expected-keyword 面接 --expected-keyword 内定 --json
 pma eval golden --config configs/paths.local.yaml --fake-model --query-limit 2 --json
 pma eval golden --config configs/paths.local.yaml --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --json
 pma db schema --config configs/paths.local.yaml
@@ -148,6 +153,9 @@ expected_sources: [line, notes]
 required_sources: [notes]
 preferred_sources: [line]
 excluded_sources: [photos]
+expected_keywords: [研究]
+optional_keywords: [予定, 準備]
+negative_keywords: []
 evaluation_focus: [evidence_relevance, source_coverage]
 ```
 
@@ -156,3 +164,12 @@ the evaluation. The default `soft` policy records missing sources and excluded
 source violations in diagnostics without failing solely because an expected
 source is absent. Excluded sources are filtered from golden retrieval before
 evidence is selected.
+
+Source coverage alone does not prove evidence relevance. Add
+`expected_keywords`, `optional_keywords`, and `negative_keywords` to local
+golden questions, or append one-off keywords with `--expected-keyword` and
+`--negative-keyword`. Golden retrieval expands the query with expected/optional
+keywords, boosts matching evidence, penalizes negative hits, and reports
+`relevance_score`, missing expected keywords, and per-evidence keyword hit
+counts without printing raw evidence. Use `--keyword-policy strict` when keyword
+misses should fail a retrieval calibration run.

@@ -21,6 +21,9 @@ questions:
     excluded_sources: []
     expected_keywords:
       - 研究
+    optional_keywords:
+      - 予定
+      - 準備
     negative_keywords: []
     evaluation_focus:
       - evidence_relevance
@@ -38,6 +41,9 @@ questions:
     excluded_sources: []
     expected_keywords:
       - 外出
+    optional_keywords:
+      - 屋外
+      - 散歩
     negative_keywords: []
     evaluation_focus:
       - evidence_relevance
@@ -56,6 +62,7 @@ questions:
     preferred_sources: []
     excluded_sources: []
     expected_keywords: []
+    optional_keywords: []
     negative_keywords: []
     evaluation_focus:
       - uncertainty_handling

@@ -27,6 +27,7 @@ from private_memory_agent.retrieval import (
     RetrievalService,
     pack_evidence_for_prompt,
 )
+from private_memory_agent.retrieval.text import normalize_text
 from private_memory_agent.runtime import (
     ChatEndpointPreflightResult,
     ModelRuntimeError,
@@ -79,6 +80,10 @@ class E2ESmokeQuery:
     query_id: str
     text: str
     sources: tuple[str, ...] = ()
+    retrieval_text: str | None = None
+    expected_terms: tuple[str, ...] = ()
+    boost_terms: tuple[str, ...] = ()
+    negative_terms: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -226,6 +231,11 @@ class E2ESmokeQueryResult:
     answer_used_source_count: int | None = None
     safe_snippets: tuple[dict[str, str], ...] = ()
     evidence_source_counts: dict[str, int] = field(default_factory=dict)
+    expected_keywords_hit_count: int = 0
+    expected_keyword_hit_evidence_count: int = 0
+    missing_expected_keywords: tuple[str, ...] = ()
+    negative_keyword_hit_count: int = 0
+    evidence_keyword_hit_counts: dict[str, int] = field(default_factory=dict)
     retrieval_stage_counts: dict[str, int] = field(default_factory=dict)
     source_stage_counts: dict[str, dict[str, Any]] = field(default_factory=dict)
     fallback_reason: str | None = None
@@ -271,6 +281,11 @@ class E2ESmokeQueryResult:
             "answer_used_source_count": self.answer_used_source_count,
             "safe_snippets": [dict(item) for item in self.safe_snippets],
             "evidence_source_counts": dict(self.evidence_source_counts),
+            "expected_keywords_hit_count": self.expected_keywords_hit_count,
+            "expected_keyword_hit_evidence_count": self.expected_keyword_hit_evidence_count,
+            "missing_expected_keywords": list(self.missing_expected_keywords),
+            "negative_keyword_hit_count": self.negative_keyword_hit_count,
+            "evidence_keyword_hit_counts": dict(self.evidence_keyword_hit_counts),
             "retrieval_stage_counts": dict(self.retrieval_stage_counts),
             "source_stage_counts": {
                 source: dict(counts)
@@ -1011,10 +1026,15 @@ def _run_one_query_check(
     used_inventory_fallback: bool = False,
     fallback_reason: str | None = None,
 ) -> E2ESmokeQueryResult:
+    retrieval_text = query.retrieval_text or query.text
     try:
         retrieval = service.retrieve(
-            query.text,
-            filters=RetrievalFilters(sources=query.sources),
+            retrieval_text,
+            filters=RetrievalFilters(
+                sources=query.sources,
+                boost_terms=query.boost_terms,
+                negative_terms=query.negative_terms,
+            ),
             limit=max(1, options.limit),
             redact_for_display=True,
         )
@@ -1034,6 +1054,11 @@ def _run_one_query_check(
     evidence = _privacy_safe_evidence(raw_evidence)
     evidence_ids = tuple(item.evidence_id for item in evidence[: options.limit])
     source_counts = _evidence_source_counts(evidence)
+    keyword_diagnostics = _keyword_diagnostics(
+        raw_evidence,
+        expected_terms=query.expected_terms,
+        negative_terms=query.negative_terms,
+    )
     stage_counts: dict[str, int] = {}
     source_stage_counts: dict[str, dict[str, Any]] = {}
     if options.diagnose or options.no_fallback or not evidence:
@@ -1051,6 +1076,7 @@ def _run_one_query_check(
         "evidence_ids": evidence_ids,
         "used_inventory_fallback": used_inventory_fallback,
         "evidence_source_counts": source_counts,
+        **keyword_diagnostics,
         "retrieval_stage_counts": stage_counts,
         "source_stage_counts": source_stage_counts,
         "fallback_reason": fallback_reason,
@@ -1351,7 +1377,7 @@ def _safe_retrieval_stage_counts(
         diagnostics = diagnose_retrieval_query(
             db_path,
             query_label=query_label,
-            query=query.text,
+            query=query.retrieval_text or query.text,
             sources=query.sources,
             limit=limit,
         )
@@ -1371,6 +1397,58 @@ def _safe_retrieval_stage_counts(
         },
         diagnostics.source_stage_counts,
     )
+
+
+def _keyword_diagnostics(
+    evidence: tuple[Evidence, ...],
+    *,
+    expected_terms: tuple[str, ...],
+    negative_terms: tuple[str, ...],
+) -> dict[str, Any]:
+    expected = _normalized_keyword_terms(expected_terms)
+    negative = _normalized_keyword_terms(negative_terms)
+    if not expected and not negative:
+        return {
+            "expected_keywords_hit_count": 0,
+            "expected_keyword_hit_evidence_count": 0,
+            "missing_expected_keywords": (),
+            "negative_keyword_hit_count": 0,
+            "evidence_keyword_hit_counts": {},
+        }
+
+    expected_hits: set[str] = set()
+    negative_hits: set[str] = set()
+    evidence_hit_counts: dict[str, int] = {}
+    expected_hit_evidence_count = 0
+    for item in evidence:
+        normalized_text = normalize_text(" ".join(part for part in (item.title, item.snippet) if part))
+        item_expected_hits = {term for term in expected if term in normalized_text}
+        item_negative_hits = {term for term in negative if term in normalized_text}
+        if item_expected_hits:
+            expected_hit_evidence_count += 1
+        expected_hits.update(item_expected_hits)
+        negative_hits.update(item_negative_hits)
+        evidence_hit_counts[item.evidence_id] = len(item_expected_hits)
+    return {
+        "expected_keywords_hit_count": len(expected_hits),
+        "expected_keyword_hit_evidence_count": expected_hit_evidence_count,
+        "missing_expected_keywords": tuple(
+            original
+            for original, normalized in zip(expected_terms, expected, strict=False)
+            if normalized not in expected_hits
+        ),
+        "negative_keyword_hit_count": len(negative_hits),
+        "evidence_keyword_hit_counts": evidence_hit_counts,
+    }
+
+
+def _normalized_keyword_terms(terms: tuple[str, ...]) -> tuple[str, ...]:
+    normalized: list[str] = []
+    for term in terms:
+        cleaned = normalize_text(str(term))
+        if cleaned and cleaned not in normalized:
+            normalized.append(cleaned)
+    return tuple(normalized)
 
 
 def _build_smoke_leader_agent(

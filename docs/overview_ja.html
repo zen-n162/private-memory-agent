@@ -534,6 +534,7 @@
             <tr><td>8-G</td><td>実モデル回答の明示表示、snippet 表示、answer audit。</td><td class="status">基本実装済み</td></tr>
             <tr><td>8-H</td><td>golden question による回答品質評価と Markdown/JSONL report。</td><td class="status">基本実装済み</td></tr>
             <tr><td>8-I</td><td>golden question の source constraint と retrieval calibration。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>8-J</td><td>golden question の keyword calibration と evidence relevance scoring。</td><td class="status">基本実装済み</td></tr>
           </tbody>
         </table>
       </section>
@@ -560,6 +561,7 @@ pma e2e smoke --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 51
 pma e2e smoke --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --show-answer
 pma eval golden --retrieval-only --query-limit 2 --json
 pma eval golden --retrieval-only --query-id qst_preparation --require-source line --require-source notes --exclude-source photos --json
+pma eval golden --retrieval-only --query-id qst_preparation --require-source line --require-source notes --exclude-source photos --expected-keyword QST --expected-keyword 面接 --expected-keyword 内定 --json
 pma eval golden --fake-model --query-limit 2 --json
 pma eval golden --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --json
 pma db schema
@@ -597,6 +599,7 @@ pma e2e smoke --config configs/paths.local.yaml --real-model --query-limit 1 --t
 pma e2e smoke --config configs/paths.local.yaml --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --show-answer
 pma eval golden --config configs/paths.local.yaml --retrieval-only --query-limit 2 --json
 pma eval golden --config configs/paths.local.yaml --retrieval-only --query-id qst_preparation --require-source line --require-source notes --exclude-source photos --json
+pma eval golden --config configs/paths.local.yaml --retrieval-only --query-id qst_preparation --require-source line --require-source notes --exclude-source photos --expected-keyword QST --expected-keyword 面接 --expected-keyword 内定 --json
 pma eval golden --config configs/paths.local.yaml --fake-model --query-limit 2 --json
 pma eval golden --config configs/paths.local.yaml --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --json
 pma db schema --config configs/paths.local.yaml
@@ -656,9 +659,15 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           uncertainty_handling、privacy_safety、source_policy_passed、source_mismatch_notes、
           irrelevant_evidence_notes、notes の手動採点欄を用意します。
           golden question には expected_sources、required_sources、preferred_sources、
-          excluded_sources、expected_keywords、negative_keywords、evaluation_focus を書けます。
+          excluded_sources、expected_keywords、optional_keywords、negative_keywords、evaluation_focus を書けます。
           <code>--source-policy strict</code> では expected/required source の不足を評価失敗として扱い、
           既定の <code>soft</code> では不足を診断として記録します。excluded source は golden retrieval から除外します。
+          source coverage は十分でも evidence relevance が弱いことがあるため、expected/optional keyword を retrieval query に足し、
+          keyword を含む証拠を boost し、negative keyword を含む証拠を減点します。
+          report には expected keyword hit、missing keyword、negative keyword hit、
+          per-evidence keyword hit count、relevance score を raw evidence なしで表示します。
+          一回限りの確認には <code>--expected-keyword</code>、<code>--negative-keyword</code>、
+          <code>--keyword-policy strict</code> を使えます。
           relevance を見る必要がある時だけ <code>--show-snippets --snippet-chars N</code> を明示します。
           既定では質問本文、回答本文、snippet、raw evidence、raw model output を表示しません。
           <code>--show-answer</code> や <code>--show-snippets</code> を使った report は private output として扱い、
@@ -681,6 +690,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
       <section id="history">
         <h2>更新履歴</h2>
         <ul>
+          <li>2026-05-25: golden question の keyword calibration、negative keyword penalty、evidence relevance score を追加。</li>
           <li>2026-05-24: golden question の source constraint、strict/soft policy、snippet length control を追加。</li>
           <li>2026-05-24: golden question 評価、Markdown/JSONL report、手動採点欄を追加。</li>
           <li>2026-05-24: 実モデル回答の <code>--show-answer</code> 表示、<code>--show-snippets</code>、answer audit を追加。</li>

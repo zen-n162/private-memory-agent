@@ -20,6 +20,7 @@ from private_memory_agent.e2e import (
     E2ESmokeQuery,
     run_e2e_smoke,
 )
+from private_memory_agent.retrieval.text import normalize_text
 
 DEFAULT_GOLDEN_QUESTIONS_FILENAME = "golden_questions.example.yaml"
 LOCAL_GOLDEN_QUESTIONS_FILENAME = "golden_questions.local.yaml"
@@ -31,6 +32,9 @@ _MANUAL_RATING_FIELDS = (
     "uncertainty_handling",
     "privacy_safety",
     "source_policy_passed",
+    "evidence_relevance_score",
+    "expected_keywords_hit_count",
+    "missing_expected_keywords",
     "source_mismatch_notes",
     "irrelevant_evidence_notes",
     "notes",
@@ -53,6 +57,7 @@ class GoldenQuestion:
     preferred_sources: tuple[str, ...] = ()
     excluded_sources: tuple[str, ...] = ()
     expected_keywords: tuple[str, ...] = ()
+    optional_keywords: tuple[str, ...] = ()
     negative_keywords: tuple[str, ...] = ()
     evaluation_focus: tuple[str, ...] = ()
     source_policy: str | None = None
@@ -86,6 +91,9 @@ class GoldenEvalOptions:
     exclude_sources: tuple[str, ...] = ()
     preferred_sources: tuple[str, ...] = ()
     source_policy: str = "soft"
+    expected_keywords: tuple[str, ...] = ()
+    negative_keywords: tuple[str, ...] = ()
+    keyword_policy: str = "soft"
     model_key: str = DEFAULT_E2E_LEADER_MODEL_KEY
     allow_remote: bool = False
 
@@ -124,7 +132,16 @@ class GoldenQuestionResult:
     source_policy: str = "soft"
     retrieval_passed_source_policy: bool = True
     expected_keywords_count: int = 0
+    optional_keywords_count: int = 0
+    expected_keywords_hit_count: int = 0
+    expected_keyword_hit_evidence_count: int = 0
+    missing_expected_keywords: tuple[str, ...] = ()
     negative_keywords_count: int = 0
+    negative_keyword_hit_count: int = 0
+    evidence_keyword_hit_counts: dict[str, int] = field(default_factory=dict)
+    relevance_score: float = 0.0
+    keyword_policy: str = "soft"
+    retrieval_passed_keyword_policy: bool = True
     evaluation_focus: tuple[str, ...] = ()
     manual_ratings: dict[str, Any] = field(default_factory=dict)
 
@@ -133,6 +150,7 @@ class GoldenQuestionResult:
         return (
             self.retrieval_succeeded
             and self.retrieval_passed_source_policy
+            and self.retrieval_passed_keyword_policy
             and (self.answer_succeeded or self.confidence is None)
         )
 
@@ -168,7 +186,16 @@ class GoldenQuestionResult:
             "source_policy": self.source_policy,
             "retrieval_passed_source_policy": self.retrieval_passed_source_policy,
             "expected_keywords_count": self.expected_keywords_count,
+            "optional_keywords_count": self.optional_keywords_count,
+            "expected_keywords_hit_count": self.expected_keywords_hit_count,
+            "expected_keyword_hit_evidence_count": self.expected_keyword_hit_evidence_count,
+            "missing_expected_keywords": list(self.missing_expected_keywords),
             "negative_keywords_count": self.negative_keywords_count,
+            "negative_keyword_hit_count": self.negative_keyword_hit_count,
+            "evidence_keyword_hit_counts": dict(self.evidence_keyword_hit_counts),
+            "relevance_score": self.relevance_score,
+            "keyword_policy": self.keyword_policy,
+            "retrieval_passed_keyword_policy": self.retrieval_passed_keyword_policy,
             "evaluation_focus": list(self.evaluation_focus),
             "manual_ratings": dict(self.manual_ratings),
             "passed": self.passed,
@@ -245,6 +272,11 @@ class _GoldenSourceConstraints:
     preferred_sources: tuple[str, ...]
     excluded_sources: tuple[str, ...]
     source_policy: str
+    expected_keywords: tuple[str, ...]
+    optional_keywords: tuple[str, ...]
+    negative_keywords: tuple[str, ...]
+    keyword_policy: str
+    retrieval_text: str
 
 
 def load_golden_questions(
@@ -299,6 +331,10 @@ def run_golden_eval(options: GoldenEvalOptions) -> GoldenEvalReport:
                     query_id=question.question_id,
                     text=question.text,
                     sources=constrained.requested_sources,
+                    retrieval_text=constrained.retrieval_text,
+                    expected_terms=constrained.expected_keywords,
+                    boost_terms=constrained.expected_keywords + constrained.optional_keywords,
+                    negative_terms=constrained.negative_keywords,
                 )
                 for question, constrained in zip(questions, constrained_questions, strict=True)
             ),
@@ -444,11 +480,17 @@ def _constrained_question(
     ).strip().lower()
     if source_policy not in {"soft", "strict"}:
         raise ValueError("source_policy must be soft or strict")
+    keyword_policy = (options.keyword_policy or "soft").strip().lower()
+    if keyword_policy not in {"soft", "strict"}:
+        raise ValueError("keyword_policy must be soft or strict")
 
     expected_sources = _unique_sources(question.expected_sources)
     required_sources = _unique_sources(question.required_sources + options.require_sources)
     preferred_sources = _unique_sources(question.preferred_sources + options.preferred_sources)
     excluded_sources = _unique_sources(question.excluded_sources + options.exclude_sources)
+    expected_keywords = _unique_strings(question.expected_keywords + options.expected_keywords)
+    optional_keywords = _unique_strings(question.optional_keywords)
+    negative_keywords = _unique_strings(question.negative_keywords + options.negative_keywords)
 
     hard_sources = question.sources or expected_sources or required_sources
     if hard_sources:
@@ -470,6 +512,15 @@ def _constrained_question(
         preferred_sources=preferred_sources,
         excluded_sources=excluded_sources,
         source_policy=source_policy,
+        expected_keywords=expected_keywords,
+        optional_keywords=optional_keywords,
+        negative_keywords=negative_keywords,
+        keyword_policy=keyword_policy,
+        retrieval_text=_expanded_retrieval_text(
+            question.text,
+            expected_keywords=expected_keywords,
+            optional_keywords=optional_keywords,
+        ),
     )
 
 
@@ -503,6 +554,28 @@ def _golden_result_from_e2e(
         )
     else:
         source_policy_passed = not excluded_violations
+    retrieval_passed_keyword_policy = True
+    if constraints.keyword_policy == "strict":
+        retrieval_passed_keyword_policy = (
+            not result.missing_expected_keywords
+            and int(result.negative_keyword_hit_count or 0) == 0
+        )
+    keyword_snippets = _snippets_with_keyword_labels(
+        result.safe_snippets,
+        expected_keywords=constraints.expected_keywords,
+        optional_keywords=constraints.optional_keywords,
+    )
+    relevance_score = _relevance_score(
+        retrieval_succeeded=result.retrieval_succeeded,
+        evidence_count=result.evidence_count,
+        source_policy_passed=source_policy_passed,
+        expected_sources=constraints.expected_sources,
+        actual_sources=actual_sources,
+        expected_keyword_count=len(constraints.expected_keywords),
+        expected_keyword_hit_count=int(result.expected_keywords_hit_count or 0),
+        negative_keyword_hit_count=int(result.negative_keyword_hit_count or 0),
+        limit=options.limit,
+    )
     return GoldenQuestionResult(
         question_id=question.question_id,
         category=question.category,
@@ -524,9 +597,6 @@ def _golden_result_from_e2e(
         privacy_safe_output=not bool(result.raw_model_output_preview),
         answer_conclusion=result.answer_conclusion if options.show_answer else None,
         answer_unknowns=result.answer_unknowns if options.show_answer else (),
-        safe_snippets=_truncate_snippets(result.safe_snippets, options.snippet_chars)
-        if options.show_snippets
-        else (),
         requested_sources=constraints.requested_sources,
         expected_sources=constraints.expected_sources,
         required_sources=constraints.required_sources,
@@ -537,10 +607,24 @@ def _golden_result_from_e2e(
         excluded_source_violations=excluded_violations,
         source_policy=constraints.source_policy,
         retrieval_passed_source_policy=source_policy_passed,
-        expected_keywords_count=len(question.expected_keywords),
-        negative_keywords_count=len(question.negative_keywords),
+        expected_keywords_count=len(constraints.expected_keywords),
+        optional_keywords_count=len(constraints.optional_keywords),
+        expected_keywords_hit_count=int(result.expected_keywords_hit_count or 0),
+        expected_keyword_hit_evidence_count=int(
+            result.expected_keyword_hit_evidence_count or 0,
+        ),
+        missing_expected_keywords=result.missing_expected_keywords,
+        negative_keywords_count=len(constraints.negative_keywords),
+        negative_keyword_hit_count=int(result.negative_keyword_hit_count or 0),
+        evidence_keyword_hit_counts=dict(result.evidence_keyword_hit_counts),
+        relevance_score=relevance_score,
+        keyword_policy=constraints.keyword_policy,
+        retrieval_passed_keyword_policy=retrieval_passed_keyword_policy,
         evaluation_focus=question.evaluation_focus,
         manual_ratings=_manual_rating_placeholders(),
+        safe_snippets=_truncate_snippets(keyword_snippets, options.snippet_chars)
+        if options.show_snippets
+        else (),
     )
 
 
@@ -593,7 +677,16 @@ def _format_question_markdown(result: GoldenQuestionResult) -> list[str]:
         f"- source_policy: {result.source_policy}",
         f"- retrieval_passed_source_policy: {str(result.retrieval_passed_source_policy).lower()}",
         f"- expected_keywords_count: {result.expected_keywords_count}",
+        f"- optional_keywords_count: {result.optional_keywords_count}",
+        f"- expected_keywords_hit_count: {result.expected_keywords_hit_count}",
+        f"- expected_keyword_hit_evidence_count: {result.expected_keyword_hit_evidence_count}",
+        f"- missing_expected_keywords: {_format_tuple(result.missing_expected_keywords)}",
         f"- negative_keywords_count: {result.negative_keywords_count}",
+        f"- negative_keyword_hit_count: {result.negative_keyword_hit_count}",
+        f"- evidence_keyword_hit_counts: {_format_counts(result.evidence_keyword_hit_counts)}",
+        f"- evidence_relevance_score: {result.relevance_score}",
+        f"- keyword_policy: {result.keyword_policy}",
+        f"- retrieval_passed_keyword_policy: {str(result.retrieval_passed_keyword_policy).lower()}",
         f"- evaluation_focus: {_format_tuple(result.evaluation_focus)}",
     ]
     if result.answer_conclusion is not None:
@@ -610,7 +703,15 @@ def _format_question_markdown(result: GoldenQuestionResult) -> list[str]:
     if result.safe_snippets:
         lines.extend(["", "#### Snippets", ""])
         lines.extend(
-            f"- {item.get('evidence_id', 'unknown')}: {item.get('snippet', '')}"
+            (
+                f"- {item.get('evidence_id', 'unknown')}: "
+                f"{item.get('snippet', '')}"
+                + (
+                    f" [matched_keywords={item.get('matched_keywords')}]"
+                    if item.get("matched_keywords")
+                    else ""
+                )
+            )
             for item in result.safe_snippets
         )
     lines.extend(
@@ -624,6 +725,9 @@ def _format_question_markdown(result: GoldenQuestionResult) -> list[str]:
             "- uncertainty_handling: ",
             "- privacy_safety: ",
             "- source_policy_passed: ",
+            "- evidence_relevance_score: ",
+            "- expected_keywords_hit_count: ",
+            "- missing_expected_keywords: ",
             "- source_mismatch_notes: ",
             "- irrelevant_evidence_notes: ",
             "- notes: ",
@@ -701,6 +805,7 @@ def _parse_questions(value: object) -> list[GoldenQuestion]:
                 preferred_sources=preferred_sources,
                 excluded_sources=excluded_sources,
                 expected_keywords=_parse_string_list(raw.get("expected_keywords")),
+                optional_keywords=_parse_string_list(raw.get("optional_keywords")),
                 negative_keywords=_parse_string_list(raw.get("negative_keywords")),
                 evaluation_focus=_parse_string_list(raw.get("evaluation_focus")),
                 source_policy=source_policy,
@@ -853,6 +958,79 @@ def _unique_sources(values: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(source for source in values if source))
 
 
+def _unique_strings(values: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(value.strip() for value in values if value.strip()))
+
+
+def _expanded_retrieval_text(
+    question_text: str,
+    *,
+    expected_keywords: tuple[str, ...],
+    optional_keywords: tuple[str, ...],
+) -> str:
+    keywords = _unique_strings(expected_keywords + optional_keywords)
+    if not keywords:
+        return question_text
+    return " ".join((question_text, *keywords)).strip()
+
+
+def _snippets_with_keyword_labels(
+    snippets: tuple[dict[str, str], ...],
+    *,
+    expected_keywords: tuple[str, ...],
+    optional_keywords: tuple[str, ...],
+) -> tuple[dict[str, str], ...]:
+    keywords = _unique_strings(expected_keywords + optional_keywords)
+    if not snippets or not keywords:
+        return snippets
+    enriched: list[dict[str, str]] = []
+    normalized_pairs = tuple((keyword, normalize_text(keyword)) for keyword in keywords)
+    for item in snippets:
+        normalized_snippet = normalize_text(str(item.get("snippet") or ""))
+        matched = tuple(
+            keyword
+            for keyword, normalized_keyword in normalized_pairs
+            if normalized_keyword and normalized_keyword in normalized_snippet
+        )
+        enriched_item = dict(item)
+        if matched:
+            enriched_item["matched_keywords"] = ",".join(matched)
+        enriched.append(enriched_item)
+    return tuple(enriched)
+
+
+def _relevance_score(
+    *,
+    retrieval_succeeded: bool,
+    evidence_count: int,
+    source_policy_passed: bool,
+    expected_sources: tuple[str, ...],
+    actual_sources: set[str],
+    expected_keyword_count: int,
+    expected_keyword_hit_count: int,
+    negative_keyword_hit_count: int,
+    limit: int,
+) -> float:
+    if not retrieval_succeeded or evidence_count <= 0:
+        return 0.0
+    source_ratio = 1.0
+    if expected_sources:
+        source_ratio = len(set(expected_sources) & actual_sources) / len(set(expected_sources))
+    keyword_ratio = 1.0
+    if expected_keyword_count:
+        keyword_ratio = min(1.0, expected_keyword_hit_count / expected_keyword_count)
+    evidence_ratio = min(1.0, evidence_count / max(1, limit))
+    score = (
+        0.20
+        + (0.20 if source_policy_passed else 0.0)
+        + (0.20 * source_ratio)
+        + (0.30 * keyword_ratio)
+        + (0.10 * evidence_ratio)
+    )
+    penalty = min(0.20, 0.10 * negative_keyword_hit_count)
+    return round(max(0.0, min(1.0, score - penalty)), 4)
+
+
 def _truncate_snippets(
     snippets: tuple[dict[str, str], ...],
     max_chars: int,
@@ -908,6 +1086,8 @@ def _default_golden_questions() -> tuple[GoldenQuestion, ...]:
             sources=("line", "notes"),
             expected_sources=("line", "notes"),
             preferred_sources=("notes",),
+            expected_keywords=("研究",),
+            optional_keywords=("予定", "準備"),
             evaluation_focus=("evidence_relevance", "source_coverage"),
         ),
         GoldenQuestion(
@@ -916,6 +1096,8 @@ def _default_golden_questions() -> tuple[GoldenQuestion, ...]:
             text="外出や屋外に関係しそうな写真の記録を探してください。",
             sources=("photos",),
             expected_sources=("photos",),
+            expected_keywords=("外出",),
+            optional_keywords=("屋外",),
             evaluation_focus=("evidence_relevance",),
         ),
         GoldenQuestion(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -70,6 +70,8 @@ class RetrievalFilters:
     sources: tuple[str, ...] = ()
     since: str | None = None
     until: str | None = None
+    boost_terms: tuple[str, ...] = ()
+    negative_terms: tuple[str, ...] = ()
 
     def normalized_sources(self) -> set[str]:
         sources = {source.strip().lower() for source in self.sources if source.strip()}
@@ -158,7 +160,15 @@ class RetrievalService:
                 ),
             )
 
-        ranked = tuple(_select_ranked_evidence(candidates, source_filter=source_filter, limit=limit))
+        ranked = tuple(
+            _select_ranked_evidence(
+                candidates,
+                source_filter=source_filter,
+                limit=limit,
+                boost_terms=active_filters.boost_terms,
+                negative_terms=active_filters.negative_terms,
+            ),
+        )
         return RetrievalResult(
             question=question,
             evidence=ranked,
@@ -402,8 +412,15 @@ def _select_ranked_evidence(
     *,
     source_filter: set[str],
     limit: int,
+    boost_terms: tuple[str, ...] = (),
+    negative_terms: tuple[str, ...] = (),
 ) -> list[Evidence]:
     ranked = _rank_and_dedupe(candidates)
+    ranked = _apply_keyword_score_adjustments(
+        ranked,
+        boost_terms=boost_terms,
+        negative_terms=negative_terms,
+    )
     if not source_filter or len(source_filter) <= 1 or limit <= 1:
         return ranked[:limit]
 
@@ -429,6 +446,71 @@ def _select_ranked_evidence(
         if len(selected) >= limit:
             break
     return selected[:limit]
+
+
+def _apply_keyword_score_adjustments(
+    evidence: list[Evidence],
+    *,
+    boost_terms: tuple[str, ...],
+    negative_terms: tuple[str, ...],
+) -> list[Evidence]:
+    boost = _normalized_terms(boost_terms)
+    negative = _normalized_terms(negative_terms)
+    if not boost and not negative:
+        return evidence
+
+    adjusted: list[Evidence] = []
+    for item in evidence:
+        text = normalize_text(" ".join(part for part in (item.title, item.snippet) if part))
+        boost_hits = _term_hit_count(text, boost)
+        negative_hits = _term_hit_count(text, negative)
+        score = item.score
+        if boost_hits:
+            score += min(0.45, 0.18 * boost_hits)
+        if negative_hits:
+            score -= min(0.45, 0.22 * negative_hits)
+        signals = list(item.signals)
+        metadata = dict(item.metadata)
+        if boost_hits:
+            signals.append("keyword_boost")
+            metadata["keyword_hit_count"] = boost_hits
+        if negative_hits:
+            signals.append("negative_keyword")
+            metadata["negative_keyword_hit_count"] = negative_hits
+        adjusted.append(
+            replace(
+                item,
+                score=max(0.0, score),
+                signals=tuple(dict.fromkeys(signals)),
+                metadata=metadata,
+            ),
+        )
+
+    adjusted.sort(
+        key=lambda item: (
+            -item.score,
+            -item.confidence,
+            item.source_kind,
+            item.source_table,
+            item.source_id,
+        ),
+    )
+    return adjusted
+
+
+def _normalized_terms(terms: tuple[str, ...]) -> tuple[str, ...]:
+    normalized: list[str] = []
+    for term in terms:
+        cleaned = normalize_text(str(term))
+        if cleaned and cleaned not in normalized:
+            normalized.append(cleaned)
+    return tuple(normalized)
+
+
+def _term_hit_count(text: str, terms: tuple[str, ...]) -> int:
+    if not text or not terms:
+        return 0
+    return sum(1 for term in terms if term and term in text)
 
 
 def _source_tables_for_filter(source_filter: set[str]) -> tuple[str, ...]:

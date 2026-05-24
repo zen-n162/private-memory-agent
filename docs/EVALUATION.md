@@ -119,6 +119,7 @@ required_sources: [notes]
 preferred_sources: [line]
 excluded_sources: [photos]
 expected_keywords: [研究]
+optional_keywords: [予定, 準備]
 negative_keywords: []
 evaluation_focus: [evidence_relevance, source_coverage]
 ```
@@ -131,14 +132,25 @@ pma eval golden --config configs/paths.local.yaml --retrieval-only \
   --require-source line \
   --require-source notes \
   --exclude-source photos \
+  --expected-keyword QST \
+  --expected-keyword 面接 \
+  --expected-keyword 内定 \
   --json
 ```
 
 `--source-policy strict` fails the evaluation when expected or required sources
 are missing. The default `soft` policy records missing sources in diagnostics
 without failing solely on source coverage. Excluded sources are filtered from
-golden retrieval. Use `--show-snippets --snippet-chars N` only for local
-relevance inspection.
+golden retrieval.
+
+Source constraints prove coverage, not relevance. `expected_keywords` and
+`--expected-keyword` expand golden retrieval and boost matching evidence.
+`optional_keywords` can help retrieval without being counted as missing.
+`negative_keywords` and `--negative-keyword` penalize off-topic evidence.
+Reports include keyword hit counts, missing expected keywords, per-evidence hit
+counts, and `relevance_score` without printing raw evidence. Use
+`--keyword-policy strict` when keyword misses should fail the check. Use
+`--show-snippets --snippet-chars N` only for local relevance inspection.
 
 Markdown and JSONL outputs can be written under ignored local paths:
 
