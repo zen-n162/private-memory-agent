@@ -61,6 +61,10 @@ This document outlines the development roadmap for private-memory-agent.
   the local leader can create a structured retrieval plan, deterministic
   relevance judging can demote generic-only evidence, and weak planned retrieval
   can run one repair loop without exposing raw evidence by default.
+- Phase 8-L adds evidence acceptance:
+  golden evaluation now distinguishes candidate retrieval from usable evidence,
+  reports source, keyword, plan, and final relevance scores separately, and can
+  fail strict quality gates when every candidate is generic or weak.
 
 ## 実データE2E smokeの実行手順
 
@@ -185,3 +189,20 @@ is slower than deterministic retrieval. Use `--leader-plan` to create a
 structured plan, `--leader-rerank` to apply plan-aware deterministic relevance
 judging, and `--retrieval-repair 1` to retry weak evidence with additional plan
 queries. Default output hides the full plan; use `--show-plan` only locally.
+
+Candidate retrieval is not the same as usable evidence. Use
+`--minimum-relevance-score`, `--require-usable-evidence`, and
+`--relevance-policy strict` when a golden question should fail if all candidates
+are generic-only or weak:
+
+```bash
+pma eval golden --config configs/paths.local.yaml --retrieval-only \
+  --query-id qst_preparation \
+  --leader-plan \
+  --leader-rerank \
+  --retrieval-repair 1 \
+  --minimum-relevance-score 0.6 \
+  --require-usable-evidence \
+  --relevance-policy strict \
+  --json
+```

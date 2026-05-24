@@ -47,6 +47,8 @@ _MANUAL_RATING_FIELDS = (
     "evidence_relevance_score",
     "expected_keywords_hit_count",
     "missing_expected_keywords",
+    "usable_evidence_notes",
+    "repair_notes",
     "source_mismatch_notes",
     "irrelevant_evidence_notes",
     "notes",
@@ -111,6 +113,9 @@ class GoldenEvalOptions:
     retrieval_repair: int = 0
     show_plan: bool = False
     show_relevance: bool = False
+    minimum_relevance_score: float = 0.6
+    require_usable_evidence: bool = False
+    relevance_policy: str = "soft"
     retrieval_planner: RetrievalPlanner | None = None
     model_key: str = DEFAULT_E2E_LEADER_MODEL_KEY
     allow_remote: bool = False
@@ -125,6 +130,11 @@ class GoldenQuestionResult:
     retrieval_succeeded: bool
     answer_succeeded: bool
     evidence_count: int
+    candidate_retrieval_succeeded: bool = False
+    usable_evidence_succeeded: bool = False
+    usable_evidence_count: int = 0
+    unusable_evidence_count: int = 0
+    should_use_evidence_count: int = 0
     evidence_ids: tuple[str, ...] = ()
     evidence_source_counts: dict[str, int] = field(default_factory=dict)
     used_sources: tuple[str, ...] = ()
@@ -158,10 +168,25 @@ class GoldenQuestionResult:
     negative_keyword_hit_count: int = 0
     evidence_keyword_hit_counts: dict[str, int] = field(default_factory=dict)
     relevance_score: float = 0.0
+    source_coverage_score: float = 0.0
+    keyword_relevance_score: float = 0.0
+    plan_relevance_score: float | None = None
+    final_relevance_score: float = 0.0
+    minimum_relevance_threshold: float = 0.6
+    relevance_policy: str = "soft"
+    relevance_policy_passed: bool = True
+    insufficient_evidence_reason: str | None = None
     keyword_policy: str = "soft"
     retrieval_passed_keyword_policy: bool = True
     plan_metadata: RetrievalPlanMetadata = field(default_factory=RetrievalPlanMetadata)
     retrieval_repair_count: int = 0
+    repair_attempted: bool = False
+    repair_improved: bool = False
+    repair_reason: str | None = None
+    pre_repair_usable_evidence_count: int | None = None
+    post_repair_usable_evidence_count: int | None = None
+    repair_query_count: int = 0
+    repair_queries_created_count: int = 0
     leader_rerank_used: bool = False
     relevance_judged: bool = False
     average_plan_relevance_score: float | None = None
@@ -177,6 +202,7 @@ class GoldenQuestionResult:
             self.retrieval_succeeded
             and self.retrieval_passed_source_policy
             and self.retrieval_passed_keyword_policy
+            and self.relevance_policy_passed
             and (self.answer_succeeded or self.confidence is None)
         )
 
@@ -187,6 +213,11 @@ class GoldenQuestionResult:
             "retrieval_succeeded": self.retrieval_succeeded,
             "answer_succeeded": self.answer_succeeded,
             "evidence_count": self.evidence_count,
+            "candidate_retrieval_succeeded": self.candidate_retrieval_succeeded,
+            "usable_evidence_succeeded": self.usable_evidence_succeeded,
+            "usable_evidence_count": self.usable_evidence_count,
+            "unusable_evidence_count": self.unusable_evidence_count,
+            "should_use_evidence_count": self.should_use_evidence_count,
             "evidence_ids": list(self.evidence_ids),
             "evidence_source_counts": dict(self.evidence_source_counts),
             "used_sources": list(self.used_sources),
@@ -220,10 +251,25 @@ class GoldenQuestionResult:
             "negative_keyword_hit_count": self.negative_keyword_hit_count,
             "evidence_keyword_hit_counts": dict(self.evidence_keyword_hit_counts),
             "relevance_score": self.relevance_score,
+            "source_coverage_score": self.source_coverage_score,
+            "keyword_relevance_score": self.keyword_relevance_score,
+            "plan_relevance_score": self.plan_relevance_score,
+            "final_relevance_score": self.final_relevance_score,
+            "minimum_relevance_threshold": self.minimum_relevance_threshold,
+            "relevance_policy": self.relevance_policy,
+            "relevance_policy_passed": self.relevance_policy_passed,
+            "insufficient_evidence_reason": self.insufficient_evidence_reason,
             "keyword_policy": self.keyword_policy,
             "retrieval_passed_keyword_policy": self.retrieval_passed_keyword_policy,
             "plan": self.plan_metadata.to_dict(),
             "retrieval_repair_count": self.retrieval_repair_count,
+            "repair_attempted": self.repair_attempted,
+            "repair_improved": self.repair_improved,
+            "repair_reason": self.repair_reason,
+            "pre_repair_usable_evidence_count": self.pre_repair_usable_evidence_count,
+            "post_repair_usable_evidence_count": self.post_repair_usable_evidence_count,
+            "repair_query_count": self.repair_query_count,
+            "repair_queries_created_count": self.repair_queries_created_count,
             "leader_rerank_used": self.leader_rerank_used,
             "relevance_judged": self.relevance_judged,
             "average_plan_relevance_score": self.average_plan_relevance_score,
@@ -315,6 +361,20 @@ class _GoldenSourceConstraints:
     plan_metadata: RetrievalPlanMetadata = field(default_factory=RetrievalPlanMetadata)
 
 
+@dataclass(frozen=True)
+class _RepairDiagnostics:
+    """Privacy-safe repair-loop counters for one golden question."""
+
+    attempted: bool = False
+    count: int = 0
+    improved: bool = False
+    reason: str | None = None
+    pre_usable_count: int | None = None
+    post_usable_count: int | None = None
+    repair_query_count: int = 0
+    repair_queries_created_count: int = 0
+
+
 def load_golden_questions(
     config_dir: Path | str | None = None,
     *,
@@ -345,6 +405,10 @@ def run_golden_eval(options: GoldenEvalOptions) -> GoldenEvalReport:
         raise ValueError("snippet_chars must be positive")
     if options.retrieval_repair < 0:
         raise ValueError("retrieval_repair must be non-negative")
+    if not 0.0 <= options.minimum_relevance_score <= 1.0:
+        raise ValueError("minimum_relevance_score must be between 0.0 and 1.0")
+    if options.relevance_policy not in {"soft", "strict"}:
+        raise ValueError("relevance_policy must be soft or strict")
     questions_path = _resolve_golden_questions_path(
         options.config_dir,
         questions_config=options.questions_config,
@@ -370,7 +434,7 @@ def run_golden_eval(options: GoldenEvalOptions) -> GoldenEvalReport:
         options=options,
         mode=mode,
     )
-    e2e_results, repair_counts = _repair_e2e_results_if_needed(
+    e2e_results, repair_diagnostics = _repair_e2e_results_if_needed(
         questions=questions,
         constrained_questions=constrained_questions,
         e2e_results=tuple(e2e_report.query_results),
@@ -383,7 +447,7 @@ def run_golden_eval(options: GoldenEvalOptions) -> GoldenEvalReport:
             constrained,
             result,
             options=options,
-            repair_count=repair_counts.get(question.question_id, 0),
+            repair_diagnostics=repair_diagnostics.get(question.question_id, _RepairDiagnostics()),
         )
         for question, constrained, result in zip(
             questions,
@@ -395,6 +459,11 @@ def run_golden_eval(options: GoldenEvalOptions) -> GoldenEvalReport:
     ok = e2e_report.db_exists and bool(results) and all(result.passed for result in results)
     if mode != "retrieval_only":
         ok = ok and all(result.answer_succeeded for result in results)
+    relevance_warnings = tuple(
+        f"{result.question_id}: {result.insufficient_evidence_reason}"
+        for result in results
+        if result.insufficient_evidence_reason
+    )
     return GoldenEvalReport(
         mode=mode,
         ok=ok,
@@ -405,6 +474,7 @@ def run_golden_eval(options: GoldenEvalOptions) -> GoldenEvalReport:
         warnings=tuple(
             (
                 *e2e_report.warnings,
+                *relevance_warnings,
                 *(
                     ("retrieval plan display requested; plan text may contain private question-derived content",)
                     if options.show_plan
@@ -613,16 +683,21 @@ def _repair_e2e_results_if_needed(
     e2e_results: tuple[Any, ...],
     options: GoldenEvalOptions,
     mode: str,
-) -> tuple[tuple[Any, ...], dict[str, int]]:
+) -> tuple[tuple[Any, ...], dict[str, _RepairDiagnostics]]:
     if options.retrieval_repair <= 0:
         return e2e_results, {}
     repaired_results = list(e2e_results)
-    repair_counts: dict[str, int] = {}
+    repair_diagnostics: dict[str, _RepairDiagnostics] = {}
     for index, (question, constrained, result) in enumerate(
         zip(questions, constrained_questions, e2e_results, strict=False),
     ):
-        if not _needs_retrieval_repair(result, constrained):
+        if not _needs_retrieval_repair(result, constrained, options):
             continue
+        pre_usable_count = _usable_evidence_count_from_e2e(
+            result,
+            minimum_relevance_score=options.minimum_relevance_score,
+        )
+        repair_reason = _repair_reason(result, constrained)
         repaired = replace(
             constrained,
             retrieval_text=_expanded_retrieval_text(
@@ -640,21 +715,76 @@ def _repair_e2e_results_if_needed(
             mode=mode,
         )
         if repair_report.query_results:
-            repaired_results[index] = repair_report.query_results[0]
-            repair_counts[question.question_id] = 1
-    return tuple(repaired_results), repair_counts
+            repaired_result = repair_report.query_results[0]
+            post_usable_count = _usable_evidence_count_from_e2e(
+                repaired_result,
+                minimum_relevance_score=options.minimum_relevance_score,
+            )
+            repaired_results[index] = repaired_result
+            repair_diagnostics[question.question_id] = _RepairDiagnostics(
+                attempted=True,
+                count=1,
+                improved=post_usable_count > pre_usable_count,
+                reason=repair_reason,
+                pre_usable_count=pre_usable_count,
+                post_usable_count=post_usable_count,
+                repair_query_count=len(constrained.plan.retrieval_queries)
+                if constrained.plan is not None
+                else 0,
+                repair_queries_created_count=_repair_queries_created_count(constrained.plan),
+            )
+        else:
+            repair_diagnostics[question.question_id] = _RepairDiagnostics(
+                attempted=True,
+                reason=repair_reason,
+                pre_usable_count=pre_usable_count,
+                post_usable_count=pre_usable_count,
+                repair_query_count=len(constrained.plan.retrieval_queries)
+                if constrained.plan is not None
+                else 0,
+                repair_queries_created_count=_repair_queries_created_count(constrained.plan),
+            )
+    return tuple(repaired_results), repair_diagnostics
 
 
-def _needs_retrieval_repair(result: Any, constrained: _GoldenSourceConstraints) -> bool:
+def _needs_retrieval_repair(
+    result: Any,
+    constrained: _GoldenSourceConstraints,
+    options: GoldenEvalOptions,
+) -> bool:
     if constrained.plan is None:
         return False
     if result.evidence_count == 0:
         return True
-    if result.plan_relevance_judged and (result.plan_relevance_should_use_count or 0) == 0:
+    usable_count = _usable_evidence_count_from_e2e(
+        result,
+        minimum_relevance_score=options.minimum_relevance_score,
+    )
+    if result.plan_relevance_judged and usable_count == 0:
         return True
     if constrained.expected_keywords and result.expected_keywords_hit_count == 0:
         return True
     return False
+
+
+def _repair_reason(result: Any, constrained: _GoldenSourceConstraints) -> str:
+    if result.evidence_count == 0:
+        return "no candidate evidence was retrieved"
+    if result.plan_relevance_judged and (result.plan_relevance_should_use_count or 0) == 0:
+        return "candidate evidence was found, but relevance judge found no usable evidence"
+    if constrained.expected_keywords and result.expected_keywords_hit_count == 0:
+        return "candidate evidence did not hit expected keywords"
+    return "planned retrieval was weak"
+
+
+def _repair_queries_created_count(plan: RetrievalPlan | None) -> int:
+    if plan is None:
+        return 0
+    return len(
+        _unique_strings(
+            plan.retrieval_queries + plan.specific_concepts + plan.main_entities,
+        ),
+    )
 
 
 def _constrained_question(
@@ -736,7 +866,7 @@ def _golden_result_from_e2e(
     result: Any,
     *,
     options: GoldenEvalOptions,
-    repair_count: int,
+    repair_diagnostics: _RepairDiagnostics,
 ) -> GoldenQuestionResult:
     unknown_reference_count = 0
     if result.error_message and "unknown_evidence_reference" in result.error_message:
@@ -772,16 +902,49 @@ def _golden_result_from_e2e(
         expected_keywords=constraints.expected_keywords,
         optional_keywords=constraints.optional_keywords,
     )
-    relevance_score = _relevance_score(
-        retrieval_succeeded=result.retrieval_succeeded,
-        evidence_count=result.evidence_count,
+    candidate_retrieval_succeeded = bool(result.retrieval_succeeded)
+    should_use_count = _usable_evidence_count_from_e2e(
+        result,
+        minimum_relevance_score=options.minimum_relevance_score,
+    )
+    usable_evidence_succeeded = candidate_retrieval_succeeded and should_use_count > 0
+    source_coverage_score = _source_coverage_score(
+        retrieval_succeeded=candidate_retrieval_succeeded,
         source_policy_passed=source_policy_passed,
         expected_sources=constraints.expected_sources,
         actual_sources=actual_sources,
+    )
+    keyword_relevance_score = _keyword_relevance_score(
+        retrieval_succeeded=candidate_retrieval_succeeded,
         expected_keyword_count=len(constraints.expected_keywords),
         expected_keyword_hit_count=int(result.expected_keywords_hit_count or 0),
         negative_keyword_hit_count=int(result.negative_keyword_hit_count or 0),
+    )
+    plan_relevance_score = _plan_relevance_score_from_e2e(
+        result,
+        minimum_relevance_score=options.minimum_relevance_score,
+    )
+    final_relevance_score = _final_relevance_score(
+        retrieval_succeeded=candidate_retrieval_succeeded,
+        evidence_count=result.evidence_count,
+        source_coverage_score=source_coverage_score,
+        keyword_relevance_score=keyword_relevance_score,
+        plan_relevance_score=plan_relevance_score,
+        should_use_evidence_count=should_use_count,
+        plan_relevance_judged=bool(result.plan_relevance_judged),
         limit=options.limit,
+    )
+    relevance_policy_passed = _relevance_policy_passed(
+        options=options,
+        usable_evidence_succeeded=usable_evidence_succeeded,
+        final_relevance_score=final_relevance_score,
+        plan_relevance_judged=bool(result.plan_relevance_judged),
+    )
+    insufficient_reason = _insufficient_evidence_reason(
+        result,
+        usable_evidence_succeeded=usable_evidence_succeeded,
+        final_relevance_score=final_relevance_score,
+        minimum_relevance_score=options.minimum_relevance_score,
     )
     return GoldenQuestionResult(
         question_id=question.question_id,
@@ -789,6 +952,11 @@ def _golden_result_from_e2e(
         retrieval_succeeded=result.retrieval_succeeded,
         answer_succeeded=result.answer_succeeded,
         evidence_count=result.evidence_count,
+        candidate_retrieval_succeeded=candidate_retrieval_succeeded,
+        usable_evidence_succeeded=usable_evidence_succeeded,
+        usable_evidence_count=should_use_count,
+        unusable_evidence_count=max(0, int(result.evidence_count or 0) - should_use_count),
+        should_use_evidence_count=should_use_count,
         evidence_ids=result.evidence_ids,
         evidence_source_counts=result.evidence_source_counts,
         used_sources=result.used_sources,
@@ -824,11 +992,26 @@ def _golden_result_from_e2e(
         negative_keywords_count=len(constraints.negative_keywords),
         negative_keyword_hit_count=int(result.negative_keyword_hit_count or 0),
         evidence_keyword_hit_counts=dict(result.evidence_keyword_hit_counts),
-        relevance_score=relevance_score,
+        relevance_score=final_relevance_score,
+        source_coverage_score=source_coverage_score,
+        keyword_relevance_score=keyword_relevance_score,
+        plan_relevance_score=plan_relevance_score,
+        final_relevance_score=final_relevance_score,
+        minimum_relevance_threshold=options.minimum_relevance_score,
+        relevance_policy=options.relevance_policy,
+        relevance_policy_passed=relevance_policy_passed,
+        insufficient_evidence_reason=insufficient_reason,
         keyword_policy=constraints.keyword_policy,
         retrieval_passed_keyword_policy=retrieval_passed_keyword_policy,
         plan_metadata=constraints.plan_metadata,
-        retrieval_repair_count=repair_count,
+        retrieval_repair_count=repair_diagnostics.count,
+        repair_attempted=repair_diagnostics.attempted,
+        repair_improved=repair_diagnostics.improved,
+        repair_reason=repair_diagnostics.reason,
+        pre_repair_usable_evidence_count=repair_diagnostics.pre_usable_count,
+        post_repair_usable_evidence_count=repair_diagnostics.post_usable_count,
+        repair_query_count=repair_diagnostics.repair_query_count,
+        repair_queries_created_count=repair_diagnostics.repair_queries_created_count,
         leader_rerank_used=bool(options.leader_rerank and constraints.plan is not None),
         relevance_judged=bool(result.plan_relevance_judged),
         average_plan_relevance_score=result.plan_average_relevance_score,
@@ -872,6 +1055,11 @@ def _format_question_markdown(result: GoldenQuestionResult) -> list[str]:
         f"- retrieval_succeeded: {str(result.retrieval_succeeded).lower()}",
         f"- answer_succeeded: {str(result.answer_succeeded).lower()}",
         f"- evidence_count: {result.evidence_count}",
+        f"- candidate_retrieval_succeeded: {str(result.candidate_retrieval_succeeded).lower()}",
+        f"- usable_evidence_succeeded: {str(result.usable_evidence_succeeded).lower()}",
+        f"- usable_evidence_count: {result.usable_evidence_count}",
+        f"- unusable_evidence_count: {result.unusable_evidence_count}",
+        f"- should_use_evidence_count: {result.should_use_evidence_count}",
         "- evidence_ids: " + (", ".join(result.evidence_ids) if result.evidence_ids else "none"),
         "- evidence_source_counts: " + _format_counts(result.evidence_source_counts),
         "- used_sources: " + (", ".join(result.used_sources) if result.used_sources else "none"),
@@ -902,6 +1090,14 @@ def _format_question_markdown(result: GoldenQuestionResult) -> list[str]:
         f"- negative_keyword_hit_count: {result.negative_keyword_hit_count}",
         f"- evidence_keyword_hit_counts: {_format_counts(result.evidence_keyword_hit_counts)}",
         f"- evidence_relevance_score: {result.relevance_score}",
+        f"- source_coverage_score: {result.source_coverage_score}",
+        f"- keyword_relevance_score: {result.keyword_relevance_score}",
+        f"- plan_relevance_score: {result.plan_relevance_score}",
+        f"- final_relevance_score: {result.final_relevance_score}",
+        f"- minimum_relevance_threshold: {result.minimum_relevance_threshold}",
+        f"- relevance_policy: {result.relevance_policy}",
+        f"- relevance_policy_passed: {str(result.relevance_policy_passed).lower()}",
+        f"- insufficient_evidence_reason: {result.insufficient_evidence_reason or 'none'}",
         f"- keyword_policy: {result.keyword_policy}",
         f"- retrieval_passed_keyword_policy: {str(result.retrieval_passed_keyword_policy).lower()}",
         f"- plan_created: {str(result.plan_metadata.plan_created).lower()}",
@@ -913,6 +1109,13 @@ def _format_question_markdown(result: GoldenQuestionResult) -> list[str]:
         f"- plan_source_constraints: {_format_tuple(result.plan_metadata.source_constraints)}",
         f"- evidence_acceptance_criteria_count: {result.plan_metadata.evidence_acceptance_criteria_count}",
         f"- retrieval_repair_count: {result.retrieval_repair_count}",
+        f"- repair_attempted: {str(result.repair_attempted).lower()}",
+        f"- repair_improved: {str(result.repair_improved).lower()}",
+        f"- repair_reason: {result.repair_reason or 'none'}",
+        f"- pre_repair_usable_evidence_count: {result.pre_repair_usable_evidence_count}",
+        f"- post_repair_usable_evidence_count: {result.post_repair_usable_evidence_count}",
+        f"- repair_query_count: {result.repair_query_count}",
+        f"- repair_queries_created_count: {result.repair_queries_created_count}",
         f"- leader_rerank_used: {str(result.leader_rerank_used).lower()}",
         f"- relevance_judged: {str(result.relevance_judged).lower()}",
         f"- average_plan_relevance_score: {result.average_plan_relevance_score}",
@@ -983,6 +1186,8 @@ def _format_question_markdown(result: GoldenQuestionResult) -> list[str]:
             "- evidence_relevance_score: ",
             "- expected_keywords_hit_count: ",
             "- missing_expected_keywords: ",
+            "- usable_evidence_notes: ",
+            "- repair_notes: ",
             "- source_mismatch_notes: ",
             "- irrelevant_evidence_notes: ",
             "- notes: ",
@@ -1231,6 +1436,8 @@ def _expanded_retrieval_text(
     plan_concepts = ()
     if plan is not None and repair:
         plan_concepts = plan.specific_concepts + plan.main_entities
+        if plan_concepts:
+            return " ".join(_unique_strings(plan_concepts)).strip()
     keywords = _unique_strings(expected_keywords + optional_keywords + plan_queries + plan_concepts)
     if not keywords:
         return question_text
@@ -1260,6 +1467,149 @@ def _snippets_with_keyword_labels(
             enriched_item["matched_keywords"] = ",".join(matched)
         enriched.append(enriched_item)
     return tuple(enriched)
+
+
+def _usable_evidence_count_from_e2e(
+    result: Any,
+    *,
+    minimum_relevance_score: float,
+) -> int:
+    evidence_count = int(result.evidence_count or 0)
+    if evidence_count <= 0:
+        return 0
+    if not result.plan_relevance_judged:
+        return evidence_count
+    detailed_scores = tuple(getattr(result, "plan_relevance_scores", ()) or ())
+    if detailed_scores:
+        return sum(
+            1
+            for score in detailed_scores
+            if bool(score.get("should_use"))
+            and float(score.get("relevance_score") or 0.0) >= minimum_relevance_score
+        )
+    return int(result.plan_relevance_should_use_count or 0)
+
+
+def _source_coverage_score(
+    *,
+    retrieval_succeeded: bool,
+    source_policy_passed: bool,
+    expected_sources: tuple[str, ...],
+    actual_sources: set[str],
+) -> float:
+    if not retrieval_succeeded:
+        return 0.0
+    if expected_sources:
+        ratio = len(set(expected_sources) & actual_sources) / len(set(expected_sources))
+    else:
+        ratio = 1.0
+    if not source_policy_passed:
+        ratio *= 0.5
+    return round(max(0.0, min(1.0, ratio)), 4)
+
+
+def _keyword_relevance_score(
+    *,
+    retrieval_succeeded: bool,
+    expected_keyword_count: int,
+    expected_keyword_hit_count: int,
+    negative_keyword_hit_count: int,
+) -> float:
+    if not retrieval_succeeded:
+        return 0.0
+    if expected_keyword_count:
+        score = min(1.0, expected_keyword_hit_count / expected_keyword_count)
+    else:
+        score = 1.0
+    score -= min(0.5, 0.2 * negative_keyword_hit_count)
+    return round(max(0.0, min(1.0, score)), 4)
+
+
+def _plan_relevance_score_from_e2e(
+    result: Any,
+    *,
+    minimum_relevance_score: float,
+) -> float | None:
+    if not result.plan_relevance_judged:
+        return None
+    usable_count = _usable_evidence_count_from_e2e(
+        result,
+        minimum_relevance_score=minimum_relevance_score,
+    )
+    average = result.plan_average_relevance_score
+    if average is None:
+        return 0.0
+    if usable_count == 0:
+        return round(min(float(average), minimum_relevance_score * 0.5), 4)
+    return round(max(0.0, min(1.0, float(average))), 4)
+
+
+def _final_relevance_score(
+    *,
+    retrieval_succeeded: bool,
+    evidence_count: int,
+    source_coverage_score: float,
+    keyword_relevance_score: float,
+    plan_relevance_score: float | None,
+    should_use_evidence_count: int,
+    plan_relevance_judged: bool,
+    limit: int,
+) -> float:
+    if not retrieval_succeeded or evidence_count <= 0:
+        return 0.0
+    evidence_ratio = min(1.0, evidence_count / max(1, limit))
+    if plan_relevance_judged:
+        if should_use_evidence_count <= 0:
+            return round(min(float(plan_relevance_score or 0.0), 0.35), 4)
+        score = (
+            0.20 * source_coverage_score
+            + 0.20 * keyword_relevance_score
+            + 0.50 * float(plan_relevance_score or 0.0)
+            + 0.10 * evidence_ratio
+        )
+    else:
+        score = (
+            0.35 * source_coverage_score
+            + 0.45 * keyword_relevance_score
+            + 0.20 * evidence_ratio
+        )
+    return round(max(0.0, min(1.0, score)), 4)
+
+
+def _relevance_policy_passed(
+    *,
+    options: GoldenEvalOptions,
+    usable_evidence_succeeded: bool,
+    final_relevance_score: float,
+    plan_relevance_judged: bool,
+) -> bool:
+    if options.relevance_policy == "soft" and not options.require_usable_evidence:
+        return True
+    if options.require_usable_evidence and not usable_evidence_succeeded:
+        return False
+    if options.relevance_policy == "strict" and plan_relevance_judged:
+        return usable_evidence_succeeded and final_relevance_score >= options.minimum_relevance_score
+    if options.relevance_policy == "strict":
+        return final_relevance_score >= options.minimum_relevance_score
+    return True
+
+
+def _insufficient_evidence_reason(
+    result: Any,
+    *,
+    usable_evidence_succeeded: bool,
+    final_relevance_score: float,
+    minimum_relevance_score: float,
+) -> str | None:
+    if usable_evidence_succeeded:
+        return None
+    if result.evidence_count <= 0:
+        return "no candidate evidence was retrieved"
+    if result.plan_relevance_judged and int(result.plan_relevance_should_use_count or 0) == 0:
+        return "candidate evidence was found, but relevance judge found no usable evidence"
+    if final_relevance_score < minimum_relevance_score:
+        return "candidate evidence was found, but final relevance is below threshold"
+    return None
 
 
 def _relevance_score(

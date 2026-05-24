@@ -964,6 +964,195 @@ def test_golden_leader_rerank_demotes_generic_evidence(temp_config_factory, tmp_
     assert result.relevance_scores
 
 
+def test_golden_generic_only_candidates_are_not_usable_evidence(
+    temp_config_factory,
+    tmp_path,
+):
+    config_dir = temp_config_factory()
+    _write_golden_questions(config_dir, text="研究", sources="line")
+    db_path = tmp_path / "golden.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        _insert_line_message(storage, text="研究の一般的な予定")
+    finally:
+        storage.close()
+    index_text(db_path)
+    planner = FakeRetrievalPlanner(
+        RetrievalPlan(
+            intent="find specific project preparation",
+            main_entities=("ProjectAlpha",),
+            specific_concepts=("ProjectAlpha",),
+            generic_concepts=("研究", "予定"),
+            retrieval_queries=("研究",),
+            evidence_acceptance_criteria=("contains ProjectAlpha",),
+        ),
+    )
+
+    report = run_golden_eval(
+        GoldenEvalOptions(
+            config_dir=config_dir,
+            db_path=db_path,
+            retrieval_only=True,
+            query_id="golden_research",
+            retrieval_planner=planner,
+            leader_rerank=True,
+            show_relevance=True,
+            limit=1,
+        ),
+    )
+    result = report.results[0]
+
+    assert report.ok is True
+    assert result.candidate_retrieval_succeeded is True
+    assert result.usable_evidence_succeeded is False
+    assert result.usable_evidence_count == 0
+    assert result.should_use_evidence_count == 0
+    assert result.relevance_policy_passed is True
+    assert result.final_relevance_score < 0.6
+    assert result.relevance_score == result.final_relevance_score
+    assert result.insufficient_evidence_reason == (
+        "candidate evidence was found, but relevance judge found no usable evidence"
+    )
+
+
+def test_golden_strict_relevance_policy_fails_when_no_usable_evidence(
+    temp_config_factory,
+    tmp_path,
+):
+    config_dir = temp_config_factory()
+    _write_golden_questions(config_dir, text="研究", sources="line")
+    db_path = tmp_path / "golden.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        _insert_line_message(storage, text="研究の一般的な予定")
+    finally:
+        storage.close()
+    index_text(db_path)
+    planner = FakeRetrievalPlanner(
+        RetrievalPlan(
+            intent="find specific project preparation",
+            specific_concepts=("ProjectAlpha",),
+            generic_concepts=("研究",),
+            retrieval_queries=("研究",),
+        ),
+    )
+
+    report = run_golden_eval(
+        GoldenEvalOptions(
+            config_dir=config_dir,
+            db_path=db_path,
+            retrieval_only=True,
+            query_id="golden_research",
+            retrieval_planner=planner,
+            leader_rerank=True,
+            minimum_relevance_score=0.6,
+            require_usable_evidence=True,
+            relevance_policy="strict",
+            limit=1,
+        ),
+    )
+    result = report.results[0]
+
+    assert report.ok is False
+    assert result.candidate_retrieval_succeeded is True
+    assert result.usable_evidence_succeeded is False
+    assert result.relevance_policy_passed is False
+    assert result.passed is False
+
+
+def test_golden_retrieval_repair_reports_improvement_when_specific_evidence_found(
+    temp_config_factory,
+    tmp_path,
+):
+    config_dir = temp_config_factory()
+    _write_golden_questions(config_dir, text="研究", sources="line")
+    db_path = tmp_path / "golden.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        _insert_line_message(storage, text="研究の一般的な予定")
+        specific_id = _insert_line_message(storage, text="ProjectAlpha の具体的な準備")
+    finally:
+        storage.close()
+    index_text(db_path)
+    planner = FakeRetrievalPlanner(
+        RetrievalPlan(
+            intent="find specific project preparation",
+            main_entities=("ProjectAlpha",),
+            specific_concepts=(),
+            generic_concepts=("研究",),
+            retrieval_queries=("研究",),
+            evidence_acceptance_criteria=("contains ProjectAlpha",),
+        ),
+    )
+
+    report = run_golden_eval(
+        GoldenEvalOptions(
+            config_dir=config_dir,
+            db_path=db_path,
+            retrieval_only=True,
+            query_id="golden_research",
+            retrieval_planner=planner,
+            leader_rerank=True,
+            retrieval_repair=1,
+            limit=1,
+        ),
+    )
+    result = report.results[0]
+
+    assert result.repair_attempted is True
+    assert result.retrieval_repair_count == 1
+    assert result.repair_improved is True
+    assert result.pre_repair_usable_evidence_count == 0
+    assert result.post_repair_usable_evidence_count == 1
+    assert result.usable_evidence_succeeded is True
+    assert result.evidence_ids == (f"line_messages:{specific_id}",)
+    assert result.repair_queries_created_count >= 1
+
+
+def test_golden_retrieval_repair_reports_no_improvement_for_generic_only(
+    temp_config_factory,
+    tmp_path,
+):
+    config_dir = temp_config_factory()
+    _write_golden_questions(config_dir, text="研究", sources="line")
+    db_path = tmp_path / "golden.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        _insert_line_message(storage, text="研究の一般的な予定")
+    finally:
+        storage.close()
+    index_text(db_path)
+    planner = FakeRetrievalPlanner(
+        RetrievalPlan(
+            intent="find specific project preparation",
+            main_entities=("ProjectAlpha",),
+            specific_concepts=(),
+            generic_concepts=("研究",),
+            retrieval_queries=("研究",),
+        ),
+    )
+
+    report = run_golden_eval(
+        GoldenEvalOptions(
+            config_dir=config_dir,
+            db_path=db_path,
+            retrieval_only=True,
+            query_id="golden_research",
+            retrieval_planner=planner,
+            leader_rerank=True,
+            retrieval_repair=1,
+            limit=1,
+        ),
+    )
+    result = report.results[0]
+
+    assert result.repair_attempted is True
+    assert result.repair_improved is False
+    assert result.pre_repair_usable_evidence_count == 0
+    assert result.post_repair_usable_evidence_count == 0
+    assert result.usable_evidence_succeeded is False
+
+
 def test_golden_plan_source_preferences_can_affect_ranking(temp_config_factory, tmp_path):
     config_dir = temp_config_factory()
     _write_golden_questions(config_dir, text="研究", sources="line,notes")

@@ -359,6 +359,35 @@ diagnostics still apply: they are deterministic guardrails, while leader
 planning is an optional intelligent query-understanding layer that is slower and
 requires a local leader endpoint.
 
+Phase 8-L separates candidate retrieval from usable evidence acceptance. A
+query can now have `candidate_retrieval_succeeded=true` while
+`usable_evidence_succeeded=false` if every candidate is judged generic, weak, or
+unrelated. Reports include `usable_evidence_count`,
+`should_use_evidence_count`, `source_coverage_score`,
+`keyword_relevance_score`, `plan_relevance_score`, `final_relevance_score`, and
+`relevance_policy_passed`. This prevents generic-only evidence from receiving a
+high final relevance score.
+
+Use soft policy to keep diagnostics non-blocking, or strict policy when weak
+evidence should fail a quality gate:
+
+```bash
+pma eval golden --config configs/paths.local.yaml --retrieval-only \
+  --query-id qst_preparation \
+  --leader-plan \
+  --leader-rerank \
+  --retrieval-repair 1 \
+  --minimum-relevance-score 0.6 \
+  --require-usable-evidence \
+  --relevance-policy strict \
+  --json
+```
+
+Repair diagnostics report whether repair was attempted, whether usable evidence
+improved, the pre/post usable evidence counts, and the count of repair queries
+created. Raw repair query text stays hidden unless the existing `--show-plan`
+diagnostic is explicitly requested.
+
 Real-model smoke sends a compact redacted evidence packet by default. Use
 `--max-evidence-items` and `--max-evidence-chars` to keep the request small
 while checking endpoint, JSON, evidence-id, and critic behavior. Invalid JSON is

@@ -1199,6 +1199,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Display per-evidence relevance metadata without snippets.",
     )
     eval_golden_parser.add_argument(
+        "--minimum-relevance-score",
+        type=float,
+        default=0.6,
+        help="Minimum plan relevance score for usable evidence in strict checks.",
+    )
+    eval_golden_parser.add_argument(
+        "--require-usable-evidence",
+        action="store_true",
+        help="Fail golden quality checks when no evidence is accepted as usable.",
+    )
+    eval_golden_parser.add_argument(
+        "--relevance-policy",
+        choices=("soft", "strict"),
+        default="soft",
+        help="Whether weak usable-evidence relevance is a warning or failure.",
+    )
+    eval_golden_parser.add_argument(
         "--json",
         action="store_true",
         help="Print a structured privacy-safe JSON report.",
@@ -1821,6 +1838,9 @@ def _eval_golden_command(args: argparse.Namespace) -> int:
                 retrieval_repair=args.retrieval_repair,
                 show_plan=args.show_plan,
                 show_relevance=args.show_relevance,
+                minimum_relevance_score=args.minimum_relevance_score,
+                require_usable_evidence=args.require_usable_evidence,
+                relevance_policy=args.relevance_policy,
                 model_key=args.model_key,
                 allow_remote=args.allow_remote,
             ),
