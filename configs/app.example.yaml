@@ -1,0 +1,6 @@
+app_name: private-memory-agent
+environment: local
+privacy_mode: strict
+allow_network: false
+log_private_data: false
+default_timezone: Asia/Tokyo

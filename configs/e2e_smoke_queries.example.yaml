@@ -1,0 +1,41 @@
+# Generic smoke queries for real-data E2E checks.
+#
+# Keep this file portable and non-private. Local overrides can live in:
+#
+#   configs/e2e_smoke_queries.local.yaml
+#
+# The smoke command does not echo query text by default because local overrides
+# may contain sensitive words.
+#
+# Local query guidance:
+# - Put machine-specific smoke terms in configs/e2e_smoke_queries.local.yaml.
+# - Keep queries generic and non-private.
+# - Generic research/domain probes such as QST, HyperSIGMA, 月面水検出, 研究,
+#   外出, and 屋外 are reasonable examples when they match your own local data.
+# - Do not put private names, private facts, raw LINE text, note bodies,
+#   filenames, paths, or GPS coordinates in committed query files.
+
+queries:
+  photos_outing:
+    text: "最近の写真説明から、外出に関係しそうな記録を探してください。"
+    sources: photos
+
+  research_records:
+    text: "研究に関係しそうなメモやLINEの記録を探してください。"
+    sources: line,notes
+
+  notes_research:
+    text: "研究に関係するメモを探してください。"
+    sources: notes
+
+  notes_schedule:
+    text: "予定や準備に関係するメモを探してください。"
+    sources: notes
+
+  notes_reflection:
+    text: "考えたことや振り返りに関係するメモを探してください。"
+    sources: notes
+
+  insufficient_evidence:
+    text: "根拠が足りない場合は不明と答えてください。"
+    sources: photos,line,notes

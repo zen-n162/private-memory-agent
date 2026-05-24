@@ -1,0 +1,679 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Private Memory Agent 概要</title>
+  <style>
+    :root {
+      --bg: #f7f7f2;
+      --paper: #ffffff;
+      --ink: #18201b;
+      --muted: #56635c;
+      --line: #d9ded6;
+      --accent: #236b57;
+      --accent-2: #6d5f9f;
+      --soft: #eef5f2;
+      --warn: #fff5d8;
+      --danger: #8f2f24;
+      --shadow: 0 10px 30px rgba(24, 32, 27, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+        sans-serif;
+      line-height: 1.75;
+    }
+
+    a {
+      color: var(--accent);
+    }
+
+    .page {
+      width: min(1120px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 28px 0 56px;
+    }
+
+    header {
+      padding: 32px 0 20px;
+    }
+
+    .eyebrow {
+      margin: 0 0 8px;
+      color: var(--accent);
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(2rem, 5vw, 4rem);
+      line-height: 1.05;
+      letter-spacing: 0;
+    }
+
+    .summary {
+      max-width: 860px;
+      margin: 18px 0 0;
+      font-size: 1.15rem;
+      color: var(--muted);
+    }
+
+    .notice {
+      margin-top: 18px;
+      padding: 14px 16px;
+      border: 1px solid #d8bd67;
+      border-radius: 8px;
+      background: var(--warn);
+    }
+
+    main {
+      display: grid;
+      gap: 18px;
+    }
+
+    section {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 22px;
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: 1.35rem;
+      line-height: 1.25;
+    }
+
+    h3 {
+      margin: 18px 0 8px;
+      font-size: 1.05rem;
+    }
+
+    p {
+      margin: 0 0 10px;
+    }
+
+    ul,
+    ol {
+      margin: 8px 0 0;
+      padding-left: 1.4rem;
+    }
+
+    code {
+      padding: 0.1rem 0.25rem;
+      border-radius: 4px;
+      background: #edf0eb;
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono",
+        monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      margin: 10px 0 0;
+      padding: 14px;
+      overflow-x: auto;
+      border-radius: 8px;
+      background: #17201b;
+      color: #f7f7f2;
+      line-height: 1.55;
+    }
+
+    pre code {
+      padding: 0;
+      background: transparent;
+      color: inherit;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .card {
+      min-height: 100%;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfa;
+    }
+
+    .card strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .tag {
+      display: inline-block;
+      margin: 2px 4px 2px 0;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--soft);
+      color: var(--accent);
+      font-size: 0.86rem;
+      font-weight: 700;
+    }
+
+    .diagram,
+    .flow {
+      display: grid;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .diagram {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    .node {
+      min-height: 86px;
+      padding: 12px;
+      border: 2px solid var(--line);
+      border-radius: 8px;
+      background: var(--soft);
+    }
+
+    .node.core {
+      border-color: var(--accent);
+      background: #e3f3ed;
+    }
+
+    .node.guard {
+      border-color: var(--accent-2);
+      background: #f0eef8;
+    }
+
+    .flow {
+      grid-template-columns: repeat(8, minmax(0, 1fr));
+      align-items: stretch;
+    }
+
+    .step {
+      position: relative;
+      padding: 12px 10px;
+      border-radius: 8px;
+      background: #edf2ee;
+      border: 1px solid var(--line);
+      text-align: center;
+      font-weight: 700;
+    }
+
+    .step:not(:last-child)::after {
+      content: ">";
+      position: absolute;
+      right: -10px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--accent);
+      font-weight: 900;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      font-size: 0.95rem;
+    }
+
+    th,
+    td {
+      padding: 9px 8px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #f0f3ee;
+    }
+
+    .status {
+      white-space: nowrap;
+      font-weight: 700;
+      color: var(--accent);
+    }
+
+    .fiction {
+      border-left: 4px solid var(--accent);
+      padding: 12px 14px;
+      background: #f4faf7;
+      border-radius: 0 8px 8px 0;
+    }
+
+    .risk {
+      color: var(--danger);
+      font-weight: 700;
+    }
+
+    footer {
+      margin-top: 18px;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    @media (max-width: 860px) {
+      .grid,
+      .diagram {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .flow {
+        grid-template-columns: 1fr;
+      }
+
+      .step:not(:last-child)::after {
+        content: "v";
+        right: 50%;
+        top: auto;
+        bottom: -18px;
+        transform: translateX(50%);
+      }
+    }
+
+    @media (max-width: 560px) {
+      .page {
+        width: min(100vw - 24px, 1120px);
+        padding-top: 14px;
+      }
+
+      .grid,
+      .diagram {
+        grid-template-columns: 1fr;
+      }
+
+      section {
+        padding: 18px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <p class="eyebrow">Local-first personal memory AI</p>
+      <h1>Private Memory Agent</h1>
+      <p class="summary">
+        Private Memory Agent は、ユーザー自身の写真、LINE エクスポート、ノートを
+        ローカル環境で扱い、根拠を示しながら質問に答えるための AI エージェントです。
+      </p>
+      <div class="notice">
+        このページは説明用の静的 HTML です。実在の個人データ、実際の LINE 文面、
+        ノート本文、写真ファイル名、GPS 座標、秘密情報は含めていません。
+      </div>
+    </header>
+
+    <main>
+      <section id="what">
+        <h2>このアプリでできること</h2>
+        <div class="grid">
+          <div class="card">
+            <strong>記憶を探す</strong>
+            日付、人、場所、話題、イベントを手がかりに、ローカルの記録を検索します。
+          </div>
+          <div class="card">
+            <strong>何があったか説明する</strong>
+            写真、LINE、ノートの証拠を組み合わせ、できる範囲で出来事を説明します。
+          </div>
+          <div class="card">
+            <strong>根拠を表示する</strong>
+            回答だけでなく、どの証拠を使ったかを evidence id と安全なスニペットで示します。
+          </div>
+          <div class="card">
+            <strong>不確実性を述べる</strong>
+            証拠が弱い場合は断言せず、分からない点を明示します。
+          </div>
+          <div class="card">
+            <strong>根拠のない主張を避ける</strong>
+            検索された証拠に基づかない結論を出さない方針です。
+          </div>
+          <div class="card">
+            <strong>ローカルで動かす</strong>
+            既定では外部 API に送信せず、手元の設定とローカルモデルを前提にします。
+          </div>
+        </div>
+      </section>
+
+      <section id="sources">
+        <h2>データソース</h2>
+        <p>
+          対象データは、ユーザーが明示的に設定したローカルの読み取り専用ソースです。
+          アプリは元データを勝手に移動・削除・公開しません。
+        </p>
+        <div class="grid">
+          <div class="card"><strong>写真</strong>画像のメタデータ、撮影日時、必要に応じた画像説明。実モデル送信前にローカルで縮小・メタデータ除去します。</div>
+          <div class="card"><strong>LINE エクスポート</strong>テキスト形式のトーク履歴を構造化したメッセージ。</div>
+          <div class="card"><strong>ノート</strong>Markdown、TXT、JSON、PDF メタデータなどの個人メモ。</div>
+          <div class="card"><strong>派生メタデータ</strong>キャプション、エンティティ候補、イベント候補、注釈。</div>
+          <div class="card"><strong>SQLite データベース</strong>ローカルの構造化メタデータ保存先。</div>
+          <div class="card"><strong>ベクトルインデックス</strong>任意の埋め込み検索用。既定テストは軽量な fake/hash 実装です。</div>
+        </div>
+      </section>
+
+      <section id="architecture">
+        <h2>AI エージェント構成</h2>
+        <p>
+          Private Memory Agent は、ひとつの巨大なチャットボットではなく、
+          役割を分けたローカル処理の組み合わせとして設計されています。
+        </p>
+        <div class="diagram" aria-label="AI エージェント構成図">
+          <div class="node core"><strong>Leader Agent</strong><br>質問と証拠から最終回答を作る。</div>
+          <div class="node core"><strong>Retrieval Agent</strong><br>FTS、フィルタ、任意の意味検索で証拠を集める。</div>
+          <div class="node"><strong>Photo Understanding Agent</strong><br>画像説明、物体候補、OCR などを保存する。</div>
+          <div class="node"><strong>Japanese Text Agent</strong><br>LINE とノートから話題、日付、行動候補を抽出する。</div>
+          <div class="node"><strong>Timeline Agent</strong><br>時刻、場所、人候補、話題から仮説イベントを作る。</div>
+          <div class="node guard"><strong>Evidence Critic</strong><br>回答が既知の証拠 id に基づくか検査する。</div>
+          <div class="node guard"><strong>Privacy Guard</strong><br>名前や GPS などを表示前に保護する。</div>
+          <div class="node"><strong>Local API / UI</strong><br>localhost の API と最小 UI から操作する。</div>
+        </div>
+      </section>
+
+      <section id="flow">
+        <h2>処理の流れ</h2>
+        <div class="flow" aria-label="処理フロー図">
+          <div class="step">ingest</div>
+          <div class="step">normalize</div>
+          <div class="step">index</div>
+          <div class="step">retrieve</div>
+          <div class="step">pack evidence</div>
+          <div class="step">reason</div>
+          <div class="step">critique</div>
+          <div class="step">answer</div>
+        </div>
+        <p>
+          取り込み後、写真は必要に応じてローカルで前処理し、写真注釈もテキスト検索インデックスへ入れます。
+          FTS、キーワード fallback、任意のベクトル検索で証拠を取得し、
+          Leader Agent に渡す前に「証拠パック」として整形します。最終回答は
+          Evidence Critic と Privacy Guard のルールを通ってから表示されます。
+        </p>
+      </section>
+
+      <section id="models">
+        <h2>モデルの役割</h2>
+        <p>
+          実モデルはローカルサーバーを手動で起動して使います。テストや基本動作は
+          fake モデルで動くように作られており、GPU や実モデルファイルを必須にしません。
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>役割</th>
+              <th>想定モデル</th>
+              <th>現在の扱い</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>リーダー / 推論</td>
+              <td>DeepSeek 系ローカルモデル</td>
+              <td>OpenAI 互換 HTTP クライアントに対応。サーバー起動は手動。</td>
+            </tr>
+            <tr>
+              <td>日本語理解</td>
+              <td>Qwen3 Swallow など</td>
+              <td>JSON 抽出スキーマと fake テストを実装。実運用はローカル endpoint 設定が必要。</td>
+            </tr>
+            <tr>
+              <td>画像理解</td>
+              <td>Qwen3-VL</td>
+              <td>llama.cpp の OpenAI 互換マルチモーダル形式に対応。画像は縮小・EXIF 除去後に data URI で送信。</td>
+            </tr>
+            <tr>
+              <td>埋め込み</td>
+              <td>ruri、bge-m3、Qwen embedding など</td>
+              <td>fake/hash 実装と任意の sentence-transformers アダプタを実装。</td>
+            </tr>
+            <tr>
+              <td>reranker</td>
+              <td>ローカル reranker 候補</td>
+              <td>インターフェースと fake 実装中心。高度な実運用は計画中。</td>
+            </tr>
+            <tr>
+              <td>テスト用</td>
+              <td>fake clients</td>
+              <td>GPU、ネットワーク、実モデルなしで単体テスト可能。</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="answer-policy">
+        <h2>証拠に基づく回答ポリシー</h2>
+        <p>回答は、次の構造を持つことを目標にしています。</p>
+        <div class="grid">
+          <div class="card"><strong>conclusion</strong>証拠から言える結論。</div>
+          <div class="card"><strong>evidence</strong>使った証拠 id と安全なスニペット。</div>
+          <div class="card"><strong>confidence</strong>確信度。弱い証拠では低くする。</div>
+          <div class="card"><strong>unknowns</strong>まだ分からないこと、追加確認が必要なこと。</div>
+          <div class="card"><strong>used sources</strong>写真、LINE、ノートなど使用した種類。</div>
+          <div class="card"><strong>unsupported claims</strong>証拠外の推測は避ける。</div>
+        </div>
+      </section>
+
+      <section id="privacy">
+        <h2>プライバシーとセキュリティ方針</h2>
+        <ul>
+          <li><strong>local-first:</strong> 既定では外部 API に個人データを送りません。</li>
+          <li><strong>読み取り専用:</strong> 写真、LINE、ノートの元データは読み取り専用として扱います。</li>
+          <li><strong>ログ制限:</strong> 私的な本文、OCR、GPS、名前、ファイル名は既定でログに出しません。</li>
+          <li><strong>プロンプト注入対策:</strong> ノートや LINE 内の命令文を、システム命令として扱いません。</li>
+          <li><strong>自動本人断定なし:</strong> 顔や名前から人物同一性を自動断定せず、ユーザー確認を重視します。</li>
+          <li><strong>localhost 前提:</strong> API と UI はローカル利用を前提にし、公開プロキシに出しません。</li>
+        </ul>
+      </section>
+
+      <section id="example">
+        <h2>回答例（架空の例）</h2>
+        <div class="fiction">
+          <p><strong>質問:</strong> 「先週の展示会で何を見た？」</p>
+          <p><strong>結論:</strong> 架空の例では、展示会で新しいカメラ機材を見た可能性があります。</p>
+          <p><strong>証拠:</strong> <code>photos:12</code> の安全な画像説明、<code>notes:5</code> の展示会メモ。</p>
+          <p><strong>confidence:</strong> 0.62</p>
+          <p><strong>unknowns:</strong> 実際に購入したかどうかは、この証拠だけでは不明です。</p>
+          <p><strong>used sources:</strong> photos, notes</p>
+        </div>
+        <p>
+          この例は完全に架空です。実在の写真、メッセージ、ノート、人物名は使っていません。
+        </p>
+      </section>
+
+      <section id="roadmap">
+        <h2>開発ロードマップ</h2>
+        <p>
+          状態はこのリポジトリ内のコードとドキュメントに基づく保守的な表現です。
+          実モデルや実データ運用は、別途ローカル設定と手動確認が必要です。
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Phase</th>
+              <th>内容</th>
+              <th>状態</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>0-A</td><td>Python プロジェクト骨格、CLI、基本設定。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>0-B</td><td>設定レイヤーとローカルモデル registry。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>0-D</td><td>日本語 HTML 概要とメンテナンス規則。</td><td class="status">この版で追加</td></tr>
+            <tr><td>1-A</td><td>SQLite 構造化ストレージ。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>1-B</td><td>AI なしの写真メタデータ取り込み。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>1-C</td><td>LINE テキストエクスポート取り込み。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>1-D</td><td>ノート取り込み。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>2-A</td><td>SQLite FTS によるローカルテキスト検索。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>2-B</td><td>埋め込み抽象化と fake/hash 実装。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>2-C</td><td>任意の実ローカル埋め込みと Qdrant 接続。</td><td class="status">限定実装</td></tr>
+            <tr><td>3-A</td><td>モデル runtime クライアント抽象化。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>3-B</td><td>写真注釈パイプラインと llama.cpp 互換。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>3-C</td><td>日本語テキスト理解パイプライン。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>4-A</td><td>証拠検索サービス。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>4-B</td><td>Leader Agent の最小 RAG query flow。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>4-C</td><td>Evidence Critic と Privacy Guard。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>5-A</td><td>タイムラインイベント構築。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>5-B</td><td>エンティティ解決と alias。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>6-A</td><td>localhost FastAPI API。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>6-B</td><td>最小ローカル UI。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>7-A</td><td>合成評価と smoke test。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>7-B</td><td>RTX 4500 Ada 向け runtime profile。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>8-B</td><td>写真注釈バッチの監査と集計。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>8-C</td><td>実データ E2E smoke ワークフロー。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>8-D0</td><td>スキーマを見た検索診断と no-fallback 確認。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>8-D</td><td>写真注釈の検索インデックス化と日本語キーワード fallback。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>8-D1</td><td>手動 SQL 集計向けの互換 view と source_type 補助列。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>8-E</td><td>ノート証拠の検索カバレッジ回復と require-source 診断。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>8-F/8-F2/8-F3</td><td>DeepSeek 系 Leader の実モデル E2E smoke、JSON 抽出、repair retry、出力制御。</td><td class="status">限定実装</td></tr>
+            <tr><td>8-G</td><td>実モデル回答の明示表示、snippet 表示、answer audit。</td><td class="status">基本実装済み</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="commands">
+        <h2>開発者向けコマンド</h2>
+        <h3>実装済み</h3>
+        <pre><code>pma doctor
+pma stats
+pma models list
+pma models ping vision_common --vision-smoke
+pma annotate photos --status
+pma annotate photos --failed
+pma e2e smoke --dry-run
+pma e2e smoke --retrieval-only
+pma e2e smoke --retrieval-only --no-fallback
+pma e2e smoke --retrieval-only --diagnose --json
+pma e2e smoke --retrieval-only --no-fallback --require-source notes --json
+pma e2e smoke --fake-model
+pma models ping leader
+pma models ping leader --chat-smoke --max-tokens 64 --timeout-seconds 300
+pma models ping leader --json-smoke --max-tokens 128 --timeout-seconds 300
+pma e2e smoke --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --json
+pma e2e smoke --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --show-answer
+pma db schema
+pma retrieve audit --json
+pma annotate photos --limit 1 --show-errors --fail-fast --timeout-seconds 300
+pma ingest photos --configured --dry-run
+pma ingest line --configured --dry-run
+pma ingest notes --configured --dry-run
+pma index text
+pma search text "架空の検索語" --config configs/paths.local.yaml
+pma retrieve "架空の質問"
+pma query "架空の質問"
+pma runtime plan lightweight_query
+pma eval run --summary
+python -m pip install -e ".[dev]"
+python -m pytest -q</code></pre>
+        <h3>注意が必要</h3>
+        <p>
+          実データの取り込みや実モデル annotation は、ローカル設定を確認してから手動で実行します。
+          公開サーバーや外部送信を前提にしません。
+        </p>
+        <h3>実データE2E smokeの実行手順</h3>
+        <pre><code>pma stats --config configs/paths.local.yaml
+pma index text --config configs/paths.local.yaml
+pma e2e smoke --config configs/paths.local.yaml --dry-run
+pma e2e smoke --config configs/paths.local.yaml --retrieval-only
+pma e2e smoke --config configs/paths.local.yaml --retrieval-only --no-fallback
+pma e2e smoke --config configs/paths.local.yaml --retrieval-only --diagnose --json
+pma e2e smoke --config configs/paths.local.yaml --retrieval-only --no-fallback --require-source notes --json
+pma e2e smoke --config configs/paths.local.yaml --fake-model
+pma models ping leader --config configs/paths.local.yaml
+pma models ping leader --config configs/paths.local.yaml --chat-smoke --max-tokens 64 --timeout-seconds 300
+pma models ping leader --config configs/paths.local.yaml --json-smoke --max-tokens 128 --timeout-seconds 300
+pma e2e smoke --config configs/paths.local.yaml --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --json
+pma e2e smoke --config configs/paths.local.yaml --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --show-answer
+pma db schema --config configs/paths.local.yaml
+pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
+        <p>
+          E2E smoke は既存 DB の件数、インデックス状態、証拠検索、証拠パック、構造化回答を確認します。
+          既定では取り込みや写真注釈を実行せず、ファイル名、フルパス、GPS、LINE 本文、ノート本文、
+          画像キャプション全文、クエリ本文を表示しません。
+        </p>
+        <p>
+          smoke が成功しても検索品質が十分とは限りません。fallback だけで成功していないかを
+          <code>--no-fallback</code> と <code>pma retrieve audit</code> で確認します。
+          物理テーブル名は <code>pma db schema</code> で確認でき、現在のテキスト検索テーブルは
+          <code>text_search_documents</code> です。手動集計用には互換 view
+          <code>text_documents</code> もあります。
+          <code>pma index text</code> 実行後は、LINE、ノート、写真注釈が同じ検索診断に現れます。
+          日本語の長い質問は FTS だけでなくキーワード LIKE fallback でも候補数を確認します。
+          ノートの証拠を確認したい場合は <code>--require-source notes</code> を使い、
+          <code>source_stage_counts.notes</code> の候補数と drop reason を確認します。
+          <code>--fake-model</code> は実モデルを呼ばず、弱い LINE/ノート証拠では低い confidence を返すため、
+          Evidence Critic の検証を通して構造化回答の形だけを安全に確認できます。
+          実モデル確認は fake-model が通った後に <code>pma models ping leader</code> で endpoint を確認し、
+          <code>--chat-smoke --max-tokens 64</code> で短い生成を確認し、
+          <code>--json-smoke --max-tokens 128</code> で合成 JSON 応答を確認してから、
+          <code>--real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --json</code> から始めます。
+          PMA は許可された evidence ID と source label を prompt に明示し、DeepSeek 系 reasoning model が
+          <code>&lt;think&gt;</code> block、Markdown fence、JSON 前後の文章を出しても、
+          最初の妥当な JSON object を抽出し、
+          証拠 ID と used sources を Evidence Critic で検証します。
+          endpoint が対応している場合だけ <code>--response-format-json</code> で OpenAI 互換 JSON mode を要求します。
+          JSON が壊れた場合は既定で 1 回だけ短い repair prompt を送り、出力には
+          raw model output ではなく response length、extraction strategy、retry 状態、brace や
+          <code>&lt;think&gt;</code> の有無などの安全な metadata を表示します。
+          raw output は private content を含み得るため、明示的な
+          <code>--show-model-output</code> の時だけ truncated preview として表示します。
+          回答本文も private evidence 由来の内容を含み得るため、既定では表示しません。
+          ローカルで確認する場合だけ <code>--show-answer</code> を付けると、conclusion、confidence、
+          evidence references、used sources、unknowns を表示します。証拠 snippet はこの option では表示せず、
+          必要な場合だけ別の <code>--show-snippets</code> を明示します。
+          JSON には <code>answer_audit</code> として成功数、validation error 数、retry 成功数、
+          confidence 平均、evidence reference coverage、source coverage を安全な集計として出します。
+          <code>--show-answer</code> や <code>--show-snippets</code> の出力は公開チャットへ貼り付けないでください。
+          256 tokens で retrieval は成功しても JSON が完了しない場合は、同じ 1 query smoke を
+          <code>--max-tokens 512</code> または <code>--max-tokens 1024</code> で再試行します。
+          写真注釈数より text index 内の写真注釈数が少ない場合は、
+          <code>pma index text</code> の再実行を促す warning を表示します。
+          実モデル smoke では、既定でコンパクトな redacted evidence packet を送り、timeout、max tokens、
+          prompt size、送信した証拠件数を安全な診断として表示します。
+        </p>
+      </section>
+
+      <section id="limitations">
+        <h2>制限事項</h2>
+        <ul>
+          <li>証拠を超えて推測するべきではありません。</li>
+          <li>画像理解モデルは写真を誤読する可能性があります。</li>
+          <li>LINE エクスポート形式の違いにより、解析が完全でない場合があります。</li>
+          <li>人物同一性、特に顔と名前の対応はユーザー確認が必要です。</li>
+          <li>健康、法律、金銭、人間関係などの敏感な結論は慎重に扱う必要があります。</li>
+          <li>実モデルの品質、速度、VRAM 使用量はローカル環境と起動方法に依存します。</li>
+        </ul>
+      </section>
+
+      <section id="history">
+        <h2>更新履歴</h2>
+        <ul>
+          <li>2026-05-24: 実モデル回答の <code>--show-answer</code> 表示、<code>--show-snippets</code>、answer audit を追加。</li>
+          <li>2026-05-24: DeepSeek 系 Leader の実モデル E2E smoke、chat-smoke、json-smoke、JSON extraction 診断、出力制御、compact evidence 診断を追加。</li>
+          <li>2026-05-24: fake-model smoke が LINE/ノート証拠でも Evidence Critic を通るように更新。</li>
+          <li>2026-05-24: ノート証拠の検索カバレッジ診断と require-source を追加。</li>
+          <li>2026-05-24: 手動 SQLite 集計向けに text_documents view と embeddings.source_type を追加。</li>
+          <li>2026-05-24: 写真注釈のテキスト検索化と日本語キーワード fallback 診断を追加。</li>
+          <li>2026-05-24: スキーマ診断、検索 audit、no-fallback smoke を追加。</li>
+          <li>2026-05-24: text search コマンドで local config overlay を受け取れるように更新。</li>
+          <li>2026-05-24: 実データ E2E smoke コマンドと安全な実行手順を追加。</li>
+          <li>2026-05-24: annotation status/statistics commands を追加。</li>
+          <li>2026-05-24: Initial version.</li>
+        </ul>
+      </section>
+    </main>
+
+    <footer>
+      <p>
+        Private Memory Agent overview. This file is self-contained and can be opened
+        without network access.
+      </p>
+    </footer>
+  </div>
+</body>
+</html>

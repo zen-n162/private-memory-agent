@@ -1,0 +1,99 @@
+model_root: /home/zennakamura/MyApplication/models
+
+hardware:
+  gpu_name: NVIDIA RTX 4500 Ada Generation
+  vram_gb: 24
+  safe_model_vram_gb: 21
+  default_context_tokens: 8192
+  max_interactive_context_tokens: 16384
+
+leader:
+  provider: llama_cpp
+  role: leader_reasoning
+  model_dir: deepseek/DeepSeek-R1-0528-Qwen3-8B-GGUF
+  quantization: UD-Q4_K_XL
+  context_tokens: 8192
+  enabled: true
+  api_format: openai-compatible
+  endpoint_url: http://127.0.0.1:8080/v1
+  served_model_name: DeepSeek-R1-0528-Qwen3-8B-UD-Q4_K_XL.gguf
+  timeout_seconds: 2
+  request_timeout_seconds: 300
+  retries: 0
+
+leader_heavy:
+  provider: llama_cpp
+  role: heavy_reasoning
+  model_dir: deepseek/DeepSeek-R1-Distill-Qwen-14B-GGUF
+  quantization: Q4_K_M
+  context_tokens: 8192
+  enabled: false
+
+japanese_text:
+  provider: vllm
+  role: japanese_line_notes
+  model_dir: qwen/Qwen3-Swallow-8B-RL-v0.2-AWQ-INT4
+  context_tokens: 8192
+  enabled: true
+  api_format: openai-compatible
+  endpoint_url: http://127.0.0.1:8000/v1
+  timeout_seconds: 2
+  retries: 0
+
+vision_common:
+  provider: llama_cpp
+  role: photo_understanding
+  model_dir: qwen/Qwen3-VL-4B-Instruct-GGUF
+  served_model_name: Qwen3VL-4B-Instruct-Q4_K_M.gguf
+  quantization: Q4_K_M
+  context_tokens: 8192
+  enabled: true
+  api_format: openai-compatible
+  endpoint_url: http://127.0.0.1:8012/v1
+  timeout_seconds: 2
+  request_timeout_seconds: 300
+  retries: 0
+
+vision_heavy:
+  provider: llama_cpp
+  role: photo_understanding_heavy
+  model_dir: qwen/Qwen3-VL-8B-Thinking-GGUF
+  quantization: Q4_K_M
+  context_tokens: 8192
+  enabled: false
+
+text_embedding:
+  provider: sentence_transformers
+  role: text_embedding
+  model_dir: embedding/ruri-v3-310m
+  enabled: true
+
+text_embedding_bge_m3:
+  provider: sentence_transformers
+  role: text_embedding
+  model_dir: embedding/bge-m3
+  enabled: false
+
+text_embedding_qwen_06b:
+  provider: sentence_transformers
+  role: text_embedding
+  model_dir: qwen/Qwen3-Embedding-0.6B
+  enabled: false
+
+text_reranker:
+  provider: sentence_transformers
+  role: text_reranker
+  model_dir: reranker/ruri-v3-reranker-310m
+  enabled: true
+
+multimodal_embedding:
+  provider: transformers
+  role: multimodal_embedding
+  model_dir: qwen/Qwen3-VL-Embedding-2B
+  enabled: true
+
+multimodal_reranker:
+  provider: transformers
+  role: multimodal_reranker
+  model_dir: qwen/Qwen3-VL-Reranker-2B
+  enabled: true

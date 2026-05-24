@@ -1,0 +1,47 @@
+model_root: null
+app_data_dir: data/local
+log_dir: data/logs
+
+input_roots:
+  photos: null
+  line_exports: null
+  notes_exports: null
+
+raw_sources:
+  photos:
+    enabled: false
+    kind: photos
+    path: null
+    recursive: true
+    read_only: true
+
+  line:
+    enabled: false
+    kind: line
+    path: null
+    recursive: true
+    read_only: true
+
+  notes:
+    enabled: false
+    kind: notes
+    path: null
+    recursive: true
+    read_only: true
+
+storage:
+  sqlite_path: data/local/private_memory_agent.sqlite3
+  derived_artifacts_dir: data/local/derived
+  vector_store_dir: data/local/vector_store
+
+privacy:
+  mode: strict
+  allow_network: false
+  log_private_data: false
+  source_data_read_only: true
+
+ingestion:
+  default_dry_run: true
+  skip_hidden_files: true
+  follow_symlinks: false
+  compute_sha256: true

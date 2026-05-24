@@ -1,0 +1,78 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Environments
+.env
+.venv/
+venv/
+.env.*
+!.env.example
+
+# Local data
+data/
+*.sqlite
+*.sqlite3
+*.db
+*.duckdb
+*.parquet
+*.jsonl
+
+# User private data
+photos/
+line/
+notes/
+exports/
+imports/
+private/
+personal_data/
+
+# Models and caches
+models/
+*.gguf
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.onnx
+*.tflite
+.hf_cache/
+.cache/
+
+# Logs
+logs/
+*.log
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Local machine configuration
+configs/*.local.yaml
+.env.local
+.env.private
+
+# Local generated app data
+data/local/
+data/logs/
+data/tmp/
+data/cache/
+data/derived/
+
+# Real personal data must never be committed
+personal_lifelog_rag/
+notes_lifelog_rag/
+raw/
+imports/
+exports/
