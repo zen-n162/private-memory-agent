@@ -540,6 +540,7 @@
             <tr><td>8-M</td><td>repair query を specific concept/main entity 中心にし、E2E/golden で local semantic retrieval を任意利用。</td><td class="status">限定実装</td></tr>
             <tr><td>8-N</td><td>real local embedding alias、resume-safe embedding index、任意 reranker を semantic retrieval に接続。</td><td class="status">限定実装</td></tr>
             <tr><td>8-O</td><td>semantic retrieval 構成を usable evidence quality で比較し、device 診断も出す。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>9-A</td><td>localhost の evidence-first agent console。回答状態、証拠 ID、source coverage、relevance、plan、repair、privacy を安全に確認。</td><td class="status">基本実装済み</td></tr>
           </tbody>
         </table>
       </section>
@@ -574,6 +575,7 @@ pma index embeddings --model ruri-v3-310m --source line --source notes --skip-ex
 pma eval golden --retrieval-only --query-id qst_preparation --leader-plan --leader-rerank --retrieval-repair 1 --semantic --semantic-model ruri-v3-310m --json
 pma eval golden --retrieval-only --query-id qst_preparation --semantic --semantic-model ruri-v3-310m --reranker ruri-v3-reranker-310m --rerank-top-k 20 --json
 pma eval semantic-compare --query-id qst_preparation --embedding-device cpu --json
+pma api serve --host 127.0.0.1 --port 8787
 pma eval golden --retrieval-only --query-id qst_preparation --leader-plan --leader-rerank --retrieval-repair 1 --minimum-relevance-score 0.6 --require-usable-evidence --relevance-policy strict --json
 pma eval golden --fake-model --query-limit 2 --json
 pma eval golden --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --json
@@ -620,6 +622,7 @@ pma index embeddings --config configs/paths.local.yaml --model ruri-v3-310m --so
 pma eval golden --config configs/paths.local.yaml --retrieval-only --query-id qst_preparation --leader-plan --leader-rerank --retrieval-repair 1 --semantic --semantic-model ruri-v3-310m --json
 pma eval golden --config configs/paths.local.yaml --retrieval-only --query-id qst_preparation --semantic --semantic-model ruri-v3-310m --reranker ruri-v3-reranker-310m --rerank-top-k 20 --json
 pma eval semantic-compare --config configs/paths.local.yaml --query-id qst_preparation --embedding-device cpu --json
+pma api serve --config configs/paths.local.yaml --host 127.0.0.1 --port 8787
 pma eval golden --config configs/paths.local.yaml --retrieval-only --query-id qst_preparation --leader-plan --leader-rerank --retrieval-repair 1 --minimum-relevance-score 0.6 --require-usable-evidence --relevance-policy strict --json
 pma eval golden --config configs/paths.local.yaml --fake-model --query-limit 2 --json
 pma eval golden --config configs/paths.local.yaml --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --json
@@ -722,6 +725,18 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           <code>--show-answer</code> や <code>--show-snippets</code> を使った report は private output として扱い、
           公開チャットへ貼り付けないでください。
         </p>
+        <p>
+          9-A では <code>pma api serve --config configs/paths.local.yaml --host 127.0.0.1 --port 8787</code>
+          で起動する localhost UI を evidence-first agent console に更新しました。
+          <code>http://127.0.0.1:8787/ui</code> では質問、retrieval-only / fake-model / real-model、
+          leader plan、leader rerank、semantic retrieval、reranker、retrieval repair、strict relevance、
+          show_answer、show_snippets を切り替えられます。画面は <code>POST /api/chat/query</code> と
+          <code>GET /api/system/status</code> を使い、CLI を shell out せず既存 E2E retrieval path を呼びます。
+          既定では回答本文と snippet を表示せず、証拠 ID、source type、should_use、specificity、
+          relevance score、reason category、agent trace、privacy status だけを表示します。
+          <code>show_answer</code> と <code>show_snippets</code> はローカル確認用の明示操作であり、
+          snippet は truncated/redacted されますが private output として扱います。
+        </p>
       </section>
 
       <section id="limitations">
@@ -739,6 +754,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
       <section id="history">
         <h2>更新履歴</h2>
         <ul>
+          <li>2026-05-25: localhost evidence-first agent console、<code>/api/chat/query</code>、<code>/api/system/status</code> を追加。</li>
           <li>2026-05-25: semantic retrieval 構成比較と embedding device 診断を追加。</li>
           <li>2026-05-25: real embedding alias、source-filtered/resume-safe embedding index、optional local reranker を追加。</li>
           <li>2026-05-25: repair query expansion と <code>--semantic</code> による E2E/golden の local semantic retrieval を追加。</li>

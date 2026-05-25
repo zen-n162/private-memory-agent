@@ -1,7 +1,9 @@
 # Local API
 
 Phase 6-A exposes a local FastAPI API for private-memory-agent. Phase 6-B adds a
-minimal browser UI served by the same localhost app.
+minimal browser UI served by the same localhost app. Phase 9-A replaces the
+browser page with an evidence-first local agent console while keeping the API
+localhost-only.
 
 ## Localhost-Only Assumption
 
@@ -31,31 +33,79 @@ http://127.0.0.1:8000/ui
 
 - `GET /api/health`
 - `POST /api/query`
+- `POST /api/chat/query`
+- `GET /api/system/status`
 - `POST /api/ingest/photos`
 - `POST /api/ingest/line`
 - `POST /api/ingest/notes`
 - `GET /api/events`
 - `GET /api/entities`
 
-## Minimal UI
+## Evidence-First Agent Console
 
 The `/ui` page is a small FastAPI-served HTML document. It has no frontend build
-step and no separate JavaScript dependencies. It submits query requests to
-`POST /api/query` with selected source filters for photos, LINE, and notes.
-It defaults to the fake local client for safe setup and can target a configured
-OpenAI-compatible local endpoint by changing the client and model key controls.
+step, external CDN, external font, or JavaScript dependency. It submits query
+requests to `POST /api/chat/query` and reads count-only system status from
+`GET /api/system/status`.
 
-The UI displays:
+The console defaults to retrieval-only mode. Real-model generation, answer text,
+and snippets are all explicit choices. It displays:
 
-- answer conclusion
+- answer success
+- answer conclusion only when `show_answer` is enabled
 - confidence
 - unknowns
 - used sources
-- evidence ids, source kinds, scores, and snippets
+- evidence references
+- evidence ids
+- source coverage
+- per-evidence relevance metadata
+- leader-plan counters
+- semantic/reranker candidate counts
+- retrieval repair status
+- privacy status
 
-Snippets are whatever the API response returns. By default, that means redacted
-safe snippets only. The private display toggle still requires the backend config
-to allow private display before any unredacted text can be returned.
+Snippets are hidden by default. If `show_snippets` is enabled, the API returns
+truncated/redacted snippets only. Raw model output is not returned by the
+console endpoint.
+
+## Chat Query Endpoint
+
+`POST /api/chat/query` is a UI-facing adapter over the existing E2E retrieval
+pipeline. It does not shell out to the CLI.
+
+Useful request fields:
+
+- `mode`: `retrieval-only`, `fake-model`, or `real-model`
+- `sources`: `photos`, `line`, `notes`
+- `leader_plan`
+- `leader_rerank`
+- `semantic`
+- `semantic_model`
+- `reranker`
+- `retrieval_repair`
+- `strict_relevance`
+- `show_answer`
+- `show_snippets`
+- `timeout_seconds`
+- `max_tokens`
+
+Default output contains counts, ids, source labels, relevance metadata, and
+status only. It does not include raw LINE text, note bodies, captions, file
+names, paths, GPS, EXIF, OCR, raw model output, or full retrieval plans.
+
+## System Status Endpoint
+
+`GET /api/system/status` returns privacy-safe operational metadata:
+
+- DB existence
+- source and index counts when the DB exists
+- embedding model count breakdown
+- configured model endpoints
+- localhost/privacy flags
+
+Endpoint checks are count/configuration only by default. The status endpoint does
+not enumerate source directories or print private file paths.
 
 ## Privacy Defaults
 

@@ -78,6 +78,11 @@ This document outlines the development roadmap for private-memory-agent.
   `pma eval semantic-compare` compares text-only, hash semantic, real semantic,
   reranker, and leader-planned variants by judged usable evidence rather than
   candidate counts alone, with embedding device diagnostics.
+- Phase 9-A adds a localhost evidence-first agent console:
+  `/ui` now calls `POST /api/chat/query` and `GET /api/system/status`, showing
+  answer status, evidence ids, source coverage, relevance metadata,
+  leader-plan counters, retrieval repair status, and privacy state. Answer text
+  and snippets stay hidden unless explicitly enabled.
 
 ## 実データE2E smokeの実行手順
 
@@ -271,3 +276,28 @@ pma eval semantic-compare --config configs/paths.local.yaml \
 Configurations without leader relevance judging are marked
 `quality_judged=false`, so reranker-only candidate improvements are not treated
 as final answer quality.
+
+## Local Agent Console
+
+Run the localhost API and open the evidence-first console:
+
+```bash
+pma api serve --config configs/paths.local.yaml --host 127.0.0.1 --port 8787
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8787/ui
+```
+
+Recommended order:
+
+1. Start with `retrieval-only`.
+2. Try `fake-model` for structured answer validation.
+3. Use `real-model` only after `pma models ping leader` succeeds.
+
+The UI defaults to hidden answer text and hidden snippets. Enable
+`show_answer` only for local inspection. Enable `show_snippets` only when you
+need truncated local evidence snippets; snippet output may contain private
+evidence-derived content and should not be pasted into public chats.

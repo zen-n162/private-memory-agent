@@ -44,16 +44,18 @@ output.
 ## Local API And UI
 
 Phase 6-A adds a FastAPI API for localhost use only. Phase 6-B adds a minimal
-HTML UI served by the same local app.
+HTML UI served by the same local app. Phase 9-A updates `/ui` into an
+evidence-first local agent console.
 
 - Default bind is `127.0.0.1`.
 - `pma api serve` rejects non-loopback hosts.
 - There is no authentication yet.
 - API responses are redacted by default.
 - Ingest endpoints return count-only summaries.
-- The UI only renders API responses and defaults to redacted snippets.
-- The UI private display toggle is only a request; backend config must also
-  allow private display.
+- The UI only renders API responses.
+- Answer text and snippets are hidden by default.
+- `show_answer` and `show_snippets` are explicit local-only inspection choices.
+- The console endpoint does not return raw model output.
 
 Do not expose the API through a public proxy, tunnel, or shared host until a
 future phase adds authentication and explicit access controls.

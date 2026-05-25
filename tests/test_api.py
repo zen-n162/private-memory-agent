@@ -46,14 +46,74 @@ def test_local_ui_is_served_without_private_data(temp_config_factory, tmp_path):
     assert response.headers["content-type"].startswith("text/html")
     assert root_response.status_code in {307, 308}
     assert root_response.headers["location"] == "/ui"
-    assert "Local-only UI" in response.text
+    assert "Private Memory Agent Console" in response.text
+    assert "Local-only developer console" in response.text
     assert 'value="photos"' in response.text
     assert 'value="line"' in response.text
     assert 'value="notes"' in response.text
-    assert 'value="openai-compatible"' in response.text
-    assert 'id="model-key"' in response.text
-    assert 'fetch("/api/query"' in response.text
+    assert "leader_plan" in response.text
+    assert "show_snippets" in response.text
+    assert 'fetch("/api/chat/query"' in response.text
+    assert 'fetch("/api/system/status"' in response.text
     assert "秘密" not in response.text
+
+
+@requires_working_testclient
+def test_chat_query_endpoint_returns_evidence_console_payload(temp_config_factory, tmp_path):
+    db_path = tmp_path / "metadata.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        storage.line_messages.insert_message(
+            source_item_id=None,
+            conversation_id="fixture-room",
+            message_id="line-chat-api-1",
+            sender_id="fixture-speaker",
+            sent_at="2026-05-24T09:00:00",
+            message_type="text",
+            body_text="研究 chat private body",
+        )
+    finally:
+        storage.close()
+    from private_memory_agent.retrieval import index_text
+
+    index_text(db_path)
+    app = create_app(db_path=db_path, config_dir=temp_config_factory())
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/chat/query",
+        json={
+            "question": "研究",
+            "mode": "fake-model",
+            "sources": ["line"],
+            "show_answer": False,
+        },
+    )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["answer"]["answer_succeeded"] is True
+    assert payload["answer"]["conclusion"] is None
+    assert payload["evidence"]
+    assert payload["trace"]["plan_created"] is True
+    assert payload["privacy"]["snippets_hidden"] is True
+    assert "chat private body" not in response.text
+
+
+@requires_working_testclient
+def test_system_status_endpoint_returns_count_only(temp_config_factory, tmp_path):
+    db_path = tmp_path / "metadata.sqlite3"
+    initialize_database(db_path).close()
+    app = create_app(db_path=db_path, config_dir=temp_config_factory())
+    client = TestClient(app)
+
+    response = client.get("/api/system/status")
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["localhost_only"] is True
+    assert payload["db_exists"] is True
+    assert str(db_path) not in response.text
 
 
 @requires_working_testclient

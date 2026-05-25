@@ -728,3 +728,41 @@ The comparison report includes `embedding_device_status` with the requested
 device, selected device, CUDA availability if inspectable, warning detection if
 captured, and a recommendation. This is diagnostic only; PMA still never starts
 model servers or downloads model files automatically.
+
+## Local Agent Console
+
+Phase 9-A exposes a local evidence-first browser console through the FastAPI
+app:
+
+```bash
+pma api serve --config configs/paths.local.yaml --host 127.0.0.1 --port 8787
+```
+
+Open:
+
+```text
+http://127.0.0.1:8787/ui
+```
+
+Use the console in this order:
+
+1. `retrieval-only` to inspect evidence and relevance metadata without model
+   generation.
+2. `fake-model` to check structured answer flow.
+3. `real-model` only after `pma models ping leader --config
+   configs/paths.local.yaml` succeeds.
+
+The console can toggle leader planning, plan-aware rerank, semantic retrieval,
+reranker use, retrieval repair, strict relevance, answer display, and snippet
+display. Defaults stay local and cheap: retrieval-only, leader-plan metadata,
+retrieval repair enabled, answer text hidden, snippets hidden, and raw model
+output unavailable.
+
+`GET /api/system/status` returns DB/index counts and configured endpoint
+metadata without model prompts. `POST /api/chat/query` uses the existing E2E
+retrieval/answer path directly rather than shelling out to the CLI.
+
+Answer text and snippets may contain private evidence-derived content. Keep them
+hidden for normal checks and only enable `show_answer` or `show_snippets` during
+local inspection. The console never prints raw LINE messages, note bodies,
+captions, filenames, full paths, GPS, EXIF, OCR, or raw model output by default.

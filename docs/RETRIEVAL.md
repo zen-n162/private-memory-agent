@@ -524,6 +524,27 @@ and fail closed when a log message would contain known raw private fragments.
 This phase does not add an LLM critic. Future phases can add model-assisted
 claim decomposition, but unit tests remain deterministic and model-free.
 
+## Evidence-First Agent Console
+
+Phase 9-A adds a local browser console that surfaces retrieval metadata without
+making CLI reports larger:
+
+```bash
+pma api serve --config configs/paths.local.yaml --host 127.0.0.1 --port 8787
+```
+
+Open `http://127.0.0.1:8787/ui`.
+
+The console calls `POST /api/chat/query`, which reuses the E2E retrieval path.
+It can show evidence ids, source labels, source coverage, plan metadata counts,
+semantic candidate counts, reranked candidate counts, retrieval repair status,
+usable evidence status, and per-evidence relevance metadata when plan-aware
+judging is enabled.
+
+Default mode is retrieval-only and does not show answer text or snippets.
+`show_answer` and `show_snippets` are separate explicit toggles. Snippets are
+truncated/redacted and remain local-only debugging output.
+
 ## Optional Integration Tests
 
 Real embedding model tests are skipped unless explicitly enabled:

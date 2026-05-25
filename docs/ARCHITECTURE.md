@@ -57,7 +57,8 @@ Entity names and aliases are private. CLI listing redacts them by default.
 ## Local API And UI
 
 Phase 6-A adds a thin FastAPI layer under `private_memory_agent.api`. Phase 6-B
-adds a minimal evidence-first browser UI served by that same app.
+adds a minimal browser UI served by that same app. Phase 9-A turns `/ui` into a
+developer-facing evidence-first agent console.
 
 The API reuses the same local services as the CLI for query, ingestion, events,
 and entities. It is not a separate data path. The app factory stores default
@@ -69,8 +70,11 @@ default and rejects non-loopback hosts because there is no authentication yet.
 Responses are redacted by default.
 
 The `/ui` route returns a small static HTML page with inline CSS and JavaScript.
-It calls `POST /api/query`, passes source filters, and renders the structured
-answer plus evidence snippets returned by the API. The UI does not read source
+It calls `POST /api/chat/query` for one evidence-first console query and
+`GET /api/system/status` for safe counts/configuration metadata. The chat API
+adapts the existing E2E retrieval/answer path, so it can expose source coverage,
+relevance metadata, semantic/reranker counters, retrieval repair status, and
+privacy flags without shelling out to the CLI. The UI does not read source
 files, bypass API redaction, or add a separate frontend runtime.
 
 ## Evaluation

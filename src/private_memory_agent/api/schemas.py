@@ -11,6 +11,22 @@ SourceKind = Literal["photos", "line", "notes"]
 SemanticModel = Literal["none", "hash", "fake"]
 LeaderClient = Literal["fake", "openai-compatible"]
 EntityType = Literal["person", "place", "organization", "topic"]
+ChatConsoleMode = Literal["retrieval-only", "fake-model", "real-model"]
+ChatConsoleSemanticModel = Literal[
+    "none",
+    "hash",
+    "fake",
+    "ruri-v3-310m",
+    "ruri-v3-130m",
+    "bge-m3",
+    "qwen3-embedding-0.6b",
+]
+ChatConsoleReranker = Literal[
+    "none",
+    "fake",
+    "ruri-v3-reranker-310m",
+    "qwen3-reranker-0.6b",
+]
 
 
 class APIModel(BaseModel):
@@ -44,6 +60,53 @@ class QueryResponse(APIModel):
     answer: dict[str, Any]
     evidence: list[dict[str, Any]]
     redacted: bool
+
+
+class ChatQueryRequest(APIModel):
+    question: str = Field(min_length=1)
+    db_path: Path | None = None
+    mode: ChatConsoleMode = "retrieval-only"
+    sources: list[SourceKind] = Field(default_factory=list)
+    leader_plan: bool = True
+    leader_rerank: bool = True
+    semantic: bool = False
+    semantic_model: ChatConsoleSemanticModel = "hash"
+    semantic_top_k: int | None = Field(default=20, gt=0, le=200)
+    semantic_weight: float = Field(default=1.0, ge=0.0, le=10.0)
+    reranker: ChatConsoleReranker = "none"
+    rerank_top_k: int | None = Field(default=20, gt=0, le=200)
+    retrieval_repair: int = Field(default=1, ge=0, le=3)
+    strict_relevance: bool = False
+    minimum_relevance_score: float = Field(default=0.6, ge=0.0, le=1.0)
+    show_answer: bool = False
+    show_snippets: bool = False
+    snippet_chars: int = Field(default=160, gt=0, le=500)
+    limit: int = Field(default=5, gt=0, le=20)
+    timeout_seconds: float | None = Field(default=None, gt=0)
+    max_tokens: int = Field(default=256, gt=0, le=4096)
+    model_key: str = "leader"
+    embedding_device: Literal["auto", "cpu", "cuda"] = "auto"
+
+
+class ChatQueryResponse(APIModel):
+    ok: bool
+    mode: ChatConsoleMode
+    answer: dict[str, Any]
+    evidence: list[dict[str, Any]]
+    trace: dict[str, Any]
+    privacy: dict[str, Any]
+    warnings: list[str]
+
+
+class SystemStatusResponse(APIModel):
+    ok: bool
+    localhost_only: bool
+    db_exists: bool
+    counts: dict[str, Any]
+    indexes: dict[str, Any]
+    models: list[dict[str, Any]]
+    privacy: dict[str, Any]
+    warnings: list[str]
 
 
 class IngestPhotosRequest(APIModel):

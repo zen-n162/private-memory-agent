@@ -18,6 +18,8 @@ from private_memory_agent.agent import (
     run_query_flow,
 )
 from private_memory_agent.api.schemas import (
+    ChatQueryRequest,
+    ChatQueryResponse,
     EntitiesResponse,
     EntityType,
     EventsResponse,
@@ -30,7 +32,14 @@ from private_memory_agent.api.schemas import (
     IngestPhotosResponse,
     QueryRequest,
     QueryResponse,
+    SystemStatusResponse,
 )
+from private_memory_agent.api.console import (
+    ChatConsoleOptions,
+    build_system_status,
+    run_chat_console_query,
+)
+from private_memory_agent.api.ui import agent_console_html
 from private_memory_agent.config import load_config
 from private_memory_agent.entities import list_entities
 from private_memory_agent.ingestion import ingest_line_exports, ingest_notes, ingest_photos
@@ -65,7 +74,7 @@ def create_app(
 
     @app.get("/ui", response_class=HTMLResponse, include_in_schema=False)
     def local_ui() -> HTMLResponse:
-        return HTMLResponse(_local_ui_html())
+        return HTMLResponse(agent_console_html())
 
     @app.get("/api/health", response_model=HealthResponse)
     def health() -> HealthResponse:
@@ -98,6 +107,53 @@ def create_app(
         except (AnswerValidationError, RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=_safe_error(str(exc))) from exc
         return result.to_dict()
+
+    @app.post("/api/chat/query", response_model=ChatQueryResponse)
+    def chat_query(payload: ChatQueryRequest, request: Request) -> dict[str, Any]:
+        try:
+            return run_chat_console_query(
+                ChatConsoleOptions(
+                    question=payload.question,
+                    config_dir=request.app.state.config_dir,
+                    paths_config=request.app.state.paths_config,
+                    db_path=_request_db_path(request, payload.db_path),
+                    mode=payload.mode,
+                    sources=tuple(payload.sources),
+                    leader_plan=payload.leader_plan,
+                    leader_rerank=payload.leader_rerank,
+                    semantic=payload.semantic,
+                    semantic_model=payload.semantic_model,
+                    semantic_top_k=payload.semantic_top_k,
+                    semantic_weight=payload.semantic_weight,
+                    reranker=payload.reranker,
+                    rerank_top_k=payload.rerank_top_k,
+                    retrieval_repair=payload.retrieval_repair,
+                    strict_relevance=payload.strict_relevance,
+                    minimum_relevance_score=payload.minimum_relevance_score,
+                    show_answer=payload.show_answer,
+                    show_snippets=payload.show_snippets,
+                    snippet_chars=payload.snippet_chars,
+                    limit=payload.limit,
+                    timeout_seconds=payload.timeout_seconds,
+                    max_tokens=payload.max_tokens,
+                    model_key=payload.model_key,
+                    embedding_device=payload.embedding_device,
+                    allow_remote=False,
+                ),
+            )
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=_safe_error(str(exc))) from exc
+
+    @app.get("/api/system/status", response_model=SystemStatusResponse)
+    def system_status(request: Request, db_path: Path | None = None) -> dict[str, Any]:
+        try:
+            return build_system_status(
+                config_dir=request.app.state.config_dir,
+                paths_config=request.app.state.paths_config,
+                db_path=_request_db_path(request, db_path),
+            )
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=_safe_error(str(exc))) from exc
 
     @app.post("/api/ingest/photos", response_model=IngestPhotosResponse)
     def ingest_photo_metadata(payload: IngestPhotosRequest, request: Request) -> dict[str, Any]:
