@@ -440,6 +440,47 @@ pma eval golden --config configs/paths.local.yaml --retrieval-only \
 Rerankers are local-only and are not loaded in unit tests. Default output shows
 `semantic_embedding_model_id`, `reranker_model_id`, and safe counts only.
 
+## Semantic Retrieval Quality Comparison
+
+Phase 8-O adds a comparison command for checking which retrieval configuration
+actually improves usable evidence:
+
+```bash
+pma eval semantic-compare --config configs/paths.local.yaml \
+  --query-id qst_preparation \
+  --json
+```
+
+The comparison runs privacy-safe golden retrieval variants such as:
+
+- `text_only`
+- `hash_semantic`
+- `ruri_v3_310m`
+- `ruri_v3_310m_plus_reranker`
+- `leader_plan_ruri`
+- `leader_plan_ruri_plus_reranker`
+
+Candidate counts alone are not treated as answer quality. Configurations that
+retrieve candidates without leader-plan relevance judging are marked with
+`quality_judged=false` and warn that relevance judging did not run. The
+recommended configuration is selected from judged configurations using strict
+pass, usable evidence count, final relevance score, and source coverage.
+
+Use CPU explicitly if local PyTorch/SentenceTransformers emits CUDA driver
+warnings:
+
+```bash
+pma eval semantic-compare --config configs/paths.local.yaml \
+  --query-id qst_preparation \
+  --embedding-device cpu \
+  --json
+```
+
+The report includes `embedding_device_status` with CUDA availability, warning
+detection when available, selected device, and a recommendation. It still hides
+question text, evidence snippets, raw plans, filenames, paths, GPS, OCR, LINE
+text, note bodies, captions, and raw model output by default.
+
 Repair query expansion now prefers `specific_concepts` and `main_entities` from
 the `RetrievalPlan` and avoids generic-only repair terms when specific terms are
 available. Reports include `repair_specific_query_count`,

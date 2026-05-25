@@ -696,3 +696,35 @@ note bodies, captions, filenames, paths, GPS, EXIF, OCR, raw embedding input, or
 full repair queries by default. Real sentence-transformer semantic retrieval
 requires explicit indexing/search commands and optional integration tests;
 default unit tests stay model-free.
+
+## Semantic Comparison And Device Diagnostics
+
+Phase 8-O adds a quality comparison workflow:
+
+```bash
+pma eval semantic-compare --config configs/paths.local.yaml \
+  --query-id qst_preparation \
+  --json
+```
+
+This compares text-only, hash semantic, real semantic, real semantic plus
+reranker, leader-planned semantic, and leader-planned semantic plus reranker
+configurations. A reranker-only run can improve ordering, but it does not prove
+evidence quality unless leader-plan relevance judging also runs. Reports mark
+those configurations as `quality_judged=false`.
+
+If PyTorch emits a warning like `NVIDIA driver on your system is too old`,
+SentenceTransformers may fall back to CPU or fail to use CUDA correctly. Use CPU
+explicitly until the driver/runtime stack is fixed:
+
+```bash
+pma eval semantic-compare --config configs/paths.local.yaml \
+  --query-id qst_preparation \
+  --embedding-device cpu \
+  --json
+```
+
+The comparison report includes `embedding_device_status` with the requested
+device, selected device, CUDA availability if inspectable, warning detection if
+captured, and a recommendation. This is diagnostic only; PMA still never starts
+model servers or downloads model files automatically.

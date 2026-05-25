@@ -53,10 +53,14 @@ from private_memory_agent.entities import (
 )
 from private_memory_agent.evaluation import (
     GoldenEvalOptions,
+    SemanticCompareOptions,
     format_golden_eval_report,
+    format_semantic_compare_report,
     golden_report_to_json,
     run_golden_eval,
+    run_semantic_compare,
     run_synthetic_eval,
+    semantic_compare_report_to_json,
     write_golden_outputs,
 )
 from private_memory_agent.ingestion import ingest_line_exports, ingest_notes, ingest_photos
@@ -370,6 +374,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Number of top retrieval candidates to rerank.",
+    )
+    e2e_smoke_parser.add_argument(
+        "--embedding-device",
+        choices=("auto", "cpu", "cuda"),
+        default="auto",
+        help="Device hint for real local embedding models.",
     )
     e2e_smoke_parser.add_argument(
         "--json",
@@ -1357,6 +1367,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of top retrieval candidates to rerank.",
     )
     eval_golden_parser.add_argument(
+        "--embedding-device",
+        choices=("auto", "cpu", "cuda"),
+        default="auto",
+        help="Device hint for real local embedding models.",
+    )
+    eval_golden_parser.add_argument(
         "--json",
         action="store_true",
         help="Print a structured privacy-safe JSON report.",
@@ -1374,6 +1390,110 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional JSONL report output path.",
     )
     eval_golden_parser.set_defaults(func=_eval_golden_command)
+
+    eval_semantic_compare_parser = eval_subparsers.add_parser(
+        "semantic-compare",
+        help="Compare semantic retrieval configurations by usable evidence quality.",
+    )
+    _add_config_dir_argument(eval_semantic_compare_parser)
+    eval_semantic_compare_parser.add_argument(
+        "--db",
+        type=Path,
+        default=DEFAULT_E2E_DB_PATH,
+        help="SQLite database path to evaluate.",
+    )
+    eval_semantic_compare_parser.add_argument(
+        "--questions-config",
+        type=Path,
+        default=None,
+        help="Optional golden question YAML file.",
+    )
+    eval_semantic_compare_parser.add_argument(
+        "--query-limit",
+        type=int,
+        default=None,
+        help="Limit how many golden questions are compared.",
+    )
+    eval_semantic_compare_parser.add_argument(
+        "--query-id",
+        default=None,
+        help="Run only the golden question with this id.",
+    )
+    eval_semantic_compare_parser.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_E2E_QUERY_LIMIT,
+        help="Maximum evidence items per configuration.",
+    )
+    eval_semantic_compare_parser.add_argument(
+        "--real-semantic-model",
+        choices=tuple(choice for choice in SEMANTIC_MODEL_CHOICES if choice != "none"),
+        default="ruri-v3-310m",
+        help="Configured real semantic model alias used by ruri comparison configs.",
+    )
+    eval_semantic_compare_parser.add_argument(
+        "--real-reranker",
+        choices=RERANKER_MODEL_CHOICES,
+        default="ruri-v3-reranker-310m",
+        help="Configured reranker alias used by reranker comparison configs.",
+    )
+    eval_semantic_compare_parser.add_argument(
+        "--semantic-top-k",
+        type=int,
+        default=20,
+        help="Semantic retrieval candidate limit before merge/ranking.",
+    )
+    eval_semantic_compare_parser.add_argument(
+        "--semantic-weight",
+        type=float,
+        default=1.0,
+        help="Score multiplier for semantic retrieval candidates.",
+    )
+    eval_semantic_compare_parser.add_argument(
+        "--rerank-top-k",
+        type=int,
+        default=20,
+        help="Number of top retrieval candidates to rerank.",
+    )
+    eval_semantic_compare_parser.add_argument(
+        "--retrieval-repair",
+        type=int,
+        default=1,
+        help="Retry weak planned retrieval up to this many times.",
+    )
+    eval_semantic_compare_parser.add_argument(
+        "--minimum-relevance-score",
+        type=float,
+        default=0.6,
+        help="Minimum judged relevance score for strict usable evidence.",
+    )
+    eval_semantic_compare_parser.add_argument(
+        "--embedding-device",
+        choices=("auto", "cpu", "cuda"),
+        default="auto",
+        help="Device hint for real local embedding models.",
+    )
+    eval_semantic_compare_parser.add_argument(
+        "--show-relevance",
+        action="store_true",
+        help="Include per-evidence relevance metadata from judged configs.",
+    )
+    eval_semantic_compare_parser.add_argument(
+        "--model-key",
+        default=DEFAULT_E2E_LEADER_MODEL_KEY,
+        help="Configured leader model id for leader-plan comparison configs.",
+    )
+    eval_semantic_compare_parser.add_argument(
+        "--allow-remote",
+        action="store_true",
+        help="Allow non-local endpoint URLs for leader-plan comparison configs.",
+    )
+    eval_semantic_compare_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print a structured privacy-safe JSON report.",
+    )
+    eval_semantic_compare_parser.set_defaults(func=_eval_semantic_compare_command)
 
     api_parser = subparsers.add_parser("api", help="Run the local-only FastAPI API.")
     api_subparsers = api_parser.add_subparsers(dest="api_command")
@@ -1484,6 +1604,7 @@ def _e2e_smoke_command(args: argparse.Namespace) -> int:
                 semantic_weight=args.semantic_weight,
                 reranker=args.reranker,
                 rerank_top_k=args.rerank_top_k,
+                embedding_device=args.embedding_device,
                 model_key=args.model_key,
                 allow_remote=args.allow_remote,
             ),
@@ -2010,6 +2131,7 @@ def _eval_golden_command(args: argparse.Namespace) -> int:
                 semantic_weight=args.semantic_weight,
                 reranker=args.reranker,
                 rerank_top_k=args.rerank_top_k,
+                embedding_device=args.embedding_device,
                 model_key=args.model_key,
                 allow_remote=args.allow_remote,
             ),
@@ -2026,6 +2148,40 @@ def _eval_golden_command(args: argparse.Namespace) -> int:
         print(golden_report_to_json(report))
     else:
         print(format_golden_eval_report(report))
+    return 0 if report.ok else 1
+
+
+def _eval_semantic_compare_command(args: argparse.Namespace) -> int:
+    try:
+        report = run_semantic_compare(
+            SemanticCompareOptions(
+                config_dir=args.config_dir,
+                paths_config=args.config,
+                db_path=args.db,
+                questions_config=args.questions_config,
+                query_limit=args.query_limit,
+                query_id=args.query_id,
+                limit=args.limit,
+                real_semantic_model=args.real_semantic_model,
+                real_reranker=args.real_reranker,
+                semantic_top_k=args.semantic_top_k,
+                semantic_weight=args.semantic_weight,
+                rerank_top_k=args.rerank_top_k,
+                retrieval_repair=args.retrieval_repair,
+                minimum_relevance_score=args.minimum_relevance_score,
+                embedding_device=args.embedding_device,
+                show_relevance=args.show_relevance,
+                model_key=args.model_key,
+                allow_remote=args.allow_remote,
+            ),
+        )
+    except (RuntimeError, ValueError) as exc:
+        print(f"Semantic compare failed: {_safe_cli_error_message(exc)}")
+        return 2
+    if args.json:
+        print(semantic_compare_report_to_json(report))
+    else:
+        print(format_semantic_compare_report(report))
     return 0 if report.ok else 1
 
 

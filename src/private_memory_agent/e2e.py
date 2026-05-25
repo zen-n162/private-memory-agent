@@ -476,6 +476,7 @@ class E2ESmokeOptions:
     semantic_weight: float = 1.0
     reranker: str = "none"
     rerank_top_k: int | None = None
+    embedding_device: str = "auto"
     model_key: str = DEFAULT_E2E_LEADER_MODEL_KEY
     allow_remote: bool = False
 
@@ -500,6 +501,8 @@ def run_e2e_smoke(options: E2ESmokeOptions) -> E2ESmokeReport:
         raise ValueError("semantic_weight must be non-negative")
     if options.rerank_top_k is not None and options.rerank_top_k <= 0:
         raise ValueError("rerank_top_k must be positive")
+    if options.embedding_device not in {"auto", "cpu", "cuda"}:
+        raise ValueError("embedding_device must be auto, cpu, or cuda")
     config = load_config(config_dir=options.config_dir, paths_config=options.paths_config)
     mode = _resolve_mode(options)
     warnings: list[str] = []
@@ -1065,7 +1068,11 @@ def _run_query_checks(
 ) -> list[E2ESmokeQueryResult]:
     service = RetrievalService(
         db_path,
-        embedding_model=_e2e_embedding_model(options.semantic_model, config=config),
+        embedding_model=_e2e_embedding_model(
+            options.semantic_model,
+            config=config,
+            device=options.embedding_device,
+        ),
         reranker=build_evidence_reranker(options.reranker, config=config),
         rerank_top_k=options.rerank_top_k,
         ensure_index=False,
@@ -1110,8 +1117,9 @@ def _run_query_checks(
     return results
 
 
-def _e2e_embedding_model(semantic_model: str, *, config: ConfigBundle):
-    return build_semantic_embedding_model(semantic_model, config=config)
+def _e2e_embedding_model(semantic_model: str, *, config: ConfigBundle, device: str):
+    resolved_device = None if device == "auto" else device
+    return build_semantic_embedding_model(semantic_model, config=config, device=resolved_device)
 
 
 def _expected_semantic_embedding_model_id(semantic_model: str) -> str:

@@ -122,6 +122,7 @@ class GoldenEvalOptions:
     semantic_weight: float = 1.0
     reranker: str = "none"
     rerank_top_k: int | None = None
+    embedding_device: str = "auto"
     retrieval_planner: RetrievalPlanner | None = None
     model_key: str = DEFAULT_E2E_LEADER_MODEL_KEY
     allow_remote: bool = False
@@ -457,6 +458,8 @@ def run_golden_eval(options: GoldenEvalOptions) -> GoldenEvalReport:
         raise ValueError(f"reranker must be one of: {allowed}")
     if options.rerank_top_k is not None and options.rerank_top_k <= 0:
         raise ValueError("rerank_top_k must be positive")
+    if options.embedding_device not in {"auto", "cpu", "cuda"}:
+        raise ValueError("embedding_device must be auto, cpu, or cuda")
     questions_path = _resolve_golden_questions_path(
         options.config_dir,
         questions_config=options.questions_config,
@@ -700,6 +703,7 @@ def _run_e2e_for_golden(
             semantic_weight=options.semantic_weight,
             reranker=options.reranker,
             rerank_top_k=options.rerank_top_k,
+            embedding_device=options.embedding_device,
             model_key=options.model_key,
             allow_remote=options.allow_remote,
             no_fallback=True,

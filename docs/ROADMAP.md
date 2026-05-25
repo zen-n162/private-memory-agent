@@ -74,6 +74,10 @@ This document outlines the development roadmap for private-memory-agent.
   builds resume-safe local embeddings, E2E/golden can select
   `--semantic-model ruri-v3-310m`, and optional local rerankers can be selected
   with `--reranker`.
+- Phase 8-O adds semantic quality comparison:
+  `pma eval semantic-compare` compares text-only, hash semantic, real semantic,
+  reranker, and leader-planned variants by judged usable evidence rather than
+  candidate counts alone, with embedding device diagnostics.
 
 ## 実データE2E smokeの実行手順
 
@@ -254,3 +258,16 @@ pma eval golden --config configs/paths.local.yaml --retrieval-only \
   --rerank-top-k 20 \
   --json
 ```
+
+Compare retrieval quality across configurations:
+
+```bash
+pma eval semantic-compare --config configs/paths.local.yaml \
+  --query-id qst_preparation \
+  --embedding-device cpu \
+  --json
+```
+
+Configurations without leader relevance judging are marked
+`quality_judged=false`, so reranker-only candidate improvements are not treated
+as final answer quality.

@@ -539,6 +539,7 @@
             <tr><td>8-L</td><td>候補 evidence と採用可能 evidence を分離し、generic-only evidence を品質成功として扱わない評価。</td><td class="status">基本実装済み</td></tr>
             <tr><td>8-M</td><td>repair query を specific concept/main entity 中心にし、E2E/golden で local semantic retrieval を任意利用。</td><td class="status">限定実装</td></tr>
             <tr><td>8-N</td><td>real local embedding alias、resume-safe embedding index、任意 reranker を semantic retrieval に接続。</td><td class="status">限定実装</td></tr>
+            <tr><td>8-O</td><td>semantic retrieval 構成を usable evidence quality で比較し、device 診断も出す。</td><td class="status">基本実装済み</td></tr>
           </tbody>
         </table>
       </section>
@@ -572,6 +573,7 @@ pma eval golden --retrieval-only --query-id qst_preparation --leader-plan --lead
 pma index embeddings --model ruri-v3-310m --source line --source notes --skip-existing
 pma eval golden --retrieval-only --query-id qst_preparation --leader-plan --leader-rerank --retrieval-repair 1 --semantic --semantic-model ruri-v3-310m --json
 pma eval golden --retrieval-only --query-id qst_preparation --semantic --semantic-model ruri-v3-310m --reranker ruri-v3-reranker-310m --rerank-top-k 20 --json
+pma eval semantic-compare --query-id qst_preparation --embedding-device cpu --json
 pma eval golden --retrieval-only --query-id qst_preparation --leader-plan --leader-rerank --retrieval-repair 1 --minimum-relevance-score 0.6 --require-usable-evidence --relevance-policy strict --json
 pma eval golden --fake-model --query-limit 2 --json
 pma eval golden --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --json
@@ -617,6 +619,7 @@ pma eval golden --config configs/paths.local.yaml --retrieval-only --query-id qs
 pma index embeddings --config configs/paths.local.yaml --model ruri-v3-310m --source line --source notes --skip-existing
 pma eval golden --config configs/paths.local.yaml --retrieval-only --query-id qst_preparation --leader-plan --leader-rerank --retrieval-repair 1 --semantic --semantic-model ruri-v3-310m --json
 pma eval golden --config configs/paths.local.yaml --retrieval-only --query-id qst_preparation --semantic --semantic-model ruri-v3-310m --reranker ruri-v3-reranker-310m --rerank-top-k 20 --json
+pma eval semantic-compare --config configs/paths.local.yaml --query-id qst_preparation --embedding-device cpu --json
 pma eval golden --config configs/paths.local.yaml --retrieval-only --query-id qst_preparation --leader-plan --leader-rerank --retrieval-repair 1 --minimum-relevance-score 0.6 --require-usable-evidence --relevance-policy strict --json
 pma eval golden --config configs/paths.local.yaml --fake-model --query-limit 2 --json
 pma eval golden --config configs/paths.local.yaml --real-model --query-limit 1 --timeout-seconds 600 --max-tokens 512 --json
@@ -708,6 +711,11 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           report には <code>semantic_candidate_count</code>、<code>repair_specific_query_count</code>、
           <code>repair_generic_query_count</code>、<code>semantic_embedding_model_id</code>、
           <code>reranker_model_id</code> などの安全な件数と ID だけを出します。
+          8-O の <code>pma eval semantic-compare</code> は text-only、hash semantic、real semantic、
+          reranker、Leader plan ありの構成を比較します。candidate が増えただけの構成は
+          <code>quality_judged=false</code> として扱い、Leader relevance judge が走った構成だけを
+          usable evidence quality の推薦候補にします。CUDA driver warning が出る場合は
+          <code>--embedding-device cpu</code> を指定できます。
           <code>--show-plan</code> と <code>--show-relevance</code> は local-only の明示的な診断です。
           relevance を見る必要がある時だけ <code>--show-snippets --snippet-chars N</code> を明示します。
           既定では質問本文、回答本文、snippet、raw evidence、raw model output を表示しません。
@@ -731,6 +739,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
       <section id="history">
         <h2>更新履歴</h2>
         <ul>
+          <li>2026-05-25: semantic retrieval 構成比較と embedding device 診断を追加。</li>
           <li>2026-05-25: real embedding alias、source-filtered/resume-safe embedding index、optional local reranker を追加。</li>
           <li>2026-05-25: repair query expansion と <code>--semantic</code> による E2E/golden の local semantic retrieval を追加。</li>
           <li>2026-05-25: candidate evidence と usable evidence を分離し、generic-only evidence を品質成功にしない relevance policy を追加。</li>

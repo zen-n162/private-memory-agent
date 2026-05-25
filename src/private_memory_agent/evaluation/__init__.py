@@ -21,6 +21,16 @@ from private_memory_agent.evaluation.golden import (
     run_golden_eval,
     write_golden_outputs,
 )
+from private_memory_agent.evaluation.semantic_compare import (
+    EmbeddingDeviceStatus,
+    SemanticCompareConfigResult,
+    SemanticCompareOptions,
+    SemanticCompareQueryResult,
+    SemanticCompareReport,
+    format_semantic_compare_report,
+    report_to_json as semantic_compare_report_to_json,
+    run_semantic_compare,
+)
 
 __all__ = [
     "EVAL_METRIC_NAMES",
@@ -37,7 +47,15 @@ __all__ = [
     "golden_report_to_json",
     "golden_report_to_jsonl",
     "load_golden_questions",
+    "EmbeddingDeviceStatus",
     "run_golden_eval",
     "run_synthetic_eval",
+    "run_semantic_compare",
+    "SemanticCompareConfigResult",
+    "SemanticCompareOptions",
+    "SemanticCompareQueryResult",
+    "SemanticCompareReport",
+    "semantic_compare_report_to_json",
+    "format_semantic_compare_report",
     "write_golden_outputs",
 ]
