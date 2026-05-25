@@ -78,7 +78,7 @@ class ChatQueryRequest(APIModel):
     retrieval_repair: int = Field(default=1, ge=0, le=3)
     strict_relevance: bool = False
     minimum_relevance_score: float = Field(default=0.6, ge=0.0, le=1.0)
-    show_answer: bool = False
+    show_answer: bool = True
     show_snippets: bool = False
     snippet_chars: int = Field(default=160, gt=0, le=500)
     limit: int = Field(default=5, gt=0, le=20)

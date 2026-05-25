@@ -209,7 +209,7 @@ def agent_console_html() -> str:
         <h1>Private Memory Agent Console</h1>
         <div id="system-summary" class="status-line">Checking local system status...</div>
       </div>
-      <div class="notice">Local-only developer console. Keep the server bound to 127.0.0.1. Snippets and answer text stay hidden unless explicitly enabled.</div>
+      <div class="notice">Local-only developer console. Answer text is shown by default for usability. Raw evidence snippets, file paths, OCR, GPS, and raw model output stay hidden unless explicitly enabled.</div>
     </header>
 
     <div class="layout">
@@ -248,7 +248,7 @@ def agent_console_html() -> str:
           <label class="inline"><input id="semantic" type="checkbox"> semantic</label>
           <label class="inline"><input id="reranker-enabled" type="checkbox"> reranker</label>
           <label class="inline"><input id="strict" type="checkbox"> strict relevance</label>
-          <label class="inline"><input id="show-answer" type="checkbox"> show_answer</label>
+          <label class="inline"><input id="show-answer" type="checkbox" checked> show_answer</label>
           <label class="inline"><input id="show-snippets" type="checkbox"> show_snippets</label>
         </fieldset>
 
@@ -301,7 +301,7 @@ def agent_console_html() -> str:
 
         <section>
           <h2>Privacy</h2>
-          <div id="privacy-panel" class="stack"><div class="status-line">Default output is privacy-safe.</div></div>
+          <div id="privacy-panel" class="stack"><div class="status-line">Answers are shown by default locally. Evidence snippets remain hidden.</div></div>
         </section>
 
         <section class="full">
@@ -369,14 +369,21 @@ def agent_console_html() -> str:
       const row = document.createElement("div");
       row.className = "metric-row";
       row.appendChild(pill(`answer_succeeded=${Boolean(answer.answer_succeeded)}`, answer.answer_succeeded ? "strong" : "warn"));
+      row.appendChild(pill(`answer_state=${answer.answer_state || "n/a"}`, answer.answer_state === "unknown" ? "warn" : "strong"));
       row.appendChild(pill(`confidence=${answer.confidence ?? "n/a"}`));
       row.appendChild(pill(`mode=${payload.mode}`));
       answerPanel.appendChild(row);
-      if (answer.conclusion) {
-        answerPanel.appendChild(el("h3", "Conclusion"));
+      if (!answer.answer_succeeded) {
+        answerPanel.appendChild(el("div", "Answer generation did not succeed. Check retrieval status, model endpoint status, and warnings.", "status-line error"));
+      } else if (answer.answer_hidden) {
+        answerPanel.appendChild(el("div", "Answer was generated but hidden because Show answer is off.", "status-line"));
+        answerPanel.appendChild(el("div", "Enable Show answer and run again to display the answer.", "status-line"));
+      } else if (answer.conclusion) {
+        const heading = answer.answer_state === "unknown" ? "Conclusion (unknown / insufficient evidence)" : "Conclusion";
+        answerPanel.appendChild(el("h3", heading));
         answerPanel.appendChild(el("div", answer.conclusion));
       } else {
-        answerPanel.appendChild(el("div", "Answer text hidden.", "status-line"));
+        answerPanel.appendChild(el("div", "No answer text was returned.", "status-line"));
       }
       renderKv(answerPanel, {
         used_sources: (answer.used_sources || []).join(", ") || "none",
@@ -444,6 +451,9 @@ def agent_console_html() -> str:
       row.appendChild(pill(`raw_model_output_hidden=${Boolean(privacy.raw_model_output_hidden)}`));
       row.appendChild(pill(`external_network_disabled=${Boolean(privacy.external_network_disabled)}`));
       privacyPanel.appendChild(row);
+      privacyPanel.appendChild(el("div", "Answer text is shown by default in this local-only console. It may still contain private evidence-derived information.", "status-line"));
+      privacyPanel.appendChild(el("div", "Raw evidence snippets remain hidden unless Show snippets is enabled. Snippets may contain private LINE messages, note text, captions, OCR, filenames, or other sensitive data.", "status-line"));
+      privacyPanel.appendChild(el("div", "Do not paste local answer or snippet output into public chats if it contains private information.", "status-line"));
       const warnings = payload.warnings || [];
       if (warnings.length) {
         privacyPanel.appendChild(el("h3", "Warnings"));

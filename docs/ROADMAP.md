@@ -83,6 +83,10 @@ This document outlines the development roadmap for private-memory-agent.
   answer status, evidence ids, source coverage, relevance metadata,
   leader-plan counters, retrieval repair status, and privacy state. Answer text
   and snippets stay hidden unless explicitly enabled.
+- Phase 9-A2 improves the console chat UX:
+  `/ui` now checks `show_answer` by default, while `show_snippets` remains off
+  by default. Hidden, unknown, failed, and visible answers are displayed as
+  distinct states.
 
 ## 実データE2E smokeの実行手順
 
@@ -297,7 +301,8 @@ Recommended order:
 2. Try `fake-model` for structured answer validation.
 3. Use `real-model` only after `pma models ping leader` succeeds.
 
-The UI defaults to hidden answer text and hidden snippets. Enable
-`show_answer` only for local inspection. Enable `show_snippets` only when you
-need truncated local evidence snippets; snippet output may contain private
+The UI shows answer text by default because it is a local-only chat console.
+Evidence snippets remain hidden by default. Disable `show_answer` when you want
+a metadata-only run; enable `show_snippets` only when you need truncated local
+evidence snippets. Answer and snippet output may contain private
 evidence-derived content and should not be pasted into public chats.

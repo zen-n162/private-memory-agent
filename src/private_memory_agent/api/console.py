@@ -77,7 +77,7 @@ class ChatConsoleOptions:
     retrieval_repair: int = 1
     strict_relevance: bool = False
     minimum_relevance_score: float = 0.6
-    show_answer: bool = False
+    show_answer: bool = True
     show_snippets: bool = False
     snippet_chars: int = 160
     limit: int = 5
@@ -383,8 +383,11 @@ def _relevance_policy_passed(result: E2ESmokeQueryResult, options: ChatConsoleOp
 
 
 def _answer_payload(result: E2ESmokeQueryResult, *, show_answer: bool) -> dict[str, Any]:
+    state = _answer_state(result, show_answer=show_answer)
     return {
         "answer_succeeded": result.answer_succeeded,
+        "answer_hidden": state == "hidden",
+        "answer_state": state,
         "conclusion": result.answer_conclusion if show_answer else None,
         "confidence": result.answer_confidence,
         "unknowns": list(result.answer_unknowns) if show_answer else [],
@@ -393,6 +396,22 @@ def _answer_payload(result: E2ESmokeQueryResult, *, show_answer: bool) -> dict[s
         "error_class": result.error_class,
         "error_message": result.error_message,
     }
+
+
+def _answer_state(result: E2ESmokeQueryResult, *, show_answer: bool) -> str:
+    if not result.answer_succeeded:
+        return "not_generated"
+    if not show_answer:
+        return "hidden"
+    conclusion = str(result.answer_conclusion or "").strip()
+    if result.answer_confidence == 0.0:
+        return "unknown"
+    lowered = conclusion.lower()
+    if any(token in lowered for token in ("unknown", "insufficient", "not enough")):
+        return "unknown"
+    if any(token in conclusion for token in ("不明", "不十分", "足りない")):
+        return "unknown"
+    return "visible"
 
 
 def _evidence_payload(

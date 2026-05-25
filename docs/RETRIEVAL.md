@@ -541,9 +541,11 @@ semantic candidate counts, reranked candidate counts, retrieval repair status,
 usable evidence status, and per-evidence relevance metadata when plan-aware
 judging is enabled.
 
-Default mode is retrieval-only and does not show answer text or snippets.
-`show_answer` and `show_snippets` are separate explicit toggles. Snippets are
-truncated/redacted and remain local-only debugging output.
+Default mode is retrieval-only. In fake-model or real-model mode, the local UI
+shows answer text by default so the console behaves like a chat interface.
+`show_answer` can be turned off for metadata-only checks. `show_snippets`
+remains off by default; snippets are truncated/redacted and remain local-only
+debugging output.
 
 ## Optional Integration Tests
 

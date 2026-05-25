@@ -732,10 +732,12 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           leader plan、leader rerank、semantic retrieval、reranker、retrieval repair、strict relevance、
           show_answer、show_snippets を切り替えられます。画面は <code>POST /api/chat/query</code> と
           <code>GET /api/system/status</code> を使い、CLI を shell out せず既存 E2E retrieval path を呼びます。
-          既定では回答本文と snippet を表示せず、証拠 ID、source type、should_use、specificity、
-          relevance score、reason category、agent trace、privacy status だけを表示します。
-          <code>show_answer</code> と <code>show_snippets</code> はローカル確認用の明示操作であり、
-          snippet は truncated/redacted されますが private output として扱います。
+          9-A2 では chat UI として使いやすいように、ローカル UI では回答本文を既定で表示します。
+          ただし raw evidence snippet、raw model output、LINE 本文、ノート本文、写真 caption、
+          OCR、ファイル名、フルパス、GPS、EXIF は既定では表示しません。
+          <code>show_answer</code> を外すと metadata-only になり、回答が生成済みでも非表示であることを明示します。
+          <code>show_snippets</code> は引き続き明示操作で、snippet は truncated/redacted されますが
+          private output として扱います。回答や snippet に private な内容が含まれる場合は公開チャットへ貼り付けません。
         </p>
       </section>
 
@@ -754,6 +756,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
       <section id="history">
         <h2>更新履歴</h2>
         <ul>
+          <li>2026-05-25: local chat UI の <code>show_answer</code> を既定 ON にし、hidden/unknown/failed/visible answer を区別。</li>
           <li>2026-05-25: localhost evidence-first agent console、<code>/api/chat/query</code>、<code>/api/system/status</code> を追加。</li>
           <li>2026-05-25: semantic retrieval 構成比較と embedding device 診断を追加。</li>
           <li>2026-05-25: real embedding alias、source-filtered/resume-safe embedding index、optional local reranker を追加。</li>

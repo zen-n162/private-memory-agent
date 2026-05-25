@@ -53,8 +53,9 @@ evidence-first local agent console.
 - API responses are redacted by default.
 - Ingest endpoints return count-only summaries.
 - The UI only renders API responses.
-- Answer text and snippets are hidden by default.
-- `show_answer` and `show_snippets` are explicit local-only inspection choices.
+- Answer text is shown by default in the local-only chat console.
+- `show_answer` can be turned off for metadata-only checks.
+- Evidence snippets are hidden by default and require explicit `show_snippets`.
 - The console endpoint does not return raw model output.
 
 Do not expose the API through a public proxy, tunnel, or shared host until a

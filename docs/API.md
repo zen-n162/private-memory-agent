@@ -48,11 +48,12 @@ step, external CDN, external font, or JavaScript dependency. It submits query
 requests to `POST /api/chat/query` and reads count-only system status from
 `GET /api/system/status`.
 
-The console defaults to retrieval-only mode. Real-model generation, answer text,
-and snippets are all explicit choices. It displays:
+The console defaults to retrieval-only mode. Answer text is visible by default
+in the local-only console so it behaves like a chat interface. Real-model
+generation and evidence snippets remain explicit choices. It displays:
 
 - answer success
-- answer conclusion only when `show_answer` is enabled
+- answer conclusion when `show_answer` is enabled, which is the UI default
 - confidence
 - unknowns
 - used sources
@@ -67,7 +68,9 @@ and snippets are all explicit choices. It displays:
 
 Snippets are hidden by default. If `show_snippets` is enabled, the API returns
 truncated/redacted snippets only. Raw model output is not returned by the
-console endpoint.
+console endpoint. Answer text may still contain private evidence-derived
+information, so do not paste local answer output into public chats when it is
+private.
 
 ## Chat Query Endpoint
 
@@ -90,9 +93,10 @@ Useful request fields:
 - `timeout_seconds`
 - `max_tokens`
 
-Default output contains counts, ids, source labels, relevance metadata, and
-status only. It does not include raw LINE text, note bodies, captions, file
-names, paths, GPS, EXIF, OCR, raw model output, or full retrieval plans.
+Default UI output contains the answer text plus counts, ids, source labels,
+relevance metadata, and status. It does not include raw LINE text, note bodies,
+captions, file names, paths, GPS, EXIF, OCR, raw model output, full retrieval
+plans, or full evidence snippets.
 
 ## System Status Endpoint
 
@@ -109,10 +113,16 @@ not enumerate source directories or print private file paths.
 
 ## Privacy Defaults
 
-API responses are redacted by default. Query text, answer text, evidence
-snippets, event titles, entity names, aliases, and candidate values are hidden
-unless a request asks to show private data and config also enables
-`log_private_data`.
+General API responses are redacted by default. The legacy `/api/query` path
+hides query text, answer text, evidence snippets, event titles, entity names,
+aliases, and candidate values unless a request asks to show private data and
+config also enables `log_private_data`.
+
+The UI-facing `/api/chat/query` path shows answer text by default for local chat
+usability, but keeps raw evidence snippets, filenames, paths, GPS, EXIF, OCR,
+raw LINE messages, note bodies, captions, full retrieval plans, and raw model
+output hidden unless an explicit local debugging option allows a safe/truncated
+view.
 
 Ingest endpoints return count-only summaries. They do not print filenames, raw
 LINE messages, note bodies, OCR text, GPS coordinates, or private paths.

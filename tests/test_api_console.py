@@ -5,6 +5,7 @@ from private_memory_agent.api.console import (
     build_system_status,
     run_chat_console_query,
 )
+from private_memory_agent.api.schemas import ChatQueryRequest
 from private_memory_agent.api.ui import agent_console_html
 from private_memory_agent.retrieval import index_text
 from private_memory_agent.storage import initialize_database
@@ -34,11 +35,22 @@ def test_agent_console_html_is_self_contained_and_points_to_chat_api():
     assert "/api/system/status" in html
     assert "leader_plan" in html
     assert "show_snippets" in html
+    assert 'id="show-answer" type="checkbox" checked' in html
+    assert 'id="show-snippets" type="checkbox"> show_snippets' in html
+    assert "Answer was generated but hidden because Show answer is off." in html
+    assert "Conclusion (unknown / insufficient evidence)" in html
     assert "https://" not in html
     assert "cdn.jsdelivr" not in html
 
 
-def test_chat_console_default_response_hides_answer_and_raw_evidence(
+def test_chat_query_schema_defaults_to_show_answer_for_ui():
+    request = ChatQueryRequest(question="研究")
+
+    assert request.show_answer is True
+    assert request.show_snippets is False
+
+
+def test_chat_console_default_response_shows_answer_but_not_raw_evidence(
     temp_config_factory,
     tmp_path,
 ):
@@ -58,8 +70,10 @@ def test_chat_console_default_response_hides_answer_and_raw_evidence(
 
     assert payload["ok"] is True
     assert payload["answer"]["answer_succeeded"] is True
-    assert payload["answer"]["conclusion"] is None
-    assert payload["privacy"]["answer_hidden"] is True
+    assert payload["answer"]["conclusion"] is not None
+    assert payload["answer"]["answer_hidden"] is False
+    assert payload["answer"]["answer_state"] == "visible"
+    assert payload["privacy"]["answer_hidden"] is False
     assert payload["privacy"]["snippets_hidden"] is True
     assert payload["evidence"]
     assert payload["trace"]["plan_created"] is True
@@ -90,6 +104,54 @@ def test_chat_console_show_answer_displays_fake_answer_without_snippets(
     assert "raw evidence remains hidden" not in serialized
     assert all("snippet" not in item for item in payload["evidence"])
     assert any("show_answer is enabled" in warning for warning in payload["warnings"])
+
+
+def test_chat_console_explicit_hidden_answer_has_clear_state(
+    temp_config_factory,
+    tmp_path,
+):
+    db_path = tmp_path / "console.sqlite3"
+    _insert_synthetic_line(db_path, text="研究 raw hidden evidence")
+
+    payload = run_chat_console_query(
+        ChatConsoleOptions(
+            config_dir=temp_config_factory(),
+            db_path=db_path,
+            question="研究",
+            mode="fake-model",
+            sources=("line",),
+            show_answer=False,
+        ),
+    )
+    serialized = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["answer"]["answer_succeeded"] is True
+    assert payload["answer"]["conclusion"] is None
+    assert payload["answer"]["answer_hidden"] is True
+    assert payload["answer"]["answer_state"] == "hidden"
+    assert payload["privacy"]["answer_hidden"] is True
+    assert "Retrieved local evidence is sufficient" not in serialized
+    assert "raw hidden evidence" not in serialized
+
+
+def test_chat_console_unknown_answer_is_not_marked_hidden(temp_config_factory, tmp_path):
+    db_path = tmp_path / "console.sqlite3"
+    initialize_database(db_path).close()
+
+    payload = run_chat_console_query(
+        ChatConsoleOptions(
+            config_dir=temp_config_factory(),
+            db_path=db_path,
+            question="no matching evidence",
+            mode="fake-model",
+            show_answer=True,
+        ),
+    )
+
+    assert payload["answer"]["answer_hidden"] is False
+    if payload["answer"]["answer_succeeded"]:
+        assert payload["answer"]["answer_state"] == "unknown"
+        assert payload["answer"]["conclusion"] is not None
 
 
 def test_chat_console_show_snippets_is_explicit_and_truncated(

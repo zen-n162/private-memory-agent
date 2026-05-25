@@ -755,14 +755,16 @@ Use the console in this order:
 The console can toggle leader planning, plan-aware rerank, semantic retrieval,
 reranker use, retrieval repair, strict relevance, answer display, and snippet
 display. Defaults stay local and cheap: retrieval-only, leader-plan metadata,
-retrieval repair enabled, answer text hidden, snippets hidden, and raw model
+retrieval repair enabled, answer text visible, snippets hidden, and raw model
 output unavailable.
 
 `GET /api/system/status` returns DB/index counts and configured endpoint
 metadata without model prompts. `POST /api/chat/query` uses the existing E2E
 retrieval/answer path directly rather than shelling out to the CLI.
 
-Answer text and snippets may contain private evidence-derived content. Keep them
-hidden for normal checks and only enable `show_answer` or `show_snippets` during
-local inspection. The console never prints raw LINE messages, note bodies,
-captions, filenames, full paths, GPS, EXIF, OCR, or raw model output by default.
+Answer text may contain private evidence-derived content even when raw evidence
+is hidden. The local console shows it by default for usability. Use the
+`show_answer` toggle to hide it for metadata-only checks. Keep
+`show_snippets` off unless you explicitly need truncated local evidence
+snippets. The console never prints raw LINE messages, note bodies, captions,
+filenames, full paths, GPS, EXIF, OCR, or raw model output by default.

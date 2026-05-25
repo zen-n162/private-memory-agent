@@ -53,6 +53,7 @@ def test_local_ui_is_served_without_private_data(temp_config_factory, tmp_path):
     assert 'value="notes"' in response.text
     assert "leader_plan" in response.text
     assert "show_snippets" in response.text
+    assert 'id="show-answer" type="checkbox" checked' in response.text
     assert 'fetch("/api/chat/query"' in response.text
     assert 'fetch("/api/system/status"' in response.text
     assert "秘密" not in response.text
@@ -98,6 +99,42 @@ def test_chat_query_endpoint_returns_evidence_console_payload(temp_config_factor
     assert payload["trace"]["plan_created"] is True
     assert payload["privacy"]["snippets_hidden"] is True
     assert "chat private body" not in response.text
+
+
+@requires_working_testclient
+def test_chat_query_endpoint_defaults_to_visible_answer(temp_config_factory, tmp_path):
+    db_path = tmp_path / "metadata.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        storage.line_messages.insert_message(
+            source_item_id=None,
+            conversation_id="fixture-room",
+            message_id="line-chat-api-default-answer",
+            sender_id="fixture-speaker",
+            sent_at="2026-05-24T09:00:00",
+            message_type="text",
+            body_text="研究 default visible answer private body",
+        )
+    finally:
+        storage.close()
+    from private_memory_agent.retrieval import index_text
+
+    index_text(db_path)
+    app = create_app(db_path=db_path, config_dir=temp_config_factory())
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/chat/query",
+        json={"question": "研究", "mode": "fake-model", "sources": ["line"]},
+    )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["answer"]["answer_succeeded"] is True
+    assert payload["answer"]["answer_hidden"] is False
+    assert payload["answer"]["conclusion"] is not None
+    assert payload["privacy"]["snippets_hidden"] is True
+    assert "default visible answer private body" not in response.text
 
 
 @requires_working_testclient
