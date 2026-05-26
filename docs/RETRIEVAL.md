@@ -644,14 +644,26 @@ Phase 9-I extends this path to open-ended "when" questions without an explicit
 date range. A question such as `ラーメンを食べに行っているのはいつ？` is still
 classified as `temporal_event_search`. The parser reports
 `date_range_status=unspecified`, and the evidence builder chooses
-`date_scope_strategy=all_available_memory` in the local developer console. The
-actual inferred search scope comes from privacy-safe local coverage: min/max
-`media_items.taken_at`, LINE `sent_at`, and note created/updated timestamps.
-The range is chunked by month when broad, candidate days are pruned, and the
-EventIntentPlan may include an `event_subtype` such as `ramen`. Candidate dates
-are extracted only from dated evidence. If event-related evidence exists but
-lacks usable timestamps, PMA returns a structured unknown with
-`undated_evidence_count` instead of surfacing a generic `ModelRuntimeError`.
+an open-ended date scope. The inferred available range comes from privacy-safe
+local coverage: min/max `media_items.taken_at`, LINE `sent_at`, and note
+created/updated timestamps. The EventIntentPlan may include an `event_subtype`
+such as `ramen`, `cafe`, or `drinking`. Candidate dates are extracted only from
+dated evidence. If event-related evidence exists but lacks usable timestamps,
+PMA returns a structured unknown with `undated_evidence_count` instead of
+surfacing a generic `ModelRuntimeError`.
+
+Phase 9-I2 makes open-ended search faster and more diagnosable. The default UI
+path uses a recent-memory fast pass first. If too few candidate dates are found,
+it expands with caps such as `max_chunks`, `max_candidate_dates_total`, and
+`max_evidence_per_date`. Diagnostics are exposed at the top level,
+`temporal_event.diagnostics`, and `trace.retrieval_stage_counts`. Important
+fields include `date_scope_strategy`, `inferred_search_range_start`,
+`inferred_search_range_end`, `visual_signals`, `textual_signals`,
+`generated_by`, `performance_timing_by_stage`, `stage_1_candidate_count`,
+`expanded_to_all_memory`, `evidence_count_by_source`, `dated_evidence_count`,
+`undated_evidence_count`, and
+`evidence_to_candidate_date_conversion_rate`. For broad open-ended questions,
+adding a date range still improves speed and precision.
 
 Phase 9-H6 makes the chat API explicit about two stages:
 

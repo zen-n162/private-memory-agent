@@ -119,6 +119,11 @@ class ChatQueryResponse(APIModel):
     evidence: list[dict[str, Any]]
     evidence_display: dict[str, Any] | None = None
     temporal_event: dict[str, Any] | None = None
+    query_type: str | None = None
+    date_range: dict[str, Any] | None = None
+    event_type: str | None = None
+    event_subtype: str | None = None
+    diagnostics: dict[str, Any] | None = None
     candidate_dates: list[dict[str, Any]] = Field(default_factory=list)
     trace: dict[str, Any]
     trace_events: list[dict[str, Any]] = Field(default_factory=list)

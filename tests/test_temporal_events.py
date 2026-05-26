@@ -829,15 +829,22 @@ def test_open_ended_ramen_query_uses_all_available_memory_and_extracts_dates(tmp
     assert payload["diagnostics"]["inferred_search_range_end"] == "2025-02-04"
     assert payload["diagnostics"]["event_type"] == "dining_out"
     assert payload["diagnostics"]["event_subtype"] == "ramen"
+    assert payload["diagnostics"]["generated_by"] == "deterministic_fallback"
+    assert "ラーメン" in payload["diagnostics"]["visual_signals"]
+    assert "ラーメン" in payload["diagnostics"]["textual_signals"]
     assert payload["diagnostics"]["chunks_scanned"] >= 1
     assert payload["diagnostics"]["dated_evidence_count"] >= 1
     assert payload["diagnostics"]["undated_evidence_count"] == 0
+    assert payload["diagnostics"]["evidence_count_by_source"]["photos"] >= 1
+    assert payload["diagnostics"]["performance_timing_by_stage"]
+    assert payload["diagnostics"]["evidence_to_candidate_date_conversion_rate"] > 0
     dates = {item["date"]: item for item in payload["candidate_dates"]}
     assert "2025-01-12" in dates
     assert "2025-02-03" in dates
     assert payload["diagnostics"]["candidate_date_count"] >= 2
     assert f"media_items:{photo_id}" in payload["answer"]["evidence_references"]
     assert f"line_messages:{line_id}" in dates["2025-02-03"]["support_evidence_ids"]
+    assert "対象期間が指定されていないため" in payload["answer"]["conclusion"]
     assert "/private/ramen-photo-secret.jpg" not in serialized
     assert "PRIVATE LINE" not in serialized
 
@@ -906,6 +913,11 @@ def test_chat_console_open_ended_ramen_query_does_not_return_model_runtime_error
     serialized = json.dumps(payload, ensure_ascii=False)
 
     assert payload["mode"] == "real-model"
+    assert payload["query_type"] == "temporal_event_search"
+    assert payload["date_range"]["status"] == "unspecified"
+    assert payload["event_type"] == "dining_out"
+    assert payload["event_subtype"] == "ramen"
+    assert payload["diagnostics"]["open_ended_temporal_query"] is True
     assert payload["answer_succeeded"] is True
     assert payload["answer_synthesis_succeeded"] is True
     assert payload["error_class"] is None
@@ -915,6 +927,43 @@ def test_chat_console_open_ended_ramen_query_does_not_return_model_runtime_error
     assert payload["trace"]["temporal_diagnostics"]["event_subtype"] == "ramen"
     assert "/private/ui-open-ramen-secret.jpg" not in serialized
     assert "ラーメン 丼" not in serialized
+
+
+def test_open_ended_fast_mode_caps_broad_search_when_recent_candidates_exist(tmp_path):
+    db_path = tmp_path / "temporal.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        _insert_photo(
+            storage,
+            taken_at="2020-01-02T12:00:00",
+            annotation_text="ラーメン 丼 スープ",
+            path="/private/old-ramen-secret.jpg",
+        )
+        for day in ("2025-03-01", "2025-04-02", "2025-05-03"):
+            _insert_photo(
+                storage,
+                taken_at=f"{day}T12:00:00",
+                annotation_text="ラーメン 麺 スープ 箸",
+                path=f"/private/recent-{day}-secret.jpg",
+            )
+    finally:
+        storage.close()
+
+    result = answer_temporal_event_query(
+        "ラーメンを食べに行っているのはいつ？",
+        db_path=db_path,
+        today=date(2026, 5, 26),
+    )
+    assert result is not None
+    payload = result.to_dict(show_answer=True)
+    dates = {item["date"] for item in payload["candidate_dates"]}
+
+    assert payload["diagnostics"]["open_ended_fast_mode"] is True
+    assert payload["diagnostics"]["date_scope_strategy"] == "recent_memory"
+    assert payload["diagnostics"]["stage_1_candidate_count"] >= 3
+    assert payload["diagnostics"]["expanded_to_all_memory"] is False
+    assert payload["diagnostics"]["chunk_count"] <= payload["diagnostics"]["max_chunks"]
+    assert "2020-01-02" not in dates
 
 
 def test_chat_console_real_model_temporal_answer_failure_preserves_candidates(

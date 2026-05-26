@@ -127,6 +127,13 @@ This document outlines the development roadmap for private-memory-agent.
   `ramen`, and extracts candidate dates from dated photo/LINE/note evidence.
   If only undated evidence exists, the answer is a structured unknown instead
   of a model runtime failure.
+- Phase 9-I2 improves the same open-ended path:
+  temporal diagnostics are now also exposed at the top level, event subtype and
+  safe signal previews are returned, Japanese reason labels cover
+  event-specific evidence, and open-ended searches use a recent-first fast pass
+  before expanding with chunk/candidate/evidence caps. Diagnostics report
+  timing by stage, conversion from dated evidence to candidate dates, and
+  whether the search expanded beyond the fast pass.
 - Phase 9-H adds an Agent Runtime Trace for the local console:
   `/api/chat/query` now returns ordered `trace_events`, `model_usage_summary`,
   `tool_usage_summary`, and `fallback_summary`. `/ui` shows a timeline of

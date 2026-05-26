@@ -558,6 +558,7 @@
             <tr><td>9-H9b</td><td>UI の async polling で start/status を status 専用、result を最終描画専用に分離。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-H9c</td><td>async run に result_ready/finalizing を追加し、succeeded は result 保存後だけ返す。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-I</td><td>日付範囲なしの「いつ」質問を all-available-memory scope で chunk し、event subtype と dated evidence から候補日を抽出。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>9-I2</td><td>open-ended temporal query に top-level diagnostics、event signal 表示、recent-first fast pass、performance timing を追加。</td><td class="status">基本実装済み</td></tr>
           </tbody>
         </table>
       </section>
@@ -861,6 +862,15 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           関連 evidence があっても日時がない場合は <code>undated_evidence_count</code> を出して structured unknown を返します。
         </p>
         <p>
+          9-I2 では open-ended temporal query の診断と速度を改善しました。
+          既定では recent-memory fast pass でまず候補日を探し、不足した場合だけ cap 付きで範囲を広げます。
+          API は top-level <code>diagnostics</code> にも <code>date_scope_strategy</code>、
+          <code>event_subtype</code>、safe な visual/textual signal、<code>performance_timing_by_stage</code>、
+          <code>dated_evidence_count</code>、<code>undated_evidence_count</code>、
+          <code>evidence_to_candidate_date_conversion_rate</code> を返します。
+          UI では「期間を指定すると精度と速度が上がる」ことを warning として示します。
+        </p>
+        <p>
           9-H では local chat UI に <strong>Agent Runtime Trace</strong> を追加しました。
           DeepSeek Leader が live call されたか、決定的 fallback が使われたか、日付 parser、
           photo date search、LINE/ノート検索、cached Qwen3-VL photo annotation、semantic retrieval、
@@ -965,6 +975,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
       <section id="history">
         <h2>更新履歴</h2>
         <ul>
+          <li>2026-05-26: open-ended temporal query の診断を top-level に出し、event subtype/signal、recent-first fast pass、performance timing を追加。</li>
           <li>2026-05-26: 期間指定なしの temporal event query を all-available-memory scope で扱い、ramen などの event subtype と dated evidence から候補日を抽出。</li>
           <li>2026-05-26: async run に result_ready/finalizing を追加し、succeeded と result 保存を atomic に接続。</li>
           <li>2026-05-26: UI async polling を修正し、start/status を最終結果として描画せず result handoff を retry。</li>

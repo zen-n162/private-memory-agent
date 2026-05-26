@@ -122,6 +122,9 @@ def test_evidence_display_payload_groups_candidate_date_without_default_snippets
         "same_day_line_support",
     ]
     assert "外出を示す可能性" in payload["candidate_dates"][0]["reason_labels"][0]
+    assert reason_label_for_code("event_intent_visual_signal") == "イベント意図に合う画像特徴があります"
+    assert reason_label_for_code("temporal_event_specific_photo_match") == "イベントに直接関係する写真候補です"
+    assert reason_label_for_code("temporal_event_text_match") == "イベントに関係するLINE/メモ候補です"
     assert payload["candidate_dates"][0]["photos"][0]["evidence_id"] == media_evidence_id
     assert payload["candidate_dates"][0]["line_snippets"][0]["evidence_id"] == line_evidence_id
     assert payload["candidate_dates"][0]["note_snippets"][0]["evidence_id"] == note_evidence_id

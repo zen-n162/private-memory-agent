@@ -15,6 +15,7 @@ import sqlite3
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from private_memory_agent.media_timestamps import timestamp_coverage
@@ -31,6 +32,10 @@ DEFAULT_LONG_RANGE_DAYS = 180
 DEFAULT_TOP_CANDIDATE_DATES = 10
 DEFAULT_TOP_EVIDENCE_PER_DATE = 5
 DEFAULT_CANDIDATES_PER_LONG_RANGE_CHUNK = 5
+DEFAULT_OPEN_ENDED_FAST_MODE = True
+DEFAULT_OPEN_ENDED_RECENT_MONTHS = 18
+DEFAULT_OPEN_ENDED_MIN_CANDIDATES = 3
+DEFAULT_OPEN_ENDED_MAX_CHUNKS = 24
 
 OUTING_TERMS = (
     "外出",
@@ -198,6 +203,7 @@ class TemporalEventQuery:
     event_type: str
     preferred_sources: tuple[str, ...]
     primary_tool: str
+    event_subtype: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -210,6 +216,7 @@ class TemporalEventQuery:
             "parsed_temporal_expression": self.date_range.expression or self.date_range.label,
             "timezone": self.date_range.timezone,
             "event_type": self.event_type,
+            "event_subtype": self.event_subtype,
             "preferred_sources": list(self.preferred_sources),
             "primary_tool": self.primary_tool,
         }
@@ -267,6 +274,7 @@ class EventIntentPlan:
             "repair_queries": list(self.repair_queries) if show_plan else [],
             "fallback_used": self.fallback_used,
             "planner": self.planner,
+            "generated_by": _plan_generated_by(self),
         }
 
     @classmethod
@@ -343,6 +351,49 @@ class DeterministicEventIntentPlanner:
                     "予約",
                 ),
                 repair=("ラーメン 店", "つけ麺 食べ", "中華そば 行った", "ramen noodle"),
+            )
+        if _text_has_any_term(normalized, ("カフェ", "喫茶", "coffee", "コーヒー")):
+            return _event_plan(
+                date_range,
+                event_type="dining_out",
+                event_subtype="cafe",
+                description="cafe visit event",
+                visual=(
+                    "カフェ",
+                    "喫茶",
+                    "コーヒー",
+                    "ケーキ",
+                    "テーブル",
+                    "メニュー",
+                    "cafe",
+                    "coffee",
+                    "cake",
+                    "table",
+                    "menu",
+                ),
+                textual=(
+                    "カフェ",
+                    "喫茶",
+                    "コーヒー",
+                    "お茶",
+                    "集合",
+                    "店",
+                    "行った",
+                    "予約",
+                    "cafe",
+                    "coffee",
+                ),
+                repair=("カフェ 店", "コーヒー 集合", "喫茶 行った", "cafe coffee"),
+            )
+        if _text_has_any_term(normalized, ("飲み", "飲みに", "居酒屋", "バー", "beer", "bar")):
+            return _event_plan(
+                date_range,
+                event_type="dining_out",
+                event_subtype="drinking",
+                description="drinking or bar outing event",
+                visual=("居酒屋", "バー", "飲み物", "ビール", "グラス", "bar", "beer", "drink"),
+                textual=("飲み", "居酒屋", "バー", "集合", "予約", "ビール", "飲みに", "bar"),
+                repair=("飲み 居酒屋", "バー 集合", "ビール 予約"),
             )
         if _text_has_any_term(
             normalized,
@@ -628,6 +679,27 @@ class TemporalEventResult:
         }
 
 
+@dataclass(frozen=True)
+class _TemporalSearchPass:
+    date_range: TemporalDateRange
+    photo_diagnostics: dict[str, Any]
+    photos: tuple[PhotoCandidate, ...]
+    chunk_clusters: tuple[DailyEventCluster, ...]
+    chunk_reports: list[dict[str, Any]]
+    chunks: tuple[TemporalDateRange, ...]
+    ranked_clusters: tuple[DailyEventCluster, ...]
+    pre_prune_photo_used_clusters: tuple[DailyEventCluster, ...]
+    fallback: dict[str, Any]
+    fallback_clusters: tuple[DailyEventCluster, ...]
+    candidates_before_pruning: tuple[DailyEventCluster, ...]
+    candidate_clusters: tuple[DailyEventCluster, ...]
+    photo_used_clusters: tuple[DailyEventCluster, ...]
+    fallback_used_clusters: tuple[DailyEventCluster, ...]
+    used_clusters: tuple[DailyEventCluster, ...]
+    timing_ms: dict[str, int]
+    chunk_limited: bool = False
+
+
 def parse_temporal_event_query(
     text: str,
     *,
@@ -664,6 +736,7 @@ def parse_temporal_event_query(
         event_type="outing",
         preferred_sources=SUPPORTED_TEMPORAL_SOURCES,
         primary_tool="photo_date_range_search",
+        event_subtype=None,
     )
 
 
@@ -722,7 +795,7 @@ def answer_temporal_event_query(
         event_planner=event_planner,
         trace_recorder=trace_recorder,
     )
-    parsed = replace(parsed, event_type=event_plan.event_type)
+    parsed = replace(parsed, event_type=event_plan.event_type, event_subtype=event_plan.event_subtype)
     if not db.exists():
         parsed_range = parsed.date_range.to_dict()
         answer = TemporalAnswer(
@@ -766,21 +839,86 @@ def answer_temporal_event_query(
     range_days = _range_days(parsed.date_range)
     candidate_limit = max(1, int(top_candidate_dates if top_candidate_dates is not None else top_days))
     evidence_limit = max(1, int(top_evidence_per_date))
-    chunks = _temporal_date_chunks(
-        parsed.date_range,
-        chunk_after_days=max(1, int(chunk_after_days)),
-    )
-    chunking_enabled = len(chunks) > 1
-    long_range = range_days > int(long_range_days)
     per_chunk_candidate_limit = max(1, int(candidates_per_long_range_chunk))
     active_fallback_terms = _active_event_terms(event_plan, fallback_terms=fallback_terms)
     day_support_terms = active_fallback_terms if event_plan.event_type != "outing" else None
+    undated_start = perf_counter()
     undated_evidence_count = _undated_event_evidence_count(db, event_plan=event_plan)
-
-    photo_diagnostics = photo_date_range_diagnostics(
+    performance_timing_by_stage: dict[str, int] = {
+        "undated_evidence_scan_ms": _elapsed_ms(undated_start),
+    }
+    search_plan = _open_ended_search_ranges(
+        parsed.date_range,
+        fast_mode=DEFAULT_OPEN_ENDED_FAST_MODE,
+        recent_months=DEFAULT_OPEN_ENDED_RECENT_MONTHS,
+    )
+    search_passes: list[_TemporalSearchPass] = []
+    final_pass = _run_temporal_search_pass(
         db,
-        start=parsed.date_range.start,
-        end=parsed.date_range.end,
+        date_range=search_plan[0],
+        max_photos=max_photos,
+        outing_threshold=outing_threshold,
+        chunk_after_days=max(1, int(chunk_after_days)),
+        long_range_days=int(long_range_days),
+        per_chunk_candidate_limit=per_chunk_candidate_limit,
+        event_plan=event_plan,
+        support_terms=day_support_terms,
+        active_fallback_terms=active_fallback_terms,
+        candidate_limit=candidate_limit,
+        evidence_limit=evidence_limit,
+        max_chunks=DEFAULT_OPEN_ENDED_MAX_CHUNKS
+        if parsed.date_range.status == "unspecified"
+        else None,
+    )
+    search_passes.append(final_pass)
+    expanded_to_all_memory = False
+    expansion_reason: str | None = None
+    if (
+        parsed.date_range.status == "unspecified"
+        and len(search_plan) > 1
+        and len(final_pass.candidate_clusters) < DEFAULT_OPEN_ENDED_MIN_CANDIDATES
+    ):
+        expansion_reason = "recent_memory_candidate_count_below_threshold"
+        final_pass = _run_temporal_search_pass(
+            db,
+            date_range=search_plan[-1],
+            max_photos=max_photos,
+            outing_threshold=outing_threshold,
+            chunk_after_days=max(1, int(chunk_after_days)),
+            long_range_days=int(long_range_days),
+            per_chunk_candidate_limit=per_chunk_candidate_limit,
+            event_plan=event_plan,
+            support_terms=day_support_terms,
+            active_fallback_terms=active_fallback_terms,
+            candidate_limit=candidate_limit,
+            evidence_limit=evidence_limit,
+            max_chunks=DEFAULT_OPEN_ENDED_MAX_CHUNKS,
+        )
+        search_passes.append(final_pass)
+        expanded_to_all_memory = True
+    if parsed.date_range != final_pass.date_range:
+        parsed = replace(parsed, date_range=final_pass.date_range)
+        event_plan = replace(event_plan, date_range=parsed.date_range)
+    range_days = _range_days(parsed.date_range)
+    chunks = final_pass.chunks
+    chunking_enabled = len(chunks) > 1
+    long_range = range_days > int(long_range_days)
+    photo_diagnostics = final_pass.photo_diagnostics
+    photos = final_pass.photos
+    chunk_clusters = final_pass.chunk_clusters
+    chunk_reports = final_pass.chunk_reports
+    ranked_clusters = final_pass.ranked_clusters
+    pre_prune_photo_used_clusters = final_pass.pre_prune_photo_used_clusters
+    fallback = final_pass.fallback
+    fallback_clusters = final_pass.fallback_clusters
+    candidates_before_pruning = final_pass.candidates_before_pruning
+    candidate_clusters = final_pass.candidate_clusters
+    photo_used_clusters = final_pass.photo_used_clusters
+    fallback_used_clusters = final_pass.fallback_used_clusters
+    used_clusters = final_pass.used_clusters
+    performance_timing_by_stage.update(final_pass.timing_ms)
+    performance_timing_by_stage["total_search_ms"] = sum(
+        sum(search_pass.timing_ms.values()) for search_pass in search_passes
     )
     if trace_recorder is not None:
         trace_recorder.event(
@@ -803,36 +941,21 @@ def answer_temporal_event_query(
                 "date_range_query_status": photo_diagnostics.get("date_range_query_status"),
             },
         )
-    photo_search_step = (
-        trace_recorder.start(
+        trace_recorder.event(
             actor_type="retriever",
             actor_name="PhotoDateSearchTool",
             stage="photo_date_search",
             action="search_photos_by_date_range",
+            status="succeeded",
             safe_input_summary="date range, media type filters, and event intent signals",
-            decision_summary="Temporal event queries use structured taken_at search before vector retrieval.",
-            metadata={"chunk_count": len(chunks), "event_type": event_plan.event_type},
-        )
-        if trace_recorder is not None
-        else None
-    )
-    photos, chunk_clusters, chunk_reports = _collect_chunked_photo_candidates(
-        db,
-        chunks=chunks,
-        max_photos=max_photos,
-        outing_threshold=outing_threshold,
-        cap_candidates_per_chunk=per_chunk_candidate_limit if long_range else None,
-        event_plan=event_plan,
-        support_terms=day_support_terms,
-    )
-    if trace_recorder is not None and photo_search_step is not None:
-        trace_recorder.finish(
-            photo_search_step,
             safe_output_summary=f"photo_candidates={len(photos)}; day_clusters={len(chunk_clusters)}",
+            decision_summary="Temporal event queries use structured taken_at search before vector retrieval.",
             metadata={
+                "chunk_count": len(chunks),
+                "event_type": event_plan.event_type,
                 "photo_candidates": len(photos),
                 "day_clusters": len(chunk_clusters),
-                "chunk_count": len(chunk_reports),
+                "chunk_limited": final_pass.chunk_limited,
             },
         )
         annotated_photo_count = sum(1 for item in photos if item.has_annotation)
@@ -847,27 +970,10 @@ def answer_temporal_event_query(
             invocation_type="cached_artifact" if annotated_photo_count else "not_used",
             artifact_type="photo_annotation" if annotated_photo_count else None,
             artifact_model_id="vision_common",
-            safe_output_summary=(
-                f"cached_annotations={annotated_photo_count}; live_calls=0"
-            ),
+            safe_output_summary=f"cached_annotations={annotated_photo_count}; live_calls=0",
             decision_summary="The chat path reads existing vision annotations and does not call Qwen3-VL live.",
-            metadata={
-                "cached_annotation_count": annotated_photo_count,
-                "live_calls": 0,
-            },
+            metadata={"cached_annotation_count": annotated_photo_count, "live_calls": 0},
         )
-    ranked_clusters = _rank_clusters(_dedupe_clusters(tuple(chunk_clusters)))
-    pre_prune_photo_used_clusters = tuple(
-        item for item in ranked_clusters if item.confidence >= outing_threshold
-    )
-    fallback = _line_note_support_for_range(
-        db,
-        start=parsed.date_range.start,
-        end=parsed.date_range.end,
-        terms=active_fallback_terms,
-        limit=20,
-    )
-    if trace_recorder is not None:
         trace_recorder.event(
             actor_type="retriever",
             actor_name="LineNotesDateSearchTool",
@@ -886,8 +992,8 @@ def answer_temporal_event_query(
                 "fallback_sources_used": list(fallback["fallback_sources_used"]),
             },
         )
-        text_artifacts = (
-            int(fallback["line_date_support_count"]) + int(fallback["notes_date_support_count"])
+        text_artifacts = int(fallback["line_date_support_count"]) + int(
+            fallback["notes_date_support_count"]
         )
         trace_recorder.event(
             actor_type="specialist_model",
@@ -907,23 +1013,6 @@ def answer_temporal_event_query(
             ),
             metadata={"matched_text_record_count": text_artifacts, "live_calls": 0},
         )
-    fallback_clusters = (
-        _fallback_clusters_from_support(fallback)
-        if event_plan.event_type != "outing" or not pre_prune_photo_used_clusters or not photos
-        else ()
-    )
-    candidates_before_pruning = _dedupe_clusters((*ranked_clusters, *fallback_clusters))
-    candidate_clusters = tuple(
-        _prune_cluster_evidence(cluster, evidence_limit)
-        for cluster in _rank_clusters(candidates_before_pruning)[:candidate_limit]
-    )
-    photo_used_clusters = tuple(
-        item for item in candidate_clusters if item.photo_count > 0 and item.confidence >= outing_threshold
-    )
-    fallback_used_clusters = tuple(
-        item for item in candidate_clusters if item.photo_count == 0 and item.support_evidence_ids
-    )
-    used_clusters = photo_used_clusters or fallback_used_clusters
     evidence = _build_temporal_evidence(
         photos,
         candidate_clusters,
@@ -976,6 +1065,7 @@ def answer_temporal_event_query(
                 "used_date_count": len(answer.dates),
             },
         )
+    coverage_timer = perf_counter()
     coverage = timestamp_coverage(db)
     parsed_range = parsed.date_range.to_dict()
     months_covered = _month_keys_for_range(parsed.date_range)
@@ -994,6 +1084,7 @@ def answer_temporal_event_query(
         terms=active_fallback_terms,
         months=months_covered,
     )
+    performance_timing_by_stage["coverage_and_month_counts_ms"] = _elapsed_ms(coverage_timer)
     line_support_count_by_month = support_counts_by_month["line"]
     notes_support_count_by_month = support_counts_by_month["notes"]
     final_candidate_months = tuple(
@@ -1014,6 +1105,14 @@ def answer_temporal_event_query(
         chunking_enabled=chunking_enabled,
         long_range=long_range,
     )
+    date_scope_details = _date_scope_diagnostics(parsed.date_range)
+    if parsed_range["status"] == "unspecified" and search_plan:
+        date_scope_details["available_memory_range_start"] = search_plan[-1].start.isoformat()
+        date_scope_details["available_memory_range_end"] = search_plan[-1].end.isoformat()
+        date_scope_details["inferred_search_range_source"] = "local_coverage"
+    evidence_count_by_source = _temporal_evidence_count_by_source(evidence)
+    dated_evidence_count = sum(1 for item in evidence if item.occurred_at)
+    total_evidence_count = len(evidence) + undated_evidence_count
     diagnostics = {
         "db_exists": True,
         **coverage,
@@ -1030,7 +1129,7 @@ def answer_temporal_event_query(
         "date_range_status": parsed_range["status"],
         "date_scope_strategy": parsed_range["scope_strategy"],
         "open_ended_temporal_query": parsed_range["status"] == "unspecified",
-        **scope_diagnostics,
+        **date_scope_details,
         "date_range_confidence": parsed_range["confidence"],
         "date_range_parse_warnings": parsed_range["parse_warnings"],
         "parsed_temporal_expression": parsed_range["expression"],
@@ -1040,9 +1139,12 @@ def answer_temporal_event_query(
         "event_intent_fallback_used": event_plan.fallback_used,
         "event_type": event_plan.event_type,
         "event_subtype": event_plan.event_subtype,
+        "generated_by": _plan_generated_by(event_plan),
         "event_description": _public_event_description(event_plan),
         "visual_signal_count": len(event_plan.visual_signals),
         "textual_signal_count": len(event_plan.textual_signals),
+        "visual_signals": list(event_plan.visual_signals[:16]),
+        "textual_signals": list(event_plan.textual_signals[:16]),
         "source_priorities": list(event_plan.source_priorities),
         "source_constraints": list(event_plan.source_constraints),
         "candidate_date_count": len(candidate_clusters),
@@ -1074,13 +1176,35 @@ def answer_temporal_event_query(
         "chunk_size": "month" if chunking_enabled else "none",
         "chunks": chunk_reports,
         "candidates_before_pruning": len(candidates_before_pruning),
+        "candidate_dates_before_pruning": len(candidates_before_pruning),
         "candidates_after_pruning": len(candidate_clusters),
+        "candidate_dates_after_pruning": len(candidate_clusters),
         "top_candidate_dates": candidate_limit,
         "top_evidence_per_date": evidence_limit,
         "evidence_sent_count": len(evidence),
-        "evidence_count": len(evidence) + undated_evidence_count,
-        "dated_evidence_count": sum(1 for item in evidence if item.occurred_at),
+        "evidence_count": total_evidence_count,
+        "evidence_count_by_source": evidence_count_by_source,
+        "dated_evidence_count": dated_evidence_count,
         "undated_evidence_count": undated_evidence_count,
+        "evidence_to_candidate_date_conversion_rate": round(
+            (len(candidate_clusters) / dated_evidence_count) if dated_evidence_count else 0.0,
+            3,
+        ),
+        "performance_timing_by_stage": performance_timing_by_stage,
+        "open_ended_fast_mode": parsed_range["status"] == "unspecified"
+        and DEFAULT_OPEN_ENDED_FAST_MODE,
+        "stage_1_candidate_count": len(search_passes[0].candidate_clusters)
+        if search_passes
+        else 0,
+        "expanded_to_all_memory": expanded_to_all_memory,
+        "expansion_reason": expansion_reason,
+        "max_chunks": DEFAULT_OPEN_ENDED_MAX_CHUNKS
+        if parsed_range["status"] == "unspecified"
+        else None,
+        "chunk_limited": final_pass.chunk_limited,
+        "max_candidate_dates_total": candidate_limit,
+        "max_evidence_per_date": evidence_limit,
+        "max_semantic_candidates": None,
         "pruning_reason": pruning_reason,
         "photo_candidates_examined": len(photos),
         "candidate_day_count": len(candidate_clusters),
@@ -1095,6 +1219,15 @@ def answer_temporal_event_query(
         "fallback_sources_used": list(fallback["fallback_sources_used"]),
     }
     warnings: list[str] = []
+    if parsed.date_range.status == "unspecified":
+        if parsed.date_range.scope_strategy == "recent_memory":
+            warnings.append(
+                "対象期間が指定されていないため、まず直近範囲から検索しました。期間を指定すると精度と速度が上がります。"
+            )
+        else:
+            warnings.append(
+                "対象期間が指定されていないため、利用可能な全期間から検索しました。期間を指定すると精度と速度が上がります。"
+            )
     if chunking_enabled:
         warnings.append("broad temporal range was chunked and candidate dates were pruned")
     if len(months_covered) > 1 and len(final_candidate_months) == 1 and final_missing_months:
@@ -1132,6 +1265,7 @@ def search_photos_by_date_range(
     limit: int = DEFAULT_MAX_PHOTOS,
     outing_threshold: float = DEFAULT_OUTING_THRESHOLD,
     event_plan: EventIntentPlan | None = None,
+    restrict_to_event_signals: bool = False,
 ) -> tuple[PhotoCandidate, ...]:
     """Search photos by capture timestamp without exposing private paths."""
 
@@ -1139,40 +1273,89 @@ def search_photos_by_date_range(
     try:
         if not _table_exists(connection, "media_items"):
             return ()
-        rows = connection.execute(
-            """
-            SELECT m.id AS media_item_id,
-                   m.media_type,
-                   m.mime_type,
-                   m.taken_at,
-                   m.modified_at,
-                   m.metadata_json AS media_metadata_json,
-                   a.id AS annotation_id,
-                   a.value_text,
-                   a.data_json,
-                   a.confidence
-            FROM media_items m
-            LEFT JOIN media_annotations a
-              ON a.id = (
-                SELECT latest.id
-                FROM media_annotations latest
-                WHERE latest.media_item_id = m.id
-                  AND latest.is_excluded = 0
-                  AND latest.annotation_type = 'vision'
-                ORDER BY latest.id DESC
-                LIMIT 1
-              )
-            WHERE m.is_excluded = 0
-              AND m.media_type IN ('image', 'video')
-              AND m.taken_at >= ?
-              AND m.taken_at < ?
-            ORDER BY m.taken_at, m.id
-            LIMIT ?
-            """,
-            (start.isoformat(), end.isoformat(), int(limit)),
-        ).fetchall()
+        signal_terms = (
+            tuple(event_plan.visual_signals[:16])
+            if restrict_to_event_signals and event_plan is not None and event_plan.event_type != "outing"
+            else ()
+        )
+        signal_clause = ""
+        signal_params: list[str] = []
+        if signal_terms:
+            predicates: list[str] = []
+            for term in signal_terms:
+                predicates.append(
+                    "(COALESCE(a.value_text, '') LIKE ? OR COALESCE(a.data_json, '') LIKE ?)"
+                )
+                like_term = f"%{term}%"
+                signal_params.extend((like_term, like_term))
+            signal_clause = " AND (" + " OR ".join(predicates) + ")"
+        if signal_terms:
+            rows = connection.execute(
+                f"""
+                SELECT m.id AS media_item_id,
+                       m.media_type,
+                       m.mime_type,
+                       m.taken_at,
+                       m.modified_at,
+                       m.metadata_json AS media_metadata_json,
+                       a.id AS annotation_id,
+                       a.value_text,
+                       a.data_json,
+                       a.confidence
+                FROM media_annotations a
+                JOIN media_items m ON m.id = a.media_item_id
+                WHERE m.is_excluded = 0
+                  AND m.media_type IN ('image', 'video')
+                  AND m.taken_at >= ?
+                  AND m.taken_at < ?
+                  AND a.is_excluded = 0
+                  AND a.annotation_type = 'vision'
+                  {signal_clause}
+                ORDER BY m.taken_at DESC, m.id, a.id DESC
+                LIMIT ?
+                """,
+                (start.isoformat(), end.isoformat(), *signal_params, int(limit)),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """
+                SELECT m.id AS media_item_id,
+                       m.media_type,
+                       m.mime_type,
+                       m.taken_at,
+                       m.modified_at,
+                       m.metadata_json AS media_metadata_json,
+                       a.id AS annotation_id,
+                       a.value_text,
+                       a.data_json,
+                       a.confidence
+                FROM media_items m
+                LEFT JOIN media_annotations a
+                  ON a.id = (
+                    SELECT latest.id
+                    FROM media_annotations latest
+                    WHERE latest.media_item_id = m.id
+                      AND latest.is_excluded = 0
+                      AND latest.annotation_type = 'vision'
+                    ORDER BY latest.id DESC
+                    LIMIT 1
+                  )
+                WHERE m.is_excluded = 0
+                  AND m.media_type IN ('image', 'video')
+                  AND m.taken_at >= ?
+                  AND m.taken_at < ?
+                ORDER BY m.taken_at, m.id
+                LIMIT ?
+                """,
+                (start.isoformat(), end.isoformat(), int(limit)),
+            ).fetchall()
         candidates: list[PhotoCandidate] = []
+        seen_media_ids: set[int] = set()
         for row in rows:
+            media_item_id = int(row["media_item_id"])
+            if media_item_id in seen_media_ids:
+                continue
+            seen_media_ids.add(media_item_id)
             occurred_at = str(row["taken_at"] or "")
             if not occurred_at:
                 continue
@@ -1189,8 +1372,8 @@ def search_photos_by_date_range(
             )
             candidates.append(
                 PhotoCandidate(
-                    media_item_id=int(row["media_item_id"]),
-                    evidence_id=f"media_items:{int(row['media_item_id'])}",
+                    media_item_id=media_item_id,
+                    evidence_id=f"media_items:{media_item_id}",
                     taken_at=occurred_at,
                     day=_date_part(occurred_at),
                     media_type=str(row["media_type"] or "unknown"),
@@ -1203,6 +1386,8 @@ def search_photos_by_date_range(
                     matched_visual_signals=matched_visual,
                 ),
             )
+            if len(candidates) >= int(limit):
+                break
         return tuple(candidates)
     finally:
         connection.close()
@@ -1443,6 +1628,7 @@ def _build_temporal_answer(
     undated_evidence_count: int = 0,
 ) -> TemporalAnswer:
     event_label = _event_label(query.event_type)
+    scope_prefix = _answer_scope_prefix(query.date_range)
     if not used_clusters:
         if not candidate_clusters and undated_evidence_count:
             unknowns = (
@@ -1459,7 +1645,7 @@ def _build_temporal_answer(
         return TemporalAnswer(
             answer_succeeded=True,
             conclusion=(
-                f"{query.date_range.label}に{event_label}日を特定できる十分な根拠はありません。"
+                f"{scope_prefix}{query.date_range.label}に{event_label}日を特定できる十分な根拠はありません。"
             ),
             confidence=0.0,
             dates=(),
@@ -1480,11 +1666,11 @@ def _build_temporal_answer(
     sources = _sources_for_ids(evidence_ids)
     photo_backed = any(cluster.photo_count > 0 for cluster in display_dates)
     if photo_backed:
-        conclusion = f"{query.date_range.label}に{event_label}可能性がある日は、{date_text}です。"
+        conclusion = f"{scope_prefix}{query.date_range.label}に{event_label}可能性がある日は、{date_text}です。"
         unknowns = ("写真と注釈からの推定であり、外出目的までは断定できません。",)
     else:
         conclusion = (
-            f"{query.date_range.label}の写真候補は見つかりませんでしたが、"
+            f"{scope_prefix}{query.date_range.label}の写真候補は見つかりませんでしたが、"
             f"LINE/ノートには{event_label}記録候補がある日は、{date_text}です。"
         )
         confidence = min(confidence, 0.42)
@@ -1501,6 +1687,14 @@ def _build_temporal_answer(
         used_sources=sources,
         unknowns=unknowns,
     )
+
+
+def _answer_scope_prefix(date_range: TemporalDateRange) -> str:
+    if date_range.status != "unspecified":
+        return ""
+    if date_range.scope_strategy == "recent_memory":
+        return "対象期間が指定されていないため、まず直近範囲から検索しました。"
+    return "対象期間が指定されていないため、利用可能な全期間から検索しました。"
 
 
 def _event_label(event_type: str) -> str:
@@ -1520,6 +1714,10 @@ def _event_label(event_type: str) -> str:
 def _public_event_description(event_plan: EventIntentPlan) -> str:
     if event_plan.event_type == "dining_out" and event_plan.event_subtype == "ramen":
         return "ramen dining-out event"
+    if event_plan.event_type == "dining_out" and event_plan.event_subtype == "cafe":
+        return "cafe visit event"
+    if event_plan.event_type == "dining_out" and event_plan.event_subtype == "drinking":
+        return "drinking or bar outing event"
     descriptions = {
         "dining_out": "meal or dining-out event",
         "travel": "travel or sightseeing event",
@@ -1529,6 +1727,14 @@ def _public_event_description(event_plan: EventIntentPlan) -> str:
         "outing": "generic outing event",
     }
     return descriptions.get(event_plan.event_type, "temporal event")
+
+
+def _plan_generated_by(event_plan: EventIntentPlan) -> str:
+    if event_plan.planner == "leader" and not event_plan.fallback_used:
+        return "leader"
+    if event_plan.planner == "deterministic" or event_plan.fallback_used:
+        return "deterministic_fallback"
+    return "hybrid"
 
 
 def _build_temporal_evidence(
@@ -2005,11 +2211,53 @@ def _collect_chunked_photo_candidates(
     cap_candidates_per_chunk: int | None,
     event_plan: EventIntentPlan | None,
     support_terms: tuple[str, ...] | None,
+    restrict_to_event_signals: bool = False,
 ) -> tuple[tuple[PhotoCandidate, ...], tuple[DailyEventCluster, ...], list[dict[str, Any]]]:
     all_photos: list[PhotoCandidate] = []
     all_clusters: list[DailyEventCluster] = []
     reports: list[dict[str, Any]] = []
     seen_photo_ids: set[int] = set()
+    if restrict_to_event_signals and chunks:
+        range_limit = min(max(int(max_photos), 1) * max(len(chunks), 1), 50000)
+        range_photos = search_photos_by_date_range(
+            db_path,
+            start=chunks[0].start,
+            end=chunks[-1].end,
+            limit=range_limit,
+            outing_threshold=outing_threshold,
+            event_plan=event_plan,
+            restrict_to_event_signals=True,
+        )
+        for photo in range_photos:
+            if photo.media_item_id in seen_photo_ids:
+                continue
+            seen_photo_ids.add(photo.media_item_id)
+            all_photos.append(photo)
+        for chunk in chunks:
+            chunk_photos = tuple(
+                photo for photo in range_photos if _photo_candidate_in_range(photo, chunk)
+            )
+            chunk_clusters = _rank_clusters(
+                cluster_photo_candidates_by_day(
+                    db_path,
+                    chunk_photos,
+                    outing_threshold=outing_threshold,
+                    support_terms=support_terms,
+                ),
+            )
+            if cap_candidates_per_chunk is not None:
+                chunk_clusters = chunk_clusters[:cap_candidates_per_chunk]
+            all_clusters.extend(chunk_clusters)
+            reports.append(
+                {
+                    "start": chunk.start.isoformat(),
+                    "end": chunk.end.isoformat(),
+                    "label": chunk.label,
+                    "photo_candidates_count": len(chunk_photos),
+                    "candidate_day_count": len(chunk_clusters),
+                },
+            )
+        return tuple(all_photos), tuple(all_clusters), reports
     for chunk in chunks:
         chunk_photos = search_photos_by_date_range(
             db_path,
@@ -2018,6 +2266,7 @@ def _collect_chunked_photo_candidates(
             limit=max_photos,
             outing_threshold=outing_threshold,
             event_plan=event_plan,
+            restrict_to_event_signals=restrict_to_event_signals,
         )
         for photo in chunk_photos:
             if photo.media_item_id in seen_photo_ids:
@@ -2045,6 +2294,11 @@ def _collect_chunked_photo_candidates(
             },
         )
     return tuple(all_photos), tuple(all_clusters), reports
+
+
+def _photo_candidate_in_range(photo: PhotoCandidate, date_range: TemporalDateRange) -> bool:
+    parsed = _parse_date_part(photo.day)
+    return parsed is not None and date_range.start <= parsed < date_range.end
 
 
 def _rank_clusters(clusters: tuple[DailyEventCluster, ...] | list[DailyEventCluster]) -> tuple[DailyEventCluster, ...]:
@@ -2219,6 +2473,151 @@ def _line_note_support_counts_by_month(
         return result
     finally:
         connection.close()
+
+
+def _run_temporal_search_pass(
+    db_path: Path | str,
+    *,
+    date_range: TemporalDateRange,
+    max_photos: int,
+    outing_threshold: float,
+    chunk_after_days: int,
+    long_range_days: int,
+    per_chunk_candidate_limit: int,
+    event_plan: EventIntentPlan,
+    support_terms: tuple[str, ...] | None,
+    active_fallback_terms: tuple[str, ...],
+    candidate_limit: int,
+    evidence_limit: int,
+    max_chunks: int | None,
+) -> _TemporalSearchPass:
+    timing: dict[str, int] = {}
+    chunks = _temporal_date_chunks(
+        date_range,
+        chunk_after_days=chunk_after_days,
+    )
+    chunk_limited = False
+    if max_chunks is not None and len(chunks) > int(max_chunks):
+        chunks = chunks[-int(max_chunks) :]
+        chunk_limited = True
+    effective_range = date_range
+    if chunk_limited and chunks:
+        effective_range = TemporalDateRange(
+            start=chunks[0].start,
+            end=chunks[-1].end,
+            label=f"直近{len(chunks)}か月",
+            source=date_range.source,
+            expression=date_range.expression,
+            timezone=date_range.timezone,
+            confidence=date_range.confidence,
+            parse_warnings=(*date_range.parse_warnings, "open_ended_max_chunks_applied"),
+            status=date_range.status,
+            scope_strategy="sampled_then_expand"
+            if date_range.status == "unspecified"
+            else date_range.scope_strategy,
+        )
+    timer = perf_counter()
+    photo_diagnostics = photo_date_range_diagnostics(
+        db_path,
+        start=effective_range.start,
+        end=effective_range.end,
+    )
+    timing["photo_coverage_ms"] = _elapsed_ms(timer)
+    timer = perf_counter()
+    long_range = _range_days(effective_range) > long_range_days
+    photos, chunk_clusters, chunk_reports = _collect_chunked_photo_candidates(
+        db_path,
+        chunks=chunks,
+        max_photos=max_photos,
+        outing_threshold=outing_threshold,
+        cap_candidates_per_chunk=per_chunk_candidate_limit if long_range else None,
+        event_plan=event_plan,
+        support_terms=None if effective_range.status == "unspecified" else support_terms,
+        restrict_to_event_signals=effective_range.status == "unspecified"
+        and event_plan.event_type != "outing",
+    )
+    timing["photo_search_ms"] = _elapsed_ms(timer)
+    timer = perf_counter()
+    ranked_clusters = _rank_clusters(_dedupe_clusters(tuple(chunk_clusters)))
+    pre_prune_photo_used_clusters = tuple(
+        item for item in ranked_clusters if item.confidence >= outing_threshold
+    )
+    fallback = _line_note_support_for_range(
+        db_path,
+        start=effective_range.start,
+        end=effective_range.end,
+        terms=active_fallback_terms,
+        limit=20,
+    )
+    fallback_clusters = (
+        _fallback_clusters_from_support(fallback)
+        if event_plan.event_type != "outing" or not pre_prune_photo_used_clusters or not photos
+        else ()
+    )
+    candidates_before_pruning = _dedupe_clusters((*ranked_clusters, *fallback_clusters))
+    candidate_clusters = tuple(
+        _prune_cluster_evidence(cluster, evidence_limit)
+        for cluster in _rank_clusters(candidates_before_pruning)[:candidate_limit]
+    )
+    photo_used_clusters = tuple(
+        item
+        for item in candidate_clusters
+        if item.photo_count > 0 and item.confidence >= outing_threshold
+    )
+    fallback_used_clusters = tuple(
+        item for item in candidate_clusters if item.photo_count == 0 and item.support_evidence_ids
+    )
+    used_clusters = photo_used_clusters or fallback_used_clusters
+    timing["line_notes_and_pruning_ms"] = _elapsed_ms(timer)
+    return _TemporalSearchPass(
+        date_range=effective_range,
+        photo_diagnostics=photo_diagnostics,
+        photos=photos,
+        chunk_clusters=chunk_clusters,
+        chunk_reports=chunk_reports,
+        chunks=chunks,
+        ranked_clusters=ranked_clusters,
+        pre_prune_photo_used_clusters=pre_prune_photo_used_clusters,
+        fallback=fallback,
+        fallback_clusters=fallback_clusters,
+        candidates_before_pruning=candidates_before_pruning,
+        candidate_clusters=candidate_clusters,
+        photo_used_clusters=photo_used_clusters,
+        fallback_used_clusters=fallback_used_clusters,
+        used_clusters=used_clusters,
+        timing_ms=timing,
+        chunk_limited=chunk_limited,
+    )
+
+
+def _open_ended_search_ranges(
+    date_range: TemporalDateRange,
+    *,
+    fast_mode: bool,
+    recent_months: int,
+) -> tuple[TemporalDateRange, ...]:
+    if date_range.status != "unspecified" or not fast_mode:
+        return (date_range,)
+    recent_start = max(date_range.start, _add_months(_month_start(date_range.end), -int(recent_months)))
+    if recent_start <= date_range.start:
+        return (date_range,)
+    recent = TemporalDateRange(
+        start=recent_start,
+        end=date_range.end,
+        label=f"直近{int(recent_months)}か月",
+        source=date_range.source,
+        expression=date_range.expression,
+        timezone=date_range.timezone,
+        confidence=date_range.confidence,
+        parse_warnings=(*date_range.parse_warnings, "open_ended_fast_recent_scope"),
+        status=date_range.status,
+        scope_strategy="recent_memory",
+    )
+    return (recent, date_range)
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return max(0, int((perf_counter() - started_at) * 1000))
 
 
 def _is_open_ended_when_question(normalized_text_value: str) -> bool:
@@ -2792,6 +3191,13 @@ def _sources_for_ids(evidence_ids: tuple[str, ...]) -> tuple[str, ...]:
         if source != "unknown" and source not in sources:
             sources.append(source)
     return tuple(sources)
+
+
+def _temporal_evidence_count_by_source(evidence: tuple[TemporalEvidenceItem, ...]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in evidence:
+        counts[item.source_type] = counts.get(item.source_type, 0) + 1
+    return counts
 
 
 def _date_part(value: str) -> str:

@@ -433,6 +433,11 @@ def _maybe_temporal_console_payload(
             options=_evidence_display_options(options),
         ),
         "temporal_event": temporal_event,
+        "query_type": result.query.query_type,
+        "date_range": result.query.date_range.to_dict(),
+        "event_type": result.query.event_type,
+        "event_subtype": result.query.event_subtype,
+        "diagnostics": result.diagnostics,
         "trace": {
             "query_type": result.query.query_type,
             "temporal_event": True,
