@@ -295,6 +295,65 @@ def agent_console_html() -> str:
       color: var(--accent);
       border: 1px solid var(--line);
     }
+    .runtime-trace {
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+    }
+    .trace-row {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcf8;
+      padding: 8px 10px;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    .trace-row[open] { background: #fff; }
+    .trace-row summary {
+      cursor: pointer;
+      display: grid;
+      gap: 6px;
+      overflow-wrap: anywhere;
+    }
+    .trace-title {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      font-weight: 750;
+    }
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 2px 7px;
+      font-size: 0.78rem;
+      border: 1px solid var(--line);
+      background: #eef5ef;
+      color: var(--muted);
+    }
+    .status-badge.succeeded { color: var(--ok); border-color: #a9d2b4; background: #f0fbf2; }
+    .status-badge.failed { color: var(--danger); border-color: #dfa59e; background: #fff0ee; }
+    .status-badge.skipped, .status-badge.fallback_used { color: var(--accent-2); border-color: #e4c06e; background: #fff9e7; }
+    .trace-detail {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--line);
+    }
+    .model-graph {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 8px;
+      min-width: 0;
+    }
+    .graph-node {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 8px;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
     .detail-modal {
       position: fixed;
       inset: 0;
@@ -457,7 +516,7 @@ def agent_console_html() -> str:
         </section>
 
         <section>
-          <h2>Agent Trace</h2>
+          <h2>Agent Runtime Trace</h2>
           <div id="trace-panel" class="stack"><div class="status-line">No trace yet.</div></div>
         </section>
 
@@ -795,6 +854,7 @@ def agent_console_html() -> str:
       clear(tracePanel);
       const trace = payload.trace || {};
       renderKv(tracePanel, {
+        runtime_event_count: trace.runtime_event_count,
         plan_created: trace.plan_created,
         main_entity_count: trace.plan?.main_entity_count,
         specific_concept_count: trace.plan?.specific_concept_count,
@@ -810,7 +870,106 @@ def agent_console_html() -> str:
         insufficient_evidence_reason: trace.insufficient_evidence_reason || "none",
         json_extraction_strategy: trace.json_extraction_strategy || "none"
       });
+      renderRuntimeTrace(payload);
       renderTemporalDiagnostics(trace.temporal_diagnostics || null);
+    }
+    function renderRuntimeTrace(payload) {
+      const events = payload.trace_events || [];
+      const modelSummary = payload.model_usage_summary || {};
+      const toolSummary = payload.tool_usage_summary || {};
+      const fallbackSummary = payload.fallback_summary || {};
+      tracePanel.appendChild(el("h3", "Model / Tool Summary"));
+      const graph = document.createElement("div");
+      graph.className = "model-graph";
+      appendSummaryGroup(graph, "DeepSeek Leader / Specialist Models", modelSummary);
+      appendSummaryGroup(graph, "Tools / Retrievers / Validators", toolSummary);
+      appendSummaryGroup(graph, "Fallbacks", fallbackSummary.fallback_used ? {
+        fallback: fallbackSummary
+      } : {fallback: {status: "not_used", fallback_count: 0}});
+      tracePanel.appendChild(graph);
+      tracePanel.appendChild(el("h3", "Runtime Timeline"));
+      if (!events.length) {
+        tracePanel.appendChild(el("div", "No runtime trace events were returned.", "status-line"));
+        return;
+      }
+      const timeline = document.createElement("div");
+      timeline.className = "runtime-trace";
+      events.forEach((event) => timeline.appendChild(renderTraceEvent(event)));
+      tracePanel.appendChild(timeline);
+    }
+    function appendSummaryGroup(target, title, summary) {
+      const node = document.createElement("div");
+      node.className = "graph-node";
+      node.appendChild(el("strong", title));
+      const keys = Object.keys(summary || {});
+      if (!keys.length) {
+        node.appendChild(el("div", "not used", "muted-small"));
+      } else {
+        keys.slice(0, 6).forEach((key) => {
+          const value = summary[key] || {};
+          node.appendChild(el("div", `${key}: ${safeSummaryText(value)}`, "muted-small"));
+        });
+      }
+      target.appendChild(node);
+    }
+    function renderTraceEvent(event) {
+      const row = document.createElement("details");
+      row.className = "trace-row";
+      const summary = document.createElement("summary");
+      const title = document.createElement("div");
+      title.className = "trace-title";
+      title.appendChild(el("span", statusIcon(event.status)));
+      title.appendChild(el("span", event.actor_name || "unknown actor"));
+      title.appendChild(el("span", event.action || event.stage || "step", "muted-small"));
+      const badge = el("span", event.status || "unknown", `status-badge ${event.status || ""}`);
+      title.appendChild(badge);
+      if (event.duration_ms !== null && event.duration_ms !== undefined) {
+        title.appendChild(el("span", `${event.duration_ms}ms`, "muted-small"));
+      }
+      summary.appendChild(title);
+      const line = event.decision_summary || event.reasoning_summary || event.safe_output_summary || event.safe_input_summary || "";
+      if (line) summary.appendChild(el("div", line, "muted-small"));
+      row.appendChild(summary);
+      const detail = document.createElement("div");
+      detail.className = "trace-detail";
+      renderKv(detail, {
+        step_id: event.step_id,
+        parent_step_id: event.parent_step_id || "none",
+        actor_type: event.actor_type,
+        stage: event.stage,
+        model_id: event.model_id || "none",
+        provider: event.provider || "none",
+        invocation_type: event.invocation_type || "n/a",
+        artifact_type: event.artifact_type || "n/a",
+        artifact_model_id: event.artifact_model_id || "n/a",
+        safe_input_summary: event.safe_input_summary || "none",
+        safe_output_summary: event.safe_output_summary || "none",
+        reasoning_summary: event.reasoning_summary || "none",
+        decision_summary: event.decision_summary || "none",
+        error_class: event.error_class || "none",
+        safe_error_message: event.safe_error_message || "none",
+        privacy_level: event.privacy_level || "safe_metadata_only",
+        metadata: event.metadata || {}
+      });
+      row.appendChild(detail);
+      return row;
+    }
+    function statusIcon(status) {
+      if (status === "succeeded") return "OK";
+      if (status === "failed") return "FAIL";
+      if (status === "skipped") return "SKIP";
+      if (status === "fallback_used") return "FALLBACK";
+      if (status === "running") return "RUN";
+      return "STEP";
+    }
+    function safeSummaryText(value) {
+      if (value === null || value === undefined) return "none";
+      if (typeof value !== "object") return String(value);
+      const parts = [];
+      ["status", "live_calls", "fake_calls", "cached_artifacts", "not_used", "succeeded", "failed", "skipped", "fallback_count"].forEach((key) => {
+        if (value[key] !== undefined) parts.push(`${key}=${value[key]}`);
+      });
+      return parts.join("; ") || JSON.stringify(value);
     }
     function renderTemporalDiagnostics(diagnostics) {
       if (!diagnostics) return;

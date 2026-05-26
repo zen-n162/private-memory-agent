@@ -764,5 +764,19 @@ def test_chat_console_dining_query_exposes_event_intent_diagnostics(
     assert diagnostics["candidate_date_count"] > 0
     assert diagnostics["event_score_by_date"]
     assert payload["evidence_display"]["candidate_dates"][0]["event_score"] >= 0.45
+    trace_events = payload["trace_events"]
+    actor_names = {event["actor_name"] for event in trace_events}
+    statuses = {event["status"] for event in trace_events}
+    assert "DateRangeParserTool" in actor_names
+    assert "DeterministicEventIntentPlanner" in actor_names
+    assert "PhotoDateSearchTool" in actor_names
+    assert "Qwen3-VL" in actor_names
+    assert "LineNotesDateSearchTool" in actor_names
+    assert "AnswerValidator" in actor_names
+    qwen_event = next(event for event in trace_events if event["actor_name"] == "Qwen3-VL")
+    assert qwen_event["invocation_type"] == "cached_artifact"
+    assert qwen_event["artifact_type"] == "photo_annotation"
+    assert "fallback_used" in statuses
+    assert payload["model_usage_summary"]["Qwen3-VL"]["cached_artifacts"] >= 1
     assert "/private/ui-dining-secret.jpg" not in serialized
     assert "料理 レストラン" not in serialized

@@ -9,6 +9,7 @@ from private_memory_agent.api.schemas import ChatQueryRequest
 from private_memory_agent.api.ui import agent_console_html
 from private_memory_agent.retrieval import index_text
 from private_memory_agent.storage import initialize_database
+from private_memory_agent.tracing import AgentTraceRecorder, summarize_model_usage
 
 
 def _insert_synthetic_line(db_path, text="研究 synthetic private evidence"):
@@ -47,6 +48,10 @@ def test_agent_console_html_is_self_contained_and_points_to_chat_api():
     assert "Show fewer thumbnails" in html
     assert "overflow-wrap: anywhere" in html
     assert "Temporal Diagnostics" in html
+    assert "Agent Runtime Trace" in html
+    assert "Runtime Timeline" in html
+    assert "Model / Tool Summary" in html
+    assert "status-badge" in html
     assert "parsed_date_range_start" in html
     assert "Answer was generated but hidden because Show answer is off." in html
     assert "Conclusion (unknown / insufficient evidence)" in html
@@ -93,6 +98,10 @@ def test_chat_console_default_response_shows_answer_but_not_raw_evidence(
     assert payload["evidence_display"]["privacy"]["snippets_hidden"] is True
     assert payload["evidence"]
     assert payload["trace"]["plan_created"] is True
+    assert payload["trace_events"]
+    assert payload["trace"]["runtime_event_count"] == len(payload["trace_events"])
+    assert "FakeLeaderModel" in payload["model_usage_summary"]
+    assert "RetrievalService" in payload["tool_usage_summary"]
     assert "raw private console body" not in serialized
 
 
@@ -196,6 +205,61 @@ def test_chat_console_show_snippets_is_explicit_and_truncated(
     assert payload["privacy"]["snippets_hidden"] is False
     assert payload["evidence_display"]["groups"]["line"][0]["snippet"]
     assert any("show_snippets is enabled" in warning for warning in payload["warnings"])
+
+
+def test_chat_console_trace_records_semantic_reranker_and_answer_generation(
+    temp_config_factory,
+    tmp_path,
+):
+    db_path = tmp_path / "console.sqlite3"
+    _insert_synthetic_line(db_path, text="研究 trace private evidence")
+
+    payload = run_chat_console_query(
+        ChatConsoleOptions(
+            config_dir=temp_config_factory(),
+            db_path=db_path,
+            question="研究",
+            mode="fake-model",
+            sources=("line",),
+            semantic=True,
+            semantic_model="hash",
+            reranker="fake",
+        ),
+    )
+    serialized = json.dumps(payload, ensure_ascii=False)
+    stages = {event["stage"] for event in payload["trace_events"]}
+    actor_names = {event["actor_name"] for event in payload["trace_events"]}
+
+    assert "semantic_retrieval" in stages
+    assert "reranking" in stages
+    assert "answer_synthesis" in stages
+    assert "FakeLeaderModel" in actor_names
+    assert payload["model_usage_summary"]["FakeLeaderModel"]["status"] == "used"
+    assert "trace private evidence" not in serialized
+
+
+def test_trace_recorder_failed_stage_uses_safe_error_message():
+    recorder = AgentTraceRecorder(run_id="test-run")
+    step_id = recorder.start(
+        actor_type="leader_model",
+        actor_name="DeepSeek Leader",
+        stage="answer_synthesis",
+        action="generate_structured_answer",
+        invocation_type="live_call",
+        safe_input_summary="private prompt hidden",
+    )
+    recorder.finish(
+        step_id,
+        status="failed",
+        error_class="ModelRuntimeError",
+        safe_error_message="model endpoint request timed out",
+    )
+    events = recorder.to_list()
+
+    assert events[0]["status"] == "failed"
+    assert events[0]["safe_error_message"] == "model endpoint request timed out"
+    assert "private prompt hidden" in events[0]["safe_input_summary"]
+    assert summarize_model_usage(events)["DeepSeek Leader"]["failed"] == 1
 
 
 def test_chat_console_system_status_is_privacy_safe(temp_config_factory, tmp_path):

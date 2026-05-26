@@ -39,6 +39,12 @@ from private_memory_agent.runtime import (
     preflight_chat_endpoint,
 )
 from private_memory_agent.temporal import LeaderEventIntentPlanner, answer_temporal_event_query
+from private_memory_agent.tracing import (
+    AgentTraceRecorder,
+    summarize_fallbacks,
+    summarize_model_usage,
+    summarize_tool_usage,
+)
 
 ConsoleMode = Literal["retrieval-only", "fake-model", "real-model"]
 ConsoleSource = Literal["photos", "line", "notes"]
@@ -102,14 +108,48 @@ def run_chat_console_query(options: ChatConsoleOptions) -> dict[str, Any]:
     """Run one privacy-safe console query."""
 
     _validate_options(options)
-    temporal_payload = _maybe_temporal_console_payload(options)
+    trace_recorder = AgentTraceRecorder()
+    trace_recorder.event(
+        actor_type="tool",
+        actor_name="ChatConsoleRequest",
+        stage="query_received",
+        action="receive_local_query",
+        status="succeeded",
+        safe_input_summary="local chat query received; raw question hidden",
+        safe_output_summary=f"mode={options.mode}; sources={len(options.sources)}",
+        metadata={
+            "mode": options.mode,
+            "leader_plan": options.leader_plan,
+            "leader_rerank": options.leader_rerank,
+            "semantic": options.semantic,
+            "reranker": options.reranker,
+        },
+    )
+    temporal_payload = _maybe_temporal_console_payload(options, trace_recorder=trace_recorder)
     if temporal_payload is not None:
-        return temporal_payload
+        return _finalize_console_payload(temporal_payload, trace_recorder)
+    trace_recorder.event(
+        actor_type="tool",
+        actor_name="TemporalEventDetector",
+        stage="temporal_event_detection",
+        action="detect_temporal_event_query",
+        status="skipped",
+        safe_output_summary="query did not match temporal event workflow",
+    )
     config = load_config(config_dir=options.config_dir, paths_config=options.paths_config)
-    plan, plan_metadata, plan_warning = _build_plan(options, config)
+    trace_recorder.event(
+        actor_type="tool",
+        actor_name="ConfigLoader",
+        stage="configuration",
+        action="load_local_config",
+        status="succeeded",
+        safe_output_summary="local config loaded; private paths hidden",
+    )
+    plan, plan_metadata, plan_warning = _build_plan(options, config, trace_recorder=trace_recorder)
     query = _build_console_e2e_query(options, plan=plan, repair=False)
     report = _run_console_e2e(options, query=query)
     result = report.query_results[0] if report.query_results else _empty_result()
+    _record_e2e_result_trace(trace_recorder, result, options=options, repaired=False)
     repair_status = _repair_status(attempted=False)
     warnings = [*report.warnings]
     if plan_warning:
@@ -119,6 +159,7 @@ def run_chat_console_query(options: ChatConsoleOptions) -> dict[str, Any]:
         repair_query = _build_console_e2e_query(options, plan=plan, repair=True)
         repair_report = _run_console_e2e(options, query=repair_query)
         repaired = repair_report.query_results[0] if repair_report.query_results else result
+        _record_e2e_result_trace(trace_recorder, repaired, options=options, repaired=True)
         pre_usable = _usable_count(result, options.minimum_relevance_score)
         post_usable = _usable_count(repaired, options.minimum_relevance_score)
         improved = post_usable > pre_usable or (
@@ -151,7 +192,7 @@ def run_chat_console_query(options: ChatConsoleOptions) -> dict[str, Any]:
     privacy = _privacy_payload(options)
     answer = _answer_payload(result, show_answer=options.show_answer)
     evidence = _evidence_payload(result, show_snippets=options.show_snippets)
-    return {
+    return _finalize_console_payload({
         "ok": ok,
         "mode": options.mode,
         "answer": answer,
@@ -172,7 +213,7 @@ def run_chat_console_query(options: ChatConsoleOptions) -> dict[str, Any]:
         ),
         "privacy": privacy,
         "warnings": _unique_strings((*warnings, *privacy["warnings"])),
-    }
+    }, trace_recorder)
 
 
 def build_system_status(
@@ -225,6 +266,69 @@ def build_system_status(
     }
 
 
+def _finalize_console_payload(
+    payload: dict[str, Any],
+    trace_recorder: AgentTraceRecorder,
+) -> dict[str, Any]:
+    answer = payload.get("answer") or {}
+    trace_recorder.event(
+        actor_type="validator",
+        actor_name="AnswerValidator",
+        stage="answer_validation",
+        action="validate_answer_payload",
+        status="succeeded" if answer.get("answer_succeeded") else "skipped",
+        safe_output_summary=(
+            f"answer_succeeded={bool(answer.get('answer_succeeded'))}; "
+            f"state={answer.get('answer_state') or 'unknown'}"
+        ),
+        error_class=answer.get("error_class"),
+        safe_error_message=answer.get("error_message"),
+        metadata={
+            "evidence_reference_count": len(answer.get("evidence_references") or []),
+            "used_source_count": len(answer.get("used_sources") or []),
+        },
+    )
+    trace_recorder.event(
+        actor_type="privacy_guard",
+        actor_name="PrivacyGuard",
+        stage="privacy_filtering",
+        action="verify_safe_console_payload",
+        status="succeeded",
+        safe_output_summary="raw prompts, raw evidence, paths, GPS, EXIF, and raw model output hidden",
+        decision_summary="Only structured metadata, counts, IDs, and safe summaries are returned.",
+        metadata={
+            "snippets_hidden": bool((payload.get("privacy") or {}).get("snippets_hidden", True)),
+            "raw_model_output_hidden": bool(
+                (payload.get("privacy") or {}).get("raw_model_output_hidden", True),
+            ),
+        },
+    )
+    trace_recorder.event(
+        actor_type="tool",
+        actor_name="UIResponseRenderer",
+        stage="ui_response",
+        action="assemble_console_payload",
+        status="succeeded",
+        safe_output_summary="chat console payload assembled with trace timeline",
+        metadata={
+            "evidence_count": len(payload.get("evidence") or []),
+            "has_temporal_event": bool(payload.get("temporal_event")),
+        },
+    )
+    trace_events = trace_recorder.to_list()
+    payload["trace_events"] = trace_events
+    payload["model_usage_summary"] = summarize_model_usage(trace_events)
+    payload["tool_usage_summary"] = summarize_tool_usage(trace_events)
+    payload["fallback_summary"] = summarize_fallbacks(trace_events)
+    trace = payload.get("trace")
+    if isinstance(trace, dict):
+        trace["runtime_event_count"] = len(trace_events)
+        trace["model_usage_summary"] = payload["model_usage_summary"]
+        trace["tool_usage_summary"] = payload["tool_usage_summary"]
+        trace["fallback_summary"] = payload["fallback_summary"]
+    return payload
+
+
 def _validate_options(options: ChatConsoleOptions) -> None:
     if not str(options.question).strip():
         raise ValueError("question is required")
@@ -255,7 +359,11 @@ def _validate_options(options: ChatConsoleOptions) -> None:
         raise ValueError("temporal_top_evidence_per_date must be between 1 and 20")
 
 
-def _maybe_temporal_console_payload(options: ChatConsoleOptions) -> dict[str, Any] | None:
+def _maybe_temporal_console_payload(
+    options: ChatConsoleOptions,
+    *,
+    trace_recorder: AgentTraceRecorder,
+) -> dict[str, Any] | None:
     if options.sources and "photos" not in options.sources:
         return None
     result = answer_temporal_event_query(
@@ -264,10 +372,12 @@ def _maybe_temporal_console_payload(options: ChatConsoleOptions) -> dict[str, An
         top_days=options.limit,
         top_candidate_dates=options.temporal_top_candidate_dates,
         top_evidence_per_date=options.temporal_top_evidence_per_date,
-        event_planner=_temporal_event_planner(options),
+        event_planner=_temporal_event_planner(options, trace_recorder=trace_recorder),
+        trace_recorder=trace_recorder,
     )
     if result is None:
         return None
+    _record_temporal_console_trace(trace_recorder, result, options=options)
     privacy = _privacy_payload(options)
     answer = result.answer.to_dict(show_answer=options.show_answer)
     temporal_event = result.to_dict(show_answer=options.show_answer)
@@ -334,18 +444,48 @@ def _maybe_temporal_console_payload(options: ChatConsoleOptions) -> dict[str, An
     }
 
 
-def _temporal_event_planner(options: ChatConsoleOptions) -> LeaderEventIntentPlanner | None:
+def _temporal_event_planner(
+    options: ChatConsoleOptions,
+    *,
+    trace_recorder: AgentTraceRecorder,
+) -> LeaderEventIntentPlanner | None:
     if options.mode != "real-model" or not options.leader_plan:
         return None
+    step_id = trace_recorder.start(
+        actor_type="leader_model",
+        actor_name="DeepSeek Leader",
+        stage="leader_endpoint_preflight",
+        action="preflight_event_intent_planner",
+        provider="llama_cpp",
+        invocation_type="live_call",
+        safe_input_summary="leader endpoint metadata only",
+    )
     try:
         config = load_config(config_dir=options.config_dir, paths_config=options.paths_config)
         model_spec = config.model_registry.get(options.model_key)
         if model_spec is None:
+            trace_recorder.finish(
+                step_id,
+                status="failed",
+                error_class="ValueError",
+                safe_error_message="configured leader model key was not found",
+            )
             return None
         endpoint = endpoint_from_model_spec(model_spec)
         if endpoint is None:
+            trace_recorder.finish(
+                step_id,
+                status="failed",
+                error_class="ValueError",
+                safe_error_message="configured leader endpoint URL is missing",
+            )
             return None
         preflight = preflight_chat_endpoint(endpoint, allow_remote=options.allow_remote)
+        trace_recorder.finish(
+            step_id,
+            safe_output_summary=f"leader endpoint ok; served_model={preflight.served_model_name}",
+            metadata={"served_model_name": preflight.served_model_name, "endpoint_role": endpoint.role},
+        )
         client = OpenAICompatibleHTTPClient(
             base_url=endpoint.base_url,
             model=preflight.served_model_name or endpoint.model_id,
@@ -358,16 +498,47 @@ def _temporal_event_planner(options: ChatConsoleOptions) -> LeaderEventIntentPla
             max_tokens=min(max(options.max_tokens, 128), 512),
             temperature=0.0,
         )
-    except (ModelRuntimeError, RuntimeError, ValueError):
+    except (ModelRuntimeError, RuntimeError, ValueError) as exc:
+        trace_recorder.finish(
+            step_id,
+            status="failed",
+            error_class=exc.__class__.__name__,
+            safe_error_message="leader endpoint preflight failed; deterministic fallback will be used",
+        )
         return None
 
 
 def _build_plan(
     options: ChatConsoleOptions,
     config: ConfigBundle,
+    *,
+    trace_recorder: AgentTraceRecorder,
 ) -> tuple[RetrievalPlan | None, dict[str, Any], str | None]:
     if not options.leader_plan:
+        trace_recorder.event(
+            actor_type="leader_model",
+            actor_name="DeepSeek Leader",
+            stage="retrieval_planning",
+            action="create_retrieval_plan",
+            status="skipped",
+            invocation_type="not_used",
+            safe_output_summary="leader_plan disabled",
+        )
         return None, {"plan_created": False}, None
+    step_id = trace_recorder.start(
+        actor_type="leader_model" if options.mode == "real-model" else "tool",
+        actor_name="DeepSeek Leader" if options.mode == "real-model" else "DeterministicRetrievalPlanner",
+        stage="retrieval_planning",
+        action="create_retrieval_plan",
+        provider="llama_cpp" if options.mode == "real-model" else "local_heuristic",
+        invocation_type="live_call" if options.mode == "real-model" else "not_used",
+        safe_input_summary="question text hidden; source preferences only",
+        decision_summary=(
+            "DeepSeek Leader creates a retrieval plan."
+            if options.mode == "real-model"
+            else "Deterministic planner provides a testable local plan."
+        ),
+    )
     try:
         planner = (
             _real_leader_planner(options, config)
@@ -375,9 +546,40 @@ def _build_plan(
             else DeterministicRuleBasedRetrievalPlanner()
         )
         plan = planner.plan(options.question)
+        trace_recorder.finish(
+            step_id,
+            status="succeeded",
+            safe_output_summary=(
+                f"retrieval_queries={len(plan.retrieval_queries)}; "
+                f"specific_concepts={len(plan.specific_concepts)}"
+            ),
+            metadata={
+                "retrieval_query_count": len(plan.retrieval_queries),
+                "main_entity_count": len(plan.main_entities),
+                "specific_concept_count": len(plan.specific_concepts),
+                "generic_concept_count": len(plan.generic_concepts),
+            },
+        )
         return plan, plan.metadata(show_plan=False).to_dict(), None
     except (ModelRuntimeError, RuntimeError, ValueError) as exc:
         metadata = plan_metadata_for_error(exc).to_dict()
+        trace_recorder.finish(
+            step_id,
+            status="failed",
+            error_class=exc.__class__.__name__,
+            safe_error_message="retrieval planning failed; deterministic query path was used",
+        )
+        trace_recorder.event(
+            actor_type="tool",
+            actor_name="DeterministicRetrievalPlanner",
+            stage="retrieval_planning",
+            action="fallback_query_path",
+            status="fallback_used",
+            provider="local_heuristic",
+            invocation_type="not_used",
+            safe_output_summary="fallback query path enabled",
+            metadata={"fallback_used": True},
+        )
         return None, metadata, "retrieval planning failed; deterministic query path was used"
 
 
@@ -469,6 +671,184 @@ def _run_console_e2e(options: ChatConsoleOptions, *, query: E2ESmokeQuery) -> E2
             allow_remote=options.allow_remote,
         ),
     )
+
+
+def _record_temporal_console_trace(
+    trace_recorder: AgentTraceRecorder,
+    result: Any,
+    *,
+    options: ChatConsoleOptions,
+) -> None:
+    if options.mode != "real-model" or not options.leader_plan:
+        trace_recorder.event(
+            actor_type="leader_model",
+            actor_name="DeepSeek Leader",
+            stage="event_intent_planning",
+            action="live_event_intent_plan",
+            status="skipped",
+            invocation_type="not_used",
+            safe_output_summary="live leader planning was not requested for this mode",
+        )
+    trace_recorder.event(
+        actor_type="embedding_model",
+        actor_name=options.semantic_model if options.semantic else "SemanticSearchTool",
+        stage="semantic_retrieval",
+        action="semantic_search",
+        status="skipped",
+        model_id=options.semantic_model if options.semantic else None,
+        invocation_type="not_used",
+        safe_output_summary=(
+            "temporal date-range workflow did not call semantic retrieval"
+            if options.semantic
+            else "semantic retrieval disabled"
+        ),
+        metadata={"semantic_requested": options.semantic},
+    )
+    trace_recorder.event(
+        actor_type="reranker",
+        actor_name=options.reranker if options.reranker != "none" else "RerankerTool",
+        stage="reranking",
+        action="rerank_candidates",
+        status="skipped",
+        model_id=options.reranker if options.reranker != "none" else None,
+        invocation_type="not_used",
+        safe_output_summary=(
+            "temporal event ranking used deterministic event scores"
+            if options.reranker != "none"
+            else "reranker disabled"
+        ),
+        metadata={"reranker_requested": options.reranker != "none"},
+    )
+    if result.diagnostics.get("repair_attempted"):
+        trace_recorder.event(
+            actor_type="tool",
+            actor_name="RetrievalRepair",
+            stage="retrieval_repair",
+            action="event_intent_repair",
+            status="fallback_used",
+            safe_output_summary=result.diagnostics.get("repair_reason")
+            or "event-intent repair was attempted",
+            metadata={
+                "repair_attempted": True,
+                "repair_reason": result.diagnostics.get("repair_reason"),
+            },
+        )
+    else:
+        trace_recorder.event(
+            actor_type="tool",
+            actor_name="RetrievalRepair",
+            stage="retrieval_repair",
+            action="event_intent_repair",
+            status="skipped",
+            safe_output_summary="candidate dates existed or repair was unnecessary",
+        )
+
+
+def _record_e2e_result_trace(
+    trace_recorder: AgentTraceRecorder,
+    result: E2ESmokeQueryResult,
+    *,
+    options: ChatConsoleOptions,
+    repaired: bool,
+) -> None:
+    trace_recorder.event(
+        actor_type="retriever",
+        actor_name="RetrievalService",
+        stage="evidence_retrieval" if not repaired else "evidence_retrieval_repair",
+        action="retrieve_evidence",
+        status="succeeded" if result.retrieval_succeeded else "failed",
+        safe_output_summary=(
+            f"evidence_count={result.evidence_count}; "
+            f"sources={','.join(result.evidence_source_counts.keys()) or 'none'}"
+        ),
+        metadata={
+            "evidence_count": result.evidence_count,
+            "retrieval_succeeded": result.retrieval_succeeded,
+            "repaired": repaired,
+        },
+    )
+    if result.semantic_enabled or options.semantic:
+        trace_recorder.event(
+            actor_type="embedding_model",
+            actor_name=result.semantic_model or options.semantic_model,
+            model_id=result.semantic_embedding_model_id or result.semantic_model,
+            provider="local_embedding",
+            stage="semantic_retrieval",
+            action="semantic_search",
+            status="succeeded" if result.semantic_candidate_count else "skipped",
+            invocation_type="cached_artifact" if result.semantic_candidate_count else "not_used",
+            artifact_type="embedding" if result.semantic_candidate_count else None,
+            artifact_model_id=result.semantic_embedding_model_id,
+            safe_output_summary=f"semantic_candidate_count={result.semantic_candidate_count}",
+            metadata={
+                "semantic_candidate_count": result.semantic_candidate_count,
+                "semantic_top_k": result.semantic_top_k,
+            },
+        )
+    else:
+        trace_recorder.event(
+            actor_type="embedding_model",
+            actor_name="SemanticSearchTool",
+            stage="semantic_retrieval",
+            action="semantic_search",
+            status="skipped",
+            invocation_type="not_used",
+            safe_output_summary="semantic retrieval disabled",
+        )
+    if result.reranker != "none" or options.reranker != "none":
+        trace_recorder.event(
+            actor_type="reranker",
+            actor_name=result.reranker or options.reranker,
+            model_id=result.reranker_model_id or result.reranker,
+            provider="local_reranker",
+            stage="reranking",
+            action="rerank_candidates",
+            status="succeeded" if result.reranked_candidate_count else "skipped",
+            invocation_type="live_call" if result.reranked_candidate_count else "not_used",
+            safe_output_summary=f"reranked_candidate_count={result.reranked_candidate_count}",
+            metadata={"reranked_candidate_count": result.reranked_candidate_count},
+        )
+    if result.plan_relevance_judged or options.leader_rerank:
+        trace_recorder.event(
+            actor_type="validator",
+            actor_name="EvidenceRelevanceJudge",
+            stage="evidence_relevance_judging",
+            action="judge_candidate_evidence",
+            status="succeeded" if result.plan_relevance_judged else "skipped",
+            safe_output_summary=(
+                f"should_use={result.plan_relevance_should_use_count}; "
+                f"avg={result.plan_average_relevance_score}"
+            ),
+            metadata={
+                "plan_relevance_judged": result.plan_relevance_judged,
+                "plan_relevance_should_use_count": result.plan_relevance_should_use_count,
+            },
+        )
+    if options.mode in {"fake-model", "real-model"}:
+        trace_recorder.event(
+            actor_type="leader_model",
+            actor_name="DeepSeek Leader" if options.mode == "real-model" else "FakeLeaderModel",
+            model_id=result.model_id,
+            provider="llama_cpp" if options.mode == "real-model" else "fake",
+            stage="answer_synthesis",
+            action="generate_structured_answer",
+            status="succeeded" if result.answer_succeeded else "failed",
+            invocation_type="live_call" if options.mode == "real-model" else "fake_call",
+            safe_input_summary=(
+                f"evidence_sent_count={result.evidence_sent_count}; prompt_chars={result.prompt_chars}"
+            ),
+            safe_output_summary=(
+                f"answer_succeeded={result.answer_succeeded}; "
+                f"raw_response_chars={result.raw_response_chars}"
+            ),
+            error_class=result.error_class,
+            safe_error_message=result.error_message,
+            metadata={
+                "max_tokens": result.max_tokens,
+                "timeout_seconds": result.timeout_seconds,
+                "json_retry_used": result.json_retry_used,
+            },
+        )
 
 
 def _retrieval_text(question: str, *, plan: RetrievalPlan | None, repair: bool) -> str:

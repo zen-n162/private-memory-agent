@@ -759,6 +759,25 @@ visibility. Defaults stay local and cheap: retrieval-only, leader-plan metadata,
 retrieval repair enabled, answer text visible, path-free photo thumbnails
 available, snippets hidden, fuller text hidden, and raw model output unavailable.
 
+Phase 9-H adds an Agent Runtime Trace panel to the same UI. The trace shows
+privacy-safe execution metadata for DeepSeek Leader, deterministic fallback
+planning, date parsing tools, photo date search, cached Qwen3-VL photo
+annotations, LINE/notes search, semantic retrieval, embedding model selection,
+reranker status, evidence acceptance, answer synthesis, answer validation, and
+privacy filtering. It distinguishes:
+
+- `live_call`: a local model endpoint was called, such as DeepSeek Leader during
+  real-model planning or answer generation.
+- `cached_artifact`: a persisted local artifact was used, such as existing
+  Qwen3-VL photo annotations or persisted embeddings.
+- `not_used`: a model/tool was available in the architecture but was not called
+  for this request.
+
+The trace intentionally hides raw prompts, raw chain-of-thought, raw model
+outputs, raw LINE text, note bodies, captions, filenames, paths, GPS, EXIF, and
+OCR by default. It exposes only safe input/output summaries, decisions,
+statuses, counts, model IDs, and artifact types.
+
 `GET /api/system/status` returns DB/index counts and configured endpoint
 metadata without model prompts. `POST /api/chat/query` uses the existing E2E
 retrieval/answer path directly rather than shelling out to the CLI.

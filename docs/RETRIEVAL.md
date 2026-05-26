@@ -664,6 +664,36 @@ Default output includes dates, counts, confidence, reason categories, and
 evidence IDs only. It does not print filenames, full paths, GPS coordinates,
 raw LINE text, note bodies, OCR text, or full photo captions.
 
+## Agent Runtime Trace
+
+Phase 9-H adds a privacy-safe runtime trace to the local chat console. Each
+`POST /api/chat/query` response includes:
+
+- `trace_events`: ordered execution steps with actor, model/tool name, stage,
+  action, status, safe summaries, duration, invocation type, and optional
+  artifact metadata.
+- `model_usage_summary`: count-only model usage such as DeepSeek Leader live
+  calls, fake model calls, Qwen3-VL cached photo annotations, embedding use, and
+  reranker use.
+- `tool_usage_summary`: date parsing, photo date search, LINE/notes search,
+  retrieval service, validators, privacy guard, and response renderer status.
+- `fallback_summary`: whether deterministic planning or repair fallback was
+  used.
+
+The trace separates live model calls from cached artifacts. For example, a
+temporal photo query can show Qwen3-VL as
+`invocation_type=cached_artifact`, `artifact_type=photo_annotation`,
+`live_calls=0`, because the UI path reads existing photo annotations instead of
+calling the vision model live. If Japanese text extraction models are not used
+in a path, Qwen3 Swallow appears as `not_used` rather than implying a model
+call.
+
+Trace entries are safe metadata only. They do not include raw prompts,
+chain-of-thought, raw model output, raw LINE text, note bodies, captions,
+filenames, paths, GPS, EXIF, OCR, or full retrieval plans by default. The UI
+renders the same trace as an `Agent Runtime Trace` timeline and a simple
+DeepSeek/tools/specialist-model summary.
+
 Phase 9-C adds count-only diagnostics for temporal failures. The result reports
 the parsed date range (`parsed_date_range_start`, `parsed_date_range_end`), the
 parser source, the temporal expression, timezone label, the query column

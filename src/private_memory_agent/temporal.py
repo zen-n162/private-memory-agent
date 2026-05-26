@@ -20,6 +20,7 @@ from typing import Any
 from private_memory_agent.media_timestamps import timestamp_coverage
 from private_memory_agent.retrieval.text import media_annotation_search_text, normalize_text
 from private_memory_agent.runtime import ChatMessage, ChatModelClient, ChatRequest
+from private_memory_agent.tracing import AgentTraceRecorder
 
 SUPPORTED_TEMPORAL_SOURCES = ("photos", "line", "notes")
 DEFAULT_MAX_PHOTOS = 2000
@@ -615,17 +616,37 @@ def answer_temporal_event_query(
     fallback_terms: tuple[str, ...] | None = None,
     event_intent_plan: EventIntentPlan | None = None,
     event_planner: Any | None = None,
+    trace_recorder: AgentTraceRecorder | None = None,
 ) -> TemporalEventResult | None:
     """Run the temporal outing workflow if the question matches."""
 
     parsed = parse_temporal_event_query(question, today=today)
     if parsed is None:
         return None
+    if trace_recorder is not None:
+        trace_recorder.event(
+            actor_type="tool",
+            actor_name="DateRangeParserTool",
+            stage="date_range_parsing",
+            action="parse_temporal_expression",
+            status="succeeded",
+            safe_input_summary="temporal query text received; raw text hidden",
+            safe_output_summary=(
+                f"{parsed.date_range.start.isoformat()}..{parsed.date_range.end.isoformat()}"
+            ),
+            decision_summary="Deterministic parser extracted a date range before retrieval.",
+            metadata={
+                "parsed_temporal_expression": parsed.date_range.expression,
+                "date_range_source": parsed.date_range.source,
+                "date_range_confidence": parsed.date_range.confidence,
+            },
+        )
     event_plan = _resolve_event_intent_plan(
         question,
         date_range=parsed.date_range,
         event_intent_plan=event_intent_plan,
         event_planner=event_planner,
+        trace_recorder=trace_recorder,
     )
     parsed = replace(parsed, event_type=event_plan.event_type)
     db = Path(db_path).expanduser()
@@ -682,6 +703,40 @@ def answer_temporal_event_query(
         start=parsed.date_range.start,
         end=parsed.date_range.end,
     )
+    if trace_recorder is not None:
+        trace_recorder.event(
+            actor_type="tool",
+            actor_name="PhotoCoverageDiagnosticsTool",
+            stage="temporal_photo_coverage",
+            action="count_photos_in_date_range",
+            status="succeeded",
+            safe_input_summary="date range and metadata table only",
+            safe_output_summary=(
+                f"photos={photo_diagnostics.get('photo_candidates_count', 0)}; "
+                f"annotated={photo_diagnostics.get('annotated_photo_candidates_count', 0)}"
+            ),
+            metadata={
+                "photo_candidates_count": photo_diagnostics.get("photo_candidates_count", 0),
+                "annotated_photo_candidates_count": photo_diagnostics.get(
+                    "annotated_photo_candidates_count",
+                    0,
+                ),
+                "date_range_query_status": photo_diagnostics.get("date_range_query_status"),
+            },
+        )
+    photo_search_step = (
+        trace_recorder.start(
+            actor_type="retriever",
+            actor_name="PhotoDateSearchTool",
+            stage="photo_date_search",
+            action="search_photos_by_date_range",
+            safe_input_summary="date range, media type filters, and event intent signals",
+            decision_summary="Temporal event queries use structured taken_at search before vector retrieval.",
+            metadata={"chunk_count": len(chunks), "event_type": event_plan.event_type},
+        )
+        if trace_recorder is not None
+        else None
+    )
     photos, chunk_clusters, chunk_reports = _collect_chunked_photo_candidates(
         db,
         chunks=chunks,
@@ -691,6 +746,37 @@ def answer_temporal_event_query(
         event_plan=event_plan,
         support_terms=day_support_terms,
     )
+    if trace_recorder is not None and photo_search_step is not None:
+        trace_recorder.finish(
+            photo_search_step,
+            safe_output_summary=f"photo_candidates={len(photos)}; day_clusters={len(chunk_clusters)}",
+            metadata={
+                "photo_candidates": len(photos),
+                "day_clusters": len(chunk_clusters),
+                "chunk_count": len(chunk_reports),
+            },
+        )
+        annotated_photo_count = sum(1 for item in photos if item.has_annotation)
+        trace_recorder.event(
+            actor_type="specialist_model",
+            actor_name="Qwen3-VL",
+            stage="photo_annotation_lookup",
+            action="use_cached_photo_annotations",
+            status="succeeded" if annotated_photo_count else "skipped",
+            model_id="vision_common",
+            provider="local_cache",
+            invocation_type="cached_artifact" if annotated_photo_count else "not_used",
+            artifact_type="photo_annotation" if annotated_photo_count else None,
+            artifact_model_id="vision_common",
+            safe_output_summary=(
+                f"cached_annotations={annotated_photo_count}; live_calls=0"
+            ),
+            decision_summary="The chat path reads existing vision annotations and does not call Qwen3-VL live.",
+            metadata={
+                "cached_annotation_count": annotated_photo_count,
+                "live_calls": 0,
+            },
+        )
     ranked_clusters = _rank_clusters(_dedupe_clusters(tuple(chunk_clusters)))
     pre_prune_photo_used_clusters = tuple(
         item for item in ranked_clusters if item.confidence >= outing_threshold
@@ -702,6 +788,46 @@ def answer_temporal_event_query(
         terms=active_fallback_terms,
         limit=20,
     )
+    if trace_recorder is not None:
+        trace_recorder.event(
+            actor_type="retriever",
+            actor_name="LineNotesDateSearchTool",
+            stage="line_notes_temporal_support",
+            action="search_same_range_text_support",
+            status="succeeded",
+            safe_input_summary="date range and event-specific terms; raw text hidden",
+            safe_output_summary=(
+                f"line_support={fallback['line_date_support_count']}; "
+                f"notes_support={fallback['notes_date_support_count']}"
+            ),
+            reasoning_summary="Searches LINE and notes near the parsed date range for event support.",
+            metadata={
+                "line_date_support_count": fallback["line_date_support_count"],
+                "notes_date_support_count": fallback["notes_date_support_count"],
+                "fallback_sources_used": list(fallback["fallback_sources_used"]),
+            },
+        )
+        text_artifacts = (
+            int(fallback["line_date_support_count"]) + int(fallback["notes_date_support_count"])
+        )
+        trace_recorder.event(
+            actor_type="specialist_model",
+            actor_name="Qwen3 Swallow",
+            stage="japanese_text_annotation_lookup",
+            action="check_cached_text_annotations",
+            status="skipped",
+            model_id="japanese_text_common",
+            provider="local_cache",
+            invocation_type="not_used",
+            artifact_type="text_extraction",
+            safe_output_summary=(
+                f"cached_text_artifacts=0; raw indexed records_matched={text_artifacts}; live_calls=0"
+            ),
+            decision_summary=(
+                "This path uses local indexed LINE/notes text; no live Qwen3 Swallow call was made."
+            ),
+            metadata={"matched_text_record_count": text_artifacts, "live_calls": 0},
+        )
     fallback_clusters = (
         _fallback_clusters_from_support(fallback)
         if event_plan.event_type != "outing" or not pre_prune_photo_used_clusters or not photos
@@ -726,6 +852,46 @@ def answer_temporal_event_query(
         event_type=event_plan.event_type,
     )
     answer = _build_temporal_answer(parsed, used_clusters, candidate_clusters)
+    if trace_recorder is not None:
+        trace_recorder.event(
+            actor_type="validator",
+            actor_name="EvidenceAcceptanceJudge",
+            stage="evidence_acceptance",
+            action="separate_used_candidate_rejected_evidence",
+            status="succeeded",
+            safe_output_summary=(
+                f"used={len(answer.evidence_references)}; "
+                f"candidate={sum(1 for item in evidence if item.evidence_role == 'candidate')}; "
+                f"rejected={sum(1 for item in evidence if item.evidence_role == 'rejected')}"
+            ),
+            reasoning_summary="Evidence with weak or rejected status is not counted as answer evidence.",
+            metadata={
+                "used_evidence_count": len(answer.evidence_references),
+                "candidate_evidence_count": sum(
+                    1 for item in evidence if item.evidence_role == "candidate"
+                ),
+                "rejected_evidence_count": sum(
+                    1 for item in evidence if item.evidence_role == "rejected"
+                ),
+            },
+        )
+        trace_recorder.event(
+            actor_type="tool",
+            actor_name="TemporalAnswerSynthesizer",
+            stage="answer_synthesis",
+            action="build_temporal_answer",
+            status="succeeded",
+            safe_input_summary="candidate dates and evidence IDs only",
+            safe_output_summary=(
+                f"answer_succeeded={answer.answer_succeeded}; dates={len(answer.dates)}"
+            ),
+            decision_summary="Retrieval-only temporal answer is generated from structured clusters.",
+            metadata={
+                "answer_succeeded": answer.answer_succeeded,
+                "candidate_date_count": len(candidate_clusters),
+                "used_date_count": len(answer.dates),
+            },
+        )
     coverage = timestamp_coverage(db)
     parsed_range = parsed.date_range.to_dict()
     months_covered = _month_keys_for_range(parsed.date_range)
@@ -1518,24 +1684,114 @@ def _resolve_event_intent_plan(
     date_range: TemporalDateRange,
     event_intent_plan: EventIntentPlan | None,
     event_planner: Any | None,
+    trace_recorder: AgentTraceRecorder | None = None,
 ) -> EventIntentPlan:
     if event_intent_plan is not None:
+        if trace_recorder is not None:
+            trace_recorder.event(
+                actor_type="tool",
+                actor_name="EventIntentPlanProvider",
+                stage="event_intent_planning",
+                action="use_supplied_event_intent_plan",
+                status="succeeded",
+                safe_output_summary=f"event_type={event_intent_plan.event_type}",
+                metadata={
+                    "event_type": event_intent_plan.event_type,
+                    "source_priorities": list(event_intent_plan.source_priorities),
+                },
+            )
         return event_intent_plan
     planner = event_planner or DeterministicEventIntentPlanner()
+    planner_is_leader = isinstance(planner, LeaderEventIntentPlanner)
+    step_id: str | None = None
+    if trace_recorder is not None:
+        step_id = trace_recorder.start(
+            actor_type="leader_model" if planner_is_leader else "tool",
+            actor_name="DeepSeek Leader" if planner_is_leader else "DeterministicEventIntentPlanner",
+            stage="event_intent_planning",
+            action="create_event_intent_plan",
+            model_id=getattr(planner, "model", None) if planner_is_leader else None,
+            provider="llama_cpp" if planner_is_leader else "local_heuristic",
+            invocation_type="live_call" if planner_is_leader else "not_used",
+            safe_input_summary="question intent and parsed date range; raw question hidden",
+            decision_summary=(
+                "Leader infers event-specific visual/textual signals."
+                if planner_is_leader
+                else "No live leader planner was used; deterministic fallback will infer event signals."
+            ),
+            metadata={"planner": "leader" if planner_is_leader else "deterministic"},
+        )
     try:
         plan = planner.plan(question, date_range)
         if isinstance(plan, EventIntentPlan):
+            if trace_recorder is not None and step_id is not None:
+                trace_recorder.finish(
+                    step_id,
+                    status="succeeded" if planner_is_leader else "fallback_used",
+                    safe_output_summary=(
+                        f"event_type={plan.event_type}; "
+                        f"visual_signals={len(plan.visual_signals)}; "
+                        f"textual_signals={len(plan.textual_signals)}"
+                    ),
+                    decision_summary=(
+                        "Event-specific retrieval plan is ready."
+                        if planner_is_leader
+                        else "Deterministic event plan was used as a safe fallback."
+                    ),
+                    metadata={
+                        "event_type": plan.event_type,
+                        "visual_signal_count": len(plan.visual_signals),
+                        "textual_signal_count": len(plan.textual_signals),
+                        "fallback_used": plan.fallback_used,
+                    },
+                )
             return plan
         if isinstance(plan, dict):
-            return EventIntentPlan.from_mapping(
+            parsed_plan = EventIntentPlan.from_mapping(
                 plan,
                 date_range=date_range,
                 fallback_used=False,
                 planner="provided",
             )
-    except Exception:
-        pass
-    return DeterministicEventIntentPlanner().plan(question, date_range)
+            if trace_recorder is not None and step_id is not None:
+                trace_recorder.finish(
+                    step_id,
+                    safe_output_summary=f"event_type={parsed_plan.event_type}",
+                    metadata={"event_type": parsed_plan.event_type},
+                )
+            return parsed_plan
+    except Exception as exc:
+        if trace_recorder is not None and step_id is not None:
+            trace_recorder.finish(
+                step_id,
+                status="failed",
+                error_class=exc.__class__.__name__,
+                safe_error_message="event intent planning failed; deterministic fallback will be used",
+            )
+    fallback_plan = DeterministicEventIntentPlanner().plan(question, date_range)
+    if trace_recorder is not None:
+        trace_recorder.event(
+            actor_type="tool",
+            actor_name="DeterministicEventIntentPlanner",
+            stage="event_intent_planning",
+            action="create_event_intent_plan",
+            status="fallback_used",
+            provider="local_heuristic",
+            invocation_type="not_used",
+            safe_output_summary=(
+                f"event_type={fallback_plan.event_type}; "
+                f"visual_signals={len(fallback_plan.visual_signals)}; "
+                f"textual_signals={len(fallback_plan.textual_signals)}"
+            ),
+            decision_summary="Fallback planner created an event-specific plan without a model call.",
+            metadata={
+                "event_type": fallback_plan.event_type,
+                "visual_signal_count": len(fallback_plan.visual_signals),
+                "textual_signal_count": len(fallback_plan.textual_signals),
+                "fallback_used": True,
+            },
+        )
+    return fallback_plan
 
 
 def _event_plan(

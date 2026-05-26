@@ -547,6 +547,7 @@
             <tr><td>9-F</td><td>広い temporal query を月単位に chunk し、candidate date と evidence を pruning して表示する。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-F2</td><td><code>2025年10月から12月</code> のような日本語月範囲と月別 coverage/pruning 診断。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-G</td><td>EventIntentPlan で dining_out などの意図を推定し、event-specific な写真/LINE/ノート検索を行う。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>9-H</td><td>Agent Runtime Trace で DeepSeek、tools、specialist model、cached artifact、fallback を可視化。</td><td class="status">基本実装済み</td></tr>
           </tbody>
         </table>
       </section>
@@ -839,6 +840,14 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           source priority、candidate date ごとの event score と matched signal count を表示し、
           raw evidence 本文は既定で表示しません。
         </p>
+        <p>
+          9-H では local chat UI に <strong>Agent Runtime Trace</strong> を追加しました。
+          DeepSeek Leader が live call されたか、決定的 fallback が使われたか、日付 parser、
+          photo date search、LINE/ノート検索、cached Qwen3-VL photo annotation、semantic retrieval、
+          reranker、answer validator、privacy guard がどの順序で動いたかを、safe summary と count だけで
+          timeline 表示します。raw prompt、chain-of-thought、raw model output、LINE 本文、ノート本文、
+          caption、path、GPS、EXIF、OCR は既定で表示しません。
+        </p>
       </section>
 
       <section id="limitations">
@@ -856,6 +865,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
       <section id="history">
         <h2>更新履歴</h2>
         <ul>
+          <li>2026-05-26: Agent Runtime Trace を追加し、DeepSeek/tools/specialist model/cached artifact/fallback を UI で安全に可視化。</li>
           <li>2026-05-26: EventIntentPlan による dining_out などの event-specific temporal retrieval と UI 診断を追加。</li>
           <li>2026-05-26: 日本語の月範囲 parsing と月別 temporal coverage/pruning 診断を追加。</li>
           <li>2026-05-26: 広い temporal query 向けに季節/年 parsing、月単位 chunking、candidate/evidence pruning 診断を追加。</li>

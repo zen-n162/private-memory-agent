@@ -101,6 +101,10 @@ class ChatQueryResponse(APIModel):
     evidence_display: dict[str, Any] | None = None
     temporal_event: dict[str, Any] | None = None
     trace: dict[str, Any]
+    trace_events: list[dict[str, Any]] = Field(default_factory=list)
+    model_usage_summary: dict[str, Any] = Field(default_factory=dict)
+    tool_usage_summary: dict[str, Any] = Field(default_factory=dict)
+    fallback_summary: dict[str, Any] = Field(default_factory=dict)
     privacy: dict[str, Any]
     warnings: list[str]
 
