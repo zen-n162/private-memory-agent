@@ -154,6 +154,10 @@ class ChatRunEventsResponse(APIModel):
 
 class SystemStatusResponse(APIModel):
     ok: bool
+    app_version: str | None = None
+    git_commit: str | None = None
+    api_response_schema_version: str | None = None
+    ui_response_schema_version: str | None = None
     localhost_only: bool
     db_exists: bool
     counts: dict[str, Any]

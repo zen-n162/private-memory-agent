@@ -14,6 +14,25 @@ from private_memory_agent.tracing import (
 
 CHAT_CONSOLE_MODES = {"retrieval-only", "fake-model", "real-model"}
 CHAT_RESPONSE_MODES = {*CHAT_CONSOLE_MODES, "unknown"}
+CHAT_API_RESPONSE_SCHEMA_VERSION = "2026-05-26.9h5"
+CHAT_UI_RESPONSE_SCHEMA_VERSION = "2026-05-26.9h5"
+REQUIRED_CHAT_RESPONSE_KEYS = (
+    "ok",
+    "mode",
+    "answer_succeeded",
+    "answer_state",
+    "error_class",
+    "error_message",
+    "failure_stage",
+    "failure_actor",
+    "current_status",
+    "trace_events",
+    "trace_summary",
+    "privacy",
+    "warnings",
+    "candidate_dates",
+    "evidence",
+)
 
 FAILURE_STAGES = {
     "request_validation",
@@ -145,8 +164,13 @@ def ensure_chat_response_contract(
     trace = payload.get("trace") if isinstance(payload.get("trace"), dict) else _default_trace()
     privacy = payload.get("privacy") if isinstance(payload.get("privacy"), dict) else privacy_defaults()
     safe_mode = _response_mode(mode or payload.get("mode"))
-    failure_stage = payload.get("failure_stage")
-    failure_actor = payload.get("failure_actor")
+    failure = classify_chat_failure(
+        payload,
+        mode=safe_mode,
+        trace_events=trace_events,
+    )
+    failure_stage = payload.get("failure_stage") or failure.get("failure_stage")
+    failure_actor = payload.get("failure_actor") or failure.get("failure_actor")
     error_class = answer.get("error_class") or payload.get("error_class")
     error_message = answer.get("error_message") or payload.get("error_message")
     if error_message:
@@ -175,7 +199,77 @@ def ensure_chat_response_contract(
             events=trace_events,
             warnings=tuple(payload["warnings"]),
         )
+    if payload.get("failure_stage"):
+        failed_action = failure.get("failed_action") or str(payload.get("failure_stage"))
+        safe_actor = str(payload.get("failure_actor") or "ChatAPI")
+        safe_error_class = str(payload.get("error_class") or "ChatAPIError")
+        safe_error_message = str(payload.get("error_message") or "request could not be completed")
+        payload["current_status"]["status"] = "failed"
+        payload["current_status"]["failure_stage"] = payload["failure_stage"]
+        payload["current_status"]["failure_actor"] = safe_actor
+        payload["current_status"]["completion_summary"] = None
+        payload["current_status"]["failure_summary"] = _failure_summary(
+            failure_stage=str(payload["failure_stage"]),
+            failure_actor=safe_actor,
+            failed_action=failed_action,
+            error_class=safe_error_class,
+            safe_error_message=safe_error_message,
+            timeline_available=bool(trace_events),
+        )
     return payload
+
+
+def classify_chat_failure(
+    payload: dict[str, Any] | None,
+    *,
+    mode: str | None = None,
+    trace_events: list[dict[str, Any]] | None = None,
+    error_class: str | None = None,
+    error_message: str | None = None,
+) -> dict[str, str | None]:
+    """Classify a chat failure into stable UI/API stage metadata."""
+
+    safe_payload = payload or {}
+    answer = safe_payload.get("answer") if isinstance(safe_payload.get("answer"), dict) else {}
+    events = list(trace_events if trace_events is not None else safe_payload.get("trace_events") or [])
+    failed = next((event for event in reversed(events) if event.get("status") == "failed"), {})
+    safe_mode = _response_mode(mode or safe_payload.get("mode"))
+    safe_error_class = (
+        error_class
+        or answer.get("error_class")
+        or safe_payload.get("error_class")
+        or failed.get("error_class")
+    )
+    safe_error_message = (
+        error_message
+        or answer.get("error_message")
+        or safe_payload.get("error_message")
+        or failed.get("safe_error_message")
+    )
+    existing_stage = safe_payload.get("failure_stage")
+    if existing_stage:
+        stage = _failure_stage(str(existing_stage))
+    else:
+        stage = _stage_from_failed_event(failed)
+        if stage == "unknown":
+            stage = _stage_from_error(safe_error_class, safe_error_message, mode=safe_mode)
+    actor = (
+        safe_payload.get("failure_actor")
+        or failed.get("actor_name")
+        or _actor_for_stage(stage, mode=safe_mode)
+    )
+    action = failed.get("action") or _action_for_stage(stage)
+    if not (safe_error_class or existing_stage or failed):
+        return {
+            "failure_stage": None,
+            "failure_actor": None,
+            "failed_action": None,
+        }
+    return {
+        "failure_stage": stage,
+        "failure_actor": str(actor),
+        "failed_action": str(action),
+    }
 
 
 def privacy_defaults(
@@ -277,7 +371,7 @@ def _suggested_next_action(failure_stage: str) -> str:
     if failure_stage == "request_validation":
         return "入力形式と mode / option の値を確認してください。"
     if failure_stage == "preflight":
-        return "DB と model endpoint の設定を確認してください。"
+        return "Check pma models ping leader or switch to retrieval-only."
     if failure_stage == "answer_generation":
         return "retrieval-only で候補を確認するか、timeout を増やしてください。"
     return "retrieval-only で候補を確認し、設定と safe trace を確認してください。"
@@ -287,6 +381,69 @@ def _failure_stage(value: str | None) -> str:
     if value in FAILURE_STAGES:
         return str(value)
     return "unknown"
+
+
+def _stage_from_failed_event(event: dict[str, Any]) -> str:
+    stage = str(event.get("stage") or "")
+    action = str(event.get("action") or "")
+    if stage in {"leader_endpoint_preflight", "configuration"}:
+        return "preflight"
+    if action in {"preflight_event_intent_planner"}:
+        return "preflight"
+    if stage == "answer_synthesis" or action == "generate_structured_answer":
+        return "answer_generation"
+    if stage == "answer_validation" or action == "validate_answer_payload":
+        return "answer_validation"
+    if stage in {"evidence_retrieval", "evidence_retrieval_repair"}:
+        return "retrieval"
+    if "retrieval_planning" in stage:
+        return "retrieval_planning"
+    return _failure_stage(stage)
+
+
+def _stage_from_error(
+    error_class: str | None,
+    error_message: str | None,
+    *,
+    mode: str,
+) -> str:
+    text = f"{error_class or ''} {error_message or ''}".lower()
+    if "answervalidationerror" in text:
+        return "answer_validation"
+    if mode == "real-model" and (
+        "configured leader" in text
+        or "model key" in text
+        or "endpoint_url" in text
+        or "leader model" in text
+    ):
+        return "preflight"
+    if "endpoint" in text and ("unavailable" in text or "preflight" in text or "models" in text):
+        return "preflight"
+    if mode == "real-model" and (error_class or "modelruntimeerror" in text):
+        return "answer_generation"
+    if error_class:
+        return "unknown"
+    return "unknown"
+
+
+def _actor_for_stage(stage: str | None, *, mode: str) -> str:
+    if mode == "real-model" and stage in {"preflight", "answer_generation", "answer_validation"}:
+        return "DeepSeek Leader"
+    if stage == "request_validation":
+        return "ChatAPI"
+    return "Chat runtime"
+
+
+def _action_for_stage(stage: str | None) -> str:
+    if stage == "preflight":
+        return "preflight_leader_model"
+    if stage == "answer_generation":
+        return "generate_structured_answer"
+    if stage == "answer_validation":
+        return "validate_answer_payload"
+    if stage == "request_validation":
+        return "validate_chat_request"
+    return str(stage or "unknown")
 
 
 def _response_mode(value: str | None) -> str:

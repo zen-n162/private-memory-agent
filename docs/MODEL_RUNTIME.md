@@ -805,6 +805,19 @@ it shows `Invalid API response: missing field ...` rather than rendering
 safe to inspect for metadata, but they still should not be pasted publicly if
 answer text is visible.
 
+Phase 9-H5 applies the same contract hardening to real-model mode. DeepSeek
+Leader timeout/runtime failures return `failure_stage=answer_generation`,
+answer JSON/schema failures return `failure_stage=answer_validation`, and
+endpoint availability problems return `failure_stage=preflight`. In each case
+the response preserves `mode=real-model`, includes a failed `current_status`,
+keeps `privacy.local_only=true`, and includes trace events for valid requests.
+`/api/system/status` includes `app_version`, `git_commit` when available,
+`api_response_schema_version`, and `ui_response_schema_version`; after code
+changes, restart `pma api serve` and hard-refresh the browser before comparing
+UI behavior. If a real-model request fails, inspect the browser Network
+response for `failure_stage`, `failure_actor`, and `current_status` before
+debugging the retrieval path.
+
 `GET /api/system/status` returns DB/index counts and configured endpoint
 metadata without model prompts. `POST /api/chat/query` uses the existing E2E
 retrieval/answer path directly rather than shelling out to the CLI.

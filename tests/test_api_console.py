@@ -1,7 +1,14 @@
 import json
 import time
+from urllib.error import URLError
 
-from private_memory_agent.api.contract import build_chat_error_payload, ensure_chat_response_contract
+from private_memory_agent.api.contract import (
+    CHAT_API_RESPONSE_SCHEMA_VERSION,
+    CHAT_UI_RESPONSE_SCHEMA_VERSION,
+    REQUIRED_CHAT_RESPONSE_KEYS,
+    build_chat_error_payload,
+    ensure_chat_response_contract,
+)
 from private_memory_agent.api.console import (
     ChatConsoleOptions,
     build_system_status,
@@ -15,10 +22,44 @@ from private_memory_agent.storage import initialize_database
 from private_memory_agent.tracing import AgentTraceRecorder, build_current_status, summarize_model_usage
 
 
+class FakeHTTPResponse:
+    def __init__(self, payload):
+        self.payload = payload
+        self.status = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+    def read(self):
+        return json.dumps(self.payload).encode("utf-8")
+
+
+def _leader_models_yaml(model_root):
+    return "\n".join(
+        [
+            f"model_root: {model_root}",
+            "leader:",
+            "  provider: llama_cpp",
+            "  role: leader_reasoning",
+            "  model_dir: leader-model",
+            "  enabled: true",
+            "  endpoint_url: http://127.0.0.1:8111/v1",
+            "  served_model_name: served-leader.gguf",
+            "  api_format: openai-compatible",
+            "  timeout_seconds: 1",
+            "  request_timeout_seconds: 77",
+            "  retries: 0",
+        ],
+    )
+
+
 def _insert_synthetic_line(db_path, text="研究 synthetic private evidence"):
     storage = initialize_database(db_path)
     try:
-        storage.line_messages.insert_message(
+        message_id = storage.line_messages.insert_message(
             source_item_id=None,
             conversation_id="console-fixture-room",
             message_id="console-line-1",
@@ -30,6 +71,19 @@ def _insert_synthetic_line(db_path, text="研究 synthetic private evidence"):
     finally:
         storage.close()
     index_text(db_path)
+    return message_id
+
+
+def _assert_complete_chat_contract(payload, *, mode):
+    missing = [key for key in REQUIRED_CHAT_RESPONSE_KEYS if key not in payload]
+    assert missing == []
+    assert payload["mode"] == mode
+    assert "undefined" not in json.dumps(payload, ensure_ascii=False)
+    assert payload["privacy"]["local_only"] is True
+    assert isinstance(payload["trace_events"], list)
+    assert isinstance(payload["current_status"], dict)
+    assert isinstance(payload["candidate_dates"], list)
+    assert isinstance(payload["evidence"], list)
 
 
 def test_agent_console_html_is_self_contained_and_points_to_chat_api():
@@ -104,6 +158,7 @@ def test_chat_console_default_response_shows_answer_but_not_raw_evidence(
     serialized = json.dumps(payload, ensure_ascii=False)
 
     assert payload["ok"] is True
+    _assert_complete_chat_contract(payload, mode="fake-model")
     assert payload["run_id"]
     assert payload["request_id"] == payload["run_id"]
     assert payload["mode"] == "fake-model"
@@ -126,6 +181,212 @@ def test_chat_console_default_response_shows_answer_but_not_raw_evidence(
     assert "FakeLeaderModel" in payload["model_usage_summary"]
     assert "RetrievalService" in payload["tool_usage_summary"]
     assert "raw private console body" not in serialized
+
+
+def test_chat_console_retrieval_only_has_complete_contract(temp_config_factory, tmp_path):
+    db_path = tmp_path / "console.sqlite3"
+    _insert_synthetic_line(db_path, text="研究 retrieval-only private evidence")
+
+    payload = run_chat_console_query(
+        ChatConsoleOptions(
+            config_dir=temp_config_factory(),
+            db_path=db_path,
+            question="研究",
+            mode="retrieval-only",
+            sources=("line",),
+        ),
+    )
+    serialized = json.dumps(payload, ensure_ascii=False)
+
+    _assert_complete_chat_contract(payload, mode="retrieval-only")
+    assert payload["answer_succeeded"] is False
+    assert payload["answer_state"] == "not_generated"
+    assert payload["failure_stage"] is None
+    assert payload["trace_events"][0]["actor_name"] == "ChatConsoleRequest"
+    assert "retrieval-only private evidence" not in serialized
+
+
+def test_chat_console_real_model_success_has_complete_contract(
+    monkeypatch,
+    temp_config_factory,
+    tmp_path,
+):
+    model_root = tmp_path / "models"
+    config_dir = temp_config_factory(
+        model_root=model_root,
+        models_yaml=_leader_models_yaml(model_root),
+    )
+    db_path = tmp_path / "console.sqlite3"
+    message_id = _insert_synthetic_line(db_path, text="研究 real model private evidence")
+
+    def fake_urlopen(request, data=None, *, timeout=None):
+        if request.get_method() == "GET":
+            return FakeHTTPResponse({"data": [{"id": "served-leader.gguf"}]})
+        payload = {
+            "conclusion": "synthetic grounded answer",
+            "evidence_references": [f"line_messages:{message_id}"],
+            "confidence": 0.4,
+            "unknowns": ["synthetic uncertainty"],
+            "used_sources": ["line"],
+        }
+        return FakeHTTPResponse(
+            {
+                "model": "served-leader.gguf",
+                "choices": [{"message": {"content": json.dumps(payload)}}],
+            },
+        )
+
+    monkeypatch.setattr("private_memory_agent.runtime.clients.urlopen", fake_urlopen)
+
+    payload = run_chat_console_query(
+        ChatConsoleOptions(
+            config_dir=config_dir,
+            db_path=db_path,
+            question="研究",
+            mode="real-model",
+            sources=("line",),
+            leader_plan=False,
+        ),
+    )
+    serialized = json.dumps(payload, ensure_ascii=False)
+
+    _assert_complete_chat_contract(payload, mode="real-model")
+    assert payload["ok"] is True
+    assert payload["answer_succeeded"] is True
+    assert payload["failure_stage"] is None
+    assert payload["current_status"]["status"] == "succeeded"
+    assert payload["trace_events"][0]["actor_name"] == "ChatConsoleRequest"
+    assert "real model private evidence" not in serialized
+
+
+def test_chat_console_real_model_runtime_error_has_complete_contract(
+    monkeypatch,
+    temp_config_factory,
+    tmp_path,
+):
+    model_root = tmp_path / "models"
+    config_dir = temp_config_factory(
+        model_root=model_root,
+        models_yaml=_leader_models_yaml(model_root),
+    )
+    db_path = tmp_path / "console.sqlite3"
+    _insert_synthetic_line(db_path, text="研究 timeout private evidence")
+
+    def fake_urlopen(request, data=None, *, timeout=None):
+        if request.get_method() == "GET":
+            return FakeHTTPResponse({"data": [{"id": "served-leader.gguf"}]})
+        raise TimeoutError
+
+    monkeypatch.setattr("private_memory_agent.runtime.clients.urlopen", fake_urlopen)
+
+    payload = run_chat_console_query(
+        ChatConsoleOptions(
+            config_dir=config_dir,
+            db_path=db_path,
+            question="研究",
+            mode="real-model",
+            sources=("line",),
+            leader_plan=False,
+        ),
+    )
+    serialized = json.dumps(payload, ensure_ascii=False)
+
+    _assert_complete_chat_contract(payload, mode="real-model")
+    assert payload["ok"] is False
+    assert payload["answer_succeeded"] is False
+    assert payload["answer_state"] == "not_generated"
+    assert payload["failure_stage"] == "answer_generation"
+    assert payload["failure_actor"] == "DeepSeek Leader"
+    assert payload["error_class"] == "ModelRuntimeError"
+    assert payload["current_status"]["status"] == "failed"
+    assert payload["current_status"]["failure_summary"]["failed_stage"] == "answer_generation"
+    assert "timeout private evidence" not in serialized
+
+
+def test_chat_console_real_model_answer_validation_error_has_complete_contract(
+    monkeypatch,
+    temp_config_factory,
+    tmp_path,
+):
+    model_root = tmp_path / "models"
+    config_dir = temp_config_factory(
+        model_root=model_root,
+        models_yaml=_leader_models_yaml(model_root),
+    )
+    db_path = tmp_path / "console.sqlite3"
+    _insert_synthetic_line(db_path, text="研究 validation private evidence")
+
+    def fake_urlopen(request, data=None, *, timeout=None):
+        if request.get_method() == "GET":
+            return FakeHTTPResponse({"data": [{"id": "served-leader.gguf"}]})
+        return FakeHTTPResponse(
+            {
+                "model": "served-leader.gguf",
+                "choices": [{"message": {"content": "not json"}}],
+            },
+        )
+
+    monkeypatch.setattr("private_memory_agent.runtime.clients.urlopen", fake_urlopen)
+
+    payload = run_chat_console_query(
+        ChatConsoleOptions(
+            config_dir=config_dir,
+            db_path=db_path,
+            question="研究",
+            mode="real-model",
+            sources=("line",),
+            leader_plan=False,
+        ),
+    )
+    serialized = json.dumps(payload, ensure_ascii=False)
+
+    _assert_complete_chat_contract(payload, mode="real-model")
+    assert payload["ok"] is False
+    assert payload["failure_stage"] == "answer_validation"
+    assert payload["failure_actor"] == "DeepSeek Leader"
+    assert payload["error_class"] == "AnswerValidationError"
+    assert payload["current_status"]["failure_summary"]["failed_stage"] == "answer_validation"
+    assert "validation private evidence" not in serialized
+
+
+def test_chat_console_real_model_preflight_failure_has_complete_contract(
+    monkeypatch,
+    temp_config_factory,
+    tmp_path,
+):
+    model_root = tmp_path / "models"
+    config_dir = temp_config_factory(
+        model_root=model_root,
+        models_yaml=_leader_models_yaml(model_root),
+    )
+    db_path = tmp_path / "console.sqlite3"
+    _insert_synthetic_line(db_path, text="研究 preflight private evidence")
+
+    def fake_urlopen(request, data=None, *, timeout=None):
+        raise URLError("not ready")
+
+    monkeypatch.setattr("private_memory_agent.runtime.clients.urlopen", fake_urlopen)
+
+    payload = run_chat_console_query(
+        ChatConsoleOptions(
+            config_dir=config_dir,
+            db_path=db_path,
+            question="研究",
+            mode="real-model",
+            sources=("line",),
+            leader_plan=False,
+        ),
+    )
+    serialized = json.dumps(payload, ensure_ascii=False)
+
+    _assert_complete_chat_contract(payload, mode="real-model")
+    assert payload["ok"] is False
+    assert payload["failure_stage"] == "preflight"
+    assert payload["failure_actor"] == "DeepSeek Leader"
+    assert payload["error_class"] == "ModelRuntimeError"
+    assert "pma models ping leader" in payload["current_status"]["failure_summary"]["suggested_next_action"]
+    assert payload["trace_events"][0]["actor_name"] == "ChatConsoleRequest"
+    assert "preflight private evidence" not in serialized
 
 
 def test_chat_error_payload_has_stable_contract_and_privacy_defaults():
@@ -459,6 +720,10 @@ def test_chat_console_system_status_is_privacy_safe(temp_config_factory, tmp_pat
     serialized = json.dumps(payload, ensure_ascii=False)
 
     assert payload["ok"] is True
+    assert payload["app_version"]
+    assert payload["api_response_schema_version"] == CHAT_API_RESPONSE_SCHEMA_VERSION
+    assert payload["ui_response_schema_version"] == CHAT_UI_RESPONSE_SCHEMA_VERSION
+    assert "git_commit" in payload
     assert payload["localhost_only"] is True
     assert payload["db_exists"] is True
     assert payload["counts"]["line_messages_count"] == 1

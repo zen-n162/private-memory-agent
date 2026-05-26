@@ -43,7 +43,7 @@ from private_memory_agent.api.console import (
     build_system_status,
     run_chat_console_query,
 )
-from private_memory_agent.api.contract import build_chat_error_payload
+from private_memory_agent.api.contract import build_chat_error_payload, classify_chat_failure
 from private_memory_agent.api.evidence_view import EvidenceThumbnailError, create_media_thumbnail
 from private_memory_agent.api.runs import ChatRunRegistry
 from private_memory_agent.api.ui import agent_console_html
@@ -53,6 +53,7 @@ from private_memory_agent.ingestion import ingest_line_exports, ingest_notes, in
 from private_memory_agent.retrieval import FakeEmbeddingModel, HashEmbeddingModel, RetrievalFilters
 from private_memory_agent.runtime import OpenAICompatibleHTTPClient, endpoint_from_model_spec
 from private_memory_agent.timeline import list_events
+from private_memory_agent.tracing import AgentTraceRecorder
 
 DEFAULT_API_DB_PATH = Path("data/local/private_memory_agent.sqlite3")
 
@@ -160,18 +161,31 @@ def create_app(
 
     @app.post("/api/chat/query", response_model=ChatQueryResponse)
     def chat_query(payload: ChatQueryRequest, request: Request) -> dict[str, Any] | JSONResponse:
+        trace_recorder = AgentTraceRecorder()
         try:
-            return run_chat_console_query(_chat_options_from_payload(payload, request))
+            return run_chat_console_query(
+                _chat_options_from_payload(payload, request),
+                trace_recorder=trace_recorder,
+            )
         except (RuntimeError, ValueError) as exc:
+            failure = classify_chat_failure(
+                None,
+                mode=payload.mode,
+                trace_events=trace_recorder.to_list(),
+                error_class=exc.__class__.__name__,
+                error_message=_safe_error(str(exc)),
+            )
             return JSONResponse(
                 status_code=400,
                 content=build_chat_error_payload(
                     mode=payload.mode,
-                    failure_stage="preflight",
-                    failure_actor="ChatAPI",
+                    run_id=trace_recorder.run_id,
+                    failure_stage=failure.get("failure_stage") or "preflight",
+                    failure_actor=failure.get("failure_actor") or "ChatAPI",
                     failed_action="run_chat_console_query",
                     error_class=exc.__class__.__name__,
                     error_message=_safe_error(str(exc)),
+                    trace_events=trace_recorder.to_list(),
                     show_answer=payload.show_answer,
                     show_snippets=payload.show_snippets,
                     show_photo_thumbnails=payload.show_photo_thumbnails,
@@ -185,12 +199,18 @@ def create_app(
         try:
             return request.app.state.chat_runs.start(_chat_options_from_payload(payload, request))
         except (RuntimeError, ValueError) as exc:
+            failure = classify_chat_failure(
+                None,
+                mode=payload.mode,
+                error_class=exc.__class__.__name__,
+                error_message=_safe_error(str(exc)),
+            )
             return JSONResponse(
                 status_code=400,
                 content=build_chat_error_payload(
                     mode=payload.mode,
-                    failure_stage="preflight",
-                    failure_actor="ChatAPI",
+                    failure_stage=failure.get("failure_stage") or "preflight",
+                    failure_actor=failure.get("failure_actor") or "ChatAPI",
                     failed_action="start_chat_run",
                     error_class=exc.__class__.__name__,
                     error_message=_safe_error(str(exc)),

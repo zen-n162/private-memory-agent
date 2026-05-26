@@ -11,13 +11,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from private_memory_agent import __version__
 from private_memory_agent.agent import (
     DeterministicRuleBasedRetrievalPlanner,
     LeaderRetrievalPlanner,
     RetrievalPlan,
 )
 from private_memory_agent.agent.retrieval_planner import plan_metadata_for_error
-from private_memory_agent.api.contract import ensure_chat_response_contract
+from private_memory_agent.api.contract import (
+    CHAT_API_RESPONSE_SCHEMA_VERSION,
+    CHAT_UI_RESPONSE_SCHEMA_VERSION,
+    ensure_chat_response_contract,
+)
 from private_memory_agent.api.evidence_view import (
     EvidenceDisplayOptions,
     build_evidence_display_payload,
@@ -112,7 +117,6 @@ def run_chat_console_query(
 ) -> dict[str, Any]:
     """Run one privacy-safe console query."""
 
-    _validate_options(options)
     trace_recorder = trace_recorder or AgentTraceRecorder()
     trace_recorder.event(
         actor_type="tool",
@@ -130,6 +134,7 @@ def run_chat_console_query(
             "reranker": options.reranker,
         },
     )
+    _validate_options(options)
     temporal_payload = _maybe_temporal_console_payload(options, trace_recorder=trace_recorder)
     if temporal_payload is not None:
         return _finalize_console_payload(temporal_payload, trace_recorder)
@@ -196,8 +201,12 @@ def run_chat_console_query(
 
     privacy = _privacy_payload(options)
     answer = _answer_payload(result, show_answer=options.show_answer)
+    failure_metadata = _console_failure_metadata(result, report=report, options=options)
+    if failure_metadata:
+        answer["error_class"] = failure_metadata["error_class"]
+        answer["error_message"] = failure_metadata["error_message"]
     evidence = _evidence_payload(result, show_snippets=options.show_snippets)
-    return _finalize_console_payload({
+    payload = {
         "ok": ok,
         "mode": options.mode,
         "answer": answer,
@@ -218,7 +227,17 @@ def run_chat_console_query(
         ),
         "privacy": privacy,
         "warnings": _unique_strings((*warnings, *privacy["warnings"])),
-    }, trace_recorder)
+    }
+    if failure_metadata:
+        payload.update(
+            {
+                "failure_stage": failure_metadata["failure_stage"],
+                "failure_actor": failure_metadata["failure_actor"],
+                "error_class": failure_metadata["error_class"],
+                "error_message": failure_metadata["error_message"],
+            },
+        )
+    return _finalize_console_payload(payload, trace_recorder)
 
 
 def build_system_status(
@@ -257,6 +276,10 @@ def build_system_status(
         warnings.extend(report.warnings)
     return {
         "ok": True,
+        "app_version": __version__,
+        "git_commit": _git_commit(),
+        "api_response_schema_version": CHAT_API_RESPONSE_SCHEMA_VERSION,
+        "ui_response_schema_version": CHAT_UI_RESPONSE_SCHEMA_VERSION,
         "localhost_only": True,
         "db_exists": db.exists(),
         "counts": counts,
@@ -1075,6 +1098,41 @@ def _repair_status(
     }
 
 
+def _console_failure_metadata(
+    result: E2ESmokeQueryResult,
+    *,
+    report: E2ESmokeReport,
+    options: ChatConsoleOptions,
+) -> dict[str, str] | None:
+    if options.mode != "real-model":
+        return None
+    if not report.query_results and any(
+        "leader endpoint preflight failed" in str(warning).lower()
+        for warning in report.warnings
+    ):
+        return {
+            "failure_stage": "preflight",
+            "failure_actor": "DeepSeek Leader",
+            "error_class": "ModelRuntimeError",
+            "error_message": "leader endpoint preflight failed; check pma models ping leader or switch to retrieval-only",
+        }
+    if result.error_class == "AnswerValidationError":
+        return {
+            "failure_stage": "answer_validation",
+            "failure_actor": "DeepSeek Leader",
+            "error_class": "AnswerValidationError",
+            "error_message": result.error_message or "leader answer validation failed",
+        }
+    if result.error_class:
+        return {
+            "failure_stage": "answer_generation",
+            "failure_actor": "DeepSeek Leader",
+            "error_class": result.error_class,
+            "error_message": result.error_message or "leader answer generation failed",
+        }
+    return None
+
+
 def _empty_result() -> E2ESmokeQueryResult:
     return E2ESmokeQueryResult(
         query_label="query_1",
@@ -1138,6 +1196,19 @@ def _model_status(config: ConfigBundle) -> list[dict[str, Any]]:
         }
         for endpoint in endpoints
     ]
+
+
+def _git_commit() -> str | None:
+    git_dir = Path(__file__).resolve().parents[3] / ".git"
+    head_path = git_dir / "HEAD"
+    try:
+        head = head_path.read_text(encoding="utf-8").strip()
+        if head.startswith("ref: "):
+            ref_path = git_dir / head.removeprefix("ref: ").strip()
+            return ref_path.read_text(encoding="utf-8").strip()[:12]
+        return head[:12] if head else None
+    except OSError:
+        return None
 
 
 def _unique_strings(values: tuple[str, ...] | list[str]) -> tuple[str, ...]:

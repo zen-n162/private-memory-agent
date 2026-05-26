@@ -7,7 +7,7 @@ from threading import Lock, Thread
 from time import perf_counter
 from typing import Any
 
-from private_memory_agent.api.contract import build_chat_error_payload
+from private_memory_agent.api.contract import build_chat_error_payload, classify_chat_failure
 from private_memory_agent.api.console import ChatConsoleOptions, run_chat_console_query
 from private_memory_agent.tracing import (
     AgentTraceRecorder,
@@ -146,11 +146,23 @@ class ChatRunRegistry:
                 record.status = "succeeded"
                 record.finished_at_perf = perf_counter()
         except Exception as exc:  # pragma: no cover - defensive safety path
-            safe_message = "chat run failed; review safe trace status"
+            classification = classify_chat_failure(
+                None,
+                mode=record.options.mode,
+                trace_events=record.recorder.to_list(),
+                error_class=exc.__class__.__name__,
+                error_message=str(exc),
+            )
+            failure_stage = classification.get("failure_stage") or "unknown"
+            failure_actor = classification.get("failure_actor") or "ChatRunRegistry"
+            safe_message = _safe_run_error_message(
+                failure_stage=failure_stage,
+                failure_actor=failure_actor,
+            )
             record.recorder.event(
-                actor_type="tool",
-                actor_name="ChatRunRegistry",
-                stage="run_execution",
+                actor_type="leader_model" if failure_actor == "DeepSeek Leader" else "tool",
+                actor_name=failure_actor,
+                stage=failure_stage if failure_stage != "answer_generation" else "answer_synthesis",
                 action="execute_chat_run",
                 status="failed",
                 error_class=exc.__class__.__name__,
@@ -160,8 +172,8 @@ class ChatRunRegistry:
                 record.status = "failed"
                 record.error_class = exc.__class__.__name__
                 record.safe_error_message = safe_message
-                record.failure_stage = "unknown"
-                record.failure_actor = "ChatRunRegistry"
+                record.failure_stage = failure_stage
+                record.failure_actor = failure_actor
                 record.finished_at_perf = perf_counter()
 
     def _get(self, run_id: str) -> ChatRunRecord:
@@ -302,3 +314,13 @@ def _tool_usage_label(name: str, payload: dict[str, Any]) -> str:
     if payload.get("succeeded"):
         return f"{name}: used"
     return f"{name}: not used"
+
+
+def _safe_run_error_message(*, failure_stage: str | None, failure_actor: str | None) -> str:
+    if failure_stage == "preflight" and failure_actor == "DeepSeek Leader":
+        return "leader preflight failed; check pma models ping leader or switch to retrieval-only"
+    if failure_stage == "answer_generation" and failure_actor == "DeepSeek Leader":
+        return "leader answer generation failed; check timeout or switch to retrieval-only"
+    if failure_stage == "answer_validation" and failure_actor == "DeepSeek Leader":
+        return "leader answer validation failed; try retrieval-only or reduce answer generation scope"
+    return "chat run failed; review safe trace status"

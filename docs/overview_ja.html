@@ -551,6 +551,7 @@
             <tr><td>9-H2</td><td>Current Status Bar と polling API で、実行中の actor/action、elapsed time、recent steps を表示。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-H3</td><td>完了後の Current Status Bar を Done/Failed の要約表示にし、詳細 trace は別パネルへ分離。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-H4</td><td>Chat UI/API contract を固定し、request validation / preflight / agent failure を区別して表示。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>9-H5</td><td>real-model の timeout、answer validation、preflight failure も同じ response contract に統一。</td><td class="status">基本実装済み</td></tr>
           </tbody>
         </table>
       </section>
@@ -877,6 +878,17 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           「リクエスト形式の問題」や「モデル/DB設定の確認」の失敗として表示します。
           UI は必須 field を確認し、不足があれば <code>Invalid API response</code> として明示します。
         </p>
+        <p>
+          9-H5 では real-model mode の contract をさらに固めました。
+          DeepSeek Leader の timeout/runtime error は <code>answer_generation</code>、
+          JSON/schema error は <code>answer_validation</code>、endpoint 到達不可は
+          <code>preflight</code> として返し、いずれも <code>mode=real-model</code>、
+          failed current status、trace events、privacy defaults を維持します。
+          <code>/api/system/status</code> には app version、git commit（取得できる場合）、
+          API/UI response schema version を出すため、コード更新後は API server を再起動し、
+          browser を hard refresh してから Network response の <code>failure_stage</code> と
+          <code>current_status</code> を確認できます。
+        </p>
       </section>
 
       <section id="limitations">
@@ -894,6 +906,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
       <section id="history">
         <h2>更新履歴</h2>
         <ul>
+          <li>2026-05-26: real-model mode の response contract を harden し、schema/version diagnostics を system status に追加。</li>
           <li>2026-05-26: Chat UI/API contract を固定し、実行前 validation / preflight failure と agent failure を区別。</li>
           <li>2026-05-26: 完了後の Current Status Bar を concise summary にし、未使用 model/tool と低レベル step を既定非表示化。</li>
           <li>2026-05-26: Current Status Bar と polling run API を追加し、実行中の actor/action と compact timeline を表示。</li>

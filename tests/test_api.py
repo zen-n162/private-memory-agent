@@ -191,6 +191,9 @@ def test_system_status_endpoint_returns_count_only(temp_config_factory, tmp_path
     payload = response.json()
     assert response.status_code == 200
     assert payload["localhost_only"] is True
+    assert payload["app_version"]
+    assert payload["api_response_schema_version"]
+    assert payload["ui_response_schema_version"]
     assert payload["db_exists"] is True
     assert str(db_path) not in response.text
 

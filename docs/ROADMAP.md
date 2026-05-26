@@ -145,6 +145,13 @@ This document outlines the development roadmap for private-memory-agent.
   dates, evidence, and model/tool summaries. Request validation and preflight
   failures are shown as request/config problems instead of ambiguous agent
   failures, and the UI reports missing API fields explicitly.
+- Phase 9-H5 hardens the real-model contract:
+  real-model success, DeepSeek timeout/runtime errors, answer validation
+  errors, and endpoint preflight failures now use the same chat response schema
+  with `mode=real-model`, specific failure stages, failed current status,
+  trace events, privacy defaults, and safe suggestions. `/api/system/status`
+  exposes app and response schema versions so a restarted server can be checked
+  from the browser Network panel.
 
 ## 実データE2E smokeの実行手順
 
