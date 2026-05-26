@@ -1,6 +1,7 @@
 import json
 import time
 
+from private_memory_agent.api.contract import build_chat_error_payload, ensure_chat_response_contract
 from private_memory_agent.api.console import (
     ChatConsoleOptions,
     build_system_status,
@@ -56,6 +57,11 @@ def test_agent_console_html_is_self_contained_and_points_to_chat_api():
     assert 'id="current-status-bar"' in html
     assert "renderCompletedStatus" in html
     assert "renderFailedStatus" in html
+    assert "Invalid API response: missing field" in html
+    assert "リクエスト形式の問題で実行前に失敗しました。" in html
+    assert "Agent trace was not created because execution stopped before agent runtime." in html
+    assert "mode=undefined" not in html
+    assert "Agent の unknown" not in html
     assert "詳細ログを表示" in html
     assert "未使用のTool/Modelを表示" in html
     assert "/api/chat/query/start" in html
@@ -98,6 +104,13 @@ def test_chat_console_default_response_shows_answer_but_not_raw_evidence(
     serialized = json.dumps(payload, ensure_ascii=False)
 
     assert payload["ok"] is True
+    assert payload["run_id"]
+    assert payload["request_id"] == payload["run_id"]
+    assert payload["mode"] == "fake-model"
+    assert payload["answer_succeeded"] is True
+    assert payload["answer_state"] == "visible"
+    assert payload["failure_stage"] is None
+    assert payload["current_status"]["status"] == "succeeded"
     assert payload["answer"]["answer_succeeded"] is True
     assert payload["answer"]["conclusion"] is not None
     assert payload["answer"]["answer_hidden"] is False
@@ -113,6 +126,60 @@ def test_chat_console_default_response_shows_answer_but_not_raw_evidence(
     assert "FakeLeaderModel" in payload["model_usage_summary"]
     assert "RetrievalService" in payload["tool_usage_summary"]
     assert "raw private console body" not in serialized
+
+
+def test_chat_error_payload_has_stable_contract_and_privacy_defaults():
+    payload = build_chat_error_payload(
+        mode="invalid-mode",
+        failure_stage="request_validation",
+        failure_actor="ChatAPI",
+        failed_action="validate_chat_request",
+        error_class="InvalidRequest",
+        error_message="invalid chat request; check required fields and allowed values",
+    )
+    serialized = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["ok"] is False
+    assert payload["mode"] == "unknown"
+    assert payload["answer_state"] == "not_generated"
+    assert payload["answer_succeeded"] is False
+    assert payload["failure_stage"] == "request_validation"
+    assert payload["failure_actor"] == "ChatAPI"
+    assert payload["current_status"]["failure_summary"]["failed_stage"] == "request_validation"
+    assert payload["trace_events"] == []
+    assert payload["trace_summary"]["runtime_event_count"] == 0
+    assert payload["privacy"]["local_only"] is True
+    assert payload["privacy"]["snippets_hidden"] is True
+    assert payload["privacy"]["raw_model_output_hidden"] is True
+    assert "path" not in serialized.lower()
+
+
+def test_chat_contract_fills_missing_success_metadata():
+    payload = ensure_chat_response_contract(
+        {
+            "ok": True,
+            "mode": "retrieval-only",
+            "answer": {
+                "answer_succeeded": False,
+                "answer_state": "not_generated",
+                "evidence_references": [],
+                "used_sources": [],
+            },
+            "evidence": [],
+            "trace": {"runtime_event_count": 0, "plan": {}},
+            "trace_events": [],
+            "privacy": {},
+            "warnings": [],
+        },
+        run_id="contract-run",
+    )
+
+    assert payload["run_id"] == "contract-run"
+    assert payload["mode"] == "retrieval-only"
+    assert payload["answer_state"] == "not_generated"
+    assert payload["candidate_dates"] == []
+    assert payload["current_status"]["status"] == "succeeded"
+    assert payload["trace_summary"]["runtime_event_count"] == 0
 
 
 def test_chat_console_show_answer_displays_fake_answer_without_snippets(
@@ -364,13 +431,20 @@ def test_chat_run_registry_failed_status_has_safe_failure_summary(tmp_path):
     registry._runs["failed-run"] = record
 
     status = registry.status("failed-run")
-    serialized = json.dumps(status, ensure_ascii=False)
+    result = registry.result("failed-run")
+    serialized = json.dumps({"status": status, "result": result}, ensure_ascii=False)
 
     assert status["status"] == "failed"
+    assert status["mode"] == "retrieval-only"
     assert status["failure_summary"]["failed_actor"] == "DeepSeek Leader"
     assert status["failure_summary"]["error_class"] == "ModelRuntimeError"
     assert "timed out" in status["failure_summary"]["safe_error_message"]
     assert "retrieval-only" in status["failure_summary"]["suggested_next_action"]
+    assert result["ok"] is False
+    assert result["mode"] == "retrieval-only"
+    assert result["answer_state"] == "not_generated"
+    assert result["current_status"]["failure_summary"]["failed_actor"] == "DeepSeek Leader"
+    assert result["privacy"]["local_only"] is True
     assert "秘密の質問" not in serialized
 
 

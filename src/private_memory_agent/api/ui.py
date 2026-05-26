@@ -622,6 +622,106 @@ def agent_console_html() -> str:
       });
       target.appendChild(dl);
     }
+    const CHAT_RESPONSE_REQUIRED_FIELDS = [
+      "ok",
+      "run_id",
+      "mode",
+      "answer_state",
+      "answer_succeeded",
+      "error_class",
+      "error_message",
+      "failure_stage",
+      "failure_actor",
+      "current_status",
+      "trace_events",
+      "trace_summary",
+      "privacy",
+      "warnings",
+      "candidate_dates",
+      "evidence",
+      "model_usage_summary",
+      "tool_usage_summary"
+    ];
+    function validateChatResponseContract(payload) {
+      if (!payload || typeof payload !== "object") return "payload";
+      for (const field of CHAT_RESPONSE_REQUIRED_FIELDS) {
+        if (!Object.prototype.hasOwnProperty.call(payload, field)) return field;
+      }
+      if (!payload.answer || typeof payload.answer !== "object") return "answer";
+      if (!payload.trace || typeof payload.trace !== "object") return "trace";
+      return null;
+    }
+    function renderInvalidApiResponse(missingField, payload) {
+      const safeMessage = `Invalid API response: missing field ${missingField}`;
+      clear(answerPanel);
+      clear(datesPanel);
+      clear(evidencePanel);
+      clear(tracePanel);
+      clear(privacyPanel);
+      answerPanel.appendChild(el("div", safeMessage, "status-line error"));
+      answerPanel.appendChild(el("div", "API response contract is out of sync with the UI. Agent execution may not have started.", "status-line"));
+      tracePanel.appendChild(el("div", safeMessage, "status-line error"));
+      if (payload && typeof payload === "object") {
+        const debug = document.createElement("details");
+        debug.className = "trace-row";
+        const summary = document.createElement("summary");
+        summary.appendChild(el("div", "Developer-safe response metadata", "trace-title"));
+        debug.appendChild(summary);
+        renderKv(debug, {
+          keys: Object.keys(payload).sort(),
+          status: payload.status || "unknown",
+          ok: payload.ok ?? "unknown",
+          failure_stage: payload.failure_stage || "unknown",
+          error_class: payload.error_class || "unknown"
+        });
+        tracePanel.appendChild(debug);
+      }
+      renderCurrentStatus(buildClientFailureStatus(safeMessage, payload));
+    }
+    async function readJsonResponse(response, fallbackMessage) {
+      let payload = null;
+      try {
+        payload = await response.json();
+      } catch (error) {
+        payload = null;
+      }
+      if (!response.ok) {
+        const message = payload?.error_message || payload?.detail || fallbackMessage;
+        const error = new Error(message);
+        error.payload = payload;
+        throw error;
+      }
+      return payload;
+    }
+    function buildClientFailureStatus(message, payload) {
+      const failureStage = payload?.failure_stage || payload?.current_status?.failure_stage || "ui_response_rendering";
+      const failureActor = payload?.failure_actor || payload?.current_status?.failure_actor || "ChatConsoleUI";
+      return {
+        run_id: payload?.run_id || payload?.request_id || "client-side",
+        mode: payload?.mode || "unknown",
+        status: "failed",
+        current_step: null,
+        recent_steps: [],
+        elapsed_ms: 0,
+        warnings: [message],
+        model_usage_summary: {},
+        tool_usage_summary: {},
+        fallback_summary: {},
+        completion_summary: null,
+        failure_stage: failureStage,
+        failure_actor: failureActor,
+        failure_summary: {
+          summary_status: "failed",
+          failed_stage: failureStage,
+          failed_actor: failureActor,
+          failed_action: payload?.current_status?.failure_summary?.failed_action || "render_api_response",
+          error_class: payload?.error_class || payload?.current_status?.failure_summary?.error_class || "InvalidAPIResponse",
+          safe_error_message: message,
+          suggested_next_action: "ブラウザの Network response と API response schema を確認してください。",
+          timeline_available: Boolean((payload?.trace_events || []).length)
+        }
+      };
+    }
     function formatKvValue(val) {
       if (val === null || val === undefined) return "n/a";
       if (Array.isArray(val)) return val.length ? val.join(", ") : "none";
@@ -1228,18 +1328,23 @@ def agent_console_html() -> str:
     }
     function renderFailedStatus(statusPayload) {
       const failure = statusPayload.failure_summary || {};
+      const failedStage = failure.failed_stage || statusPayload.failure_stage || "unknown";
+      const failedActor = failure.failed_actor || statusPayload.failure_actor || "Chat runtime";
       const head = document.createElement("div");
       head.className = "current-status-head";
       head.appendChild(el("span", "Failed", "status-badge failed"));
       head.appendChild(el("span", formatElapsed(statusPayload.elapsed_ms || 0), "muted-small"));
       currentStatusBar.appendChild(head);
-      currentStatusBar.appendChild(el("div", `${failure.failed_actor || "Agent"} の ${failure.failed_stage || "unknown"} で失敗しました。`, "current-status-message error"));
+      currentStatusBar.appendChild(el("div", failureMessageForStage(failedStage, failedActor), "current-status-message error"));
       const meta = document.createElement("div");
       meta.className = "tag-row";
       if (failure.error_class) meta.appendChild(pill(failure.error_class, "bad"));
       if (failure.failed_action) meta.appendChild(pill(`action=${failure.failed_action}`));
       if (failure.safe_error_message) meta.appendChild(pill(failure.safe_error_message, "warn"));
       currentStatusBar.appendChild(meta);
+      if (!failure.timeline_available && !(statusPayload.recent_steps || []).length) {
+        currentStatusBar.appendChild(el("div", "Agent trace was not created because execution stopped before agent runtime.", "status-line"));
+      }
       currentStatusBar.appendChild(el("div", failure.suggested_next_action || "retrieval-only で候補を確認するか timeout を増やしてください。", "status-line"));
       const button = document.createElement("button");
       button.type = "button";
@@ -1247,6 +1352,13 @@ def agent_console_html() -> str:
       button.textContent = "詳細ログを表示";
       button.addEventListener("click", () => tracePanel.scrollIntoView({behavior: "smooth", block: "start"}));
       currentStatusBar.appendChild(button);
+    }
+    function failureMessageForStage(stage, actor) {
+      if (stage === "request_validation") return "リクエスト形式の問題で実行前に失敗しました。";
+      if (stage === "preflight") return "モデル/DB設定の確認で失敗しました。";
+      if (stage === "answer_generation") return "検索は成功しましたが、回答生成で失敗しました。";
+      if (stage === "unknown") return `${actor || "Chat runtime"} の実行中に失敗しました。`;
+      return `${actor || "Chat runtime"} の ${stage} で失敗しました。`;
     }
     function appendCompactUsageSection(label, items) {
       const values = (items || []).filter(Boolean);
@@ -1336,13 +1448,18 @@ def agent_console_html() -> str:
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify(payload)
         });
-        const started = await startResponse.json();
-        if (!startResponse.ok) throw new Error(started.detail || "query start failed");
+        const started = await readJsonResponse(startResponse, "query start failed");
         renderCurrentStatus(started);
         const finalStatus = await pollRun(started.run_id);
         const resultResponse = await fetch(`/api/chat/runs/${started.run_id}/result`);
-        const result = await resultResponse.json();
-        if (!resultResponse.ok) throw new Error(result.detail || "query result failed");
+        const result = await readJsonResponse(resultResponse, "query result failed");
+        const missingField = validateChatResponseContract(result);
+        if (missingField) {
+          renderInvalidApiResponse(missingField, result);
+          statusNode.className = "status-line error";
+          statusNode.textContent = `Invalid API response: missing field ${missingField}`;
+          return;
+        }
         renderAnswer(result);
         renderCandidateDates(result);
         renderEvidence(result);
@@ -1352,20 +1469,21 @@ def agent_console_html() -> str:
         statusNode.className = result.ok ? "status-line ok" : "status-line";
         if (finalStatus) renderCurrentStatus(finalStatus);
       } catch (error) {
+        const payload = error?.payload || null;
         statusNode.className = "status-line error";
         statusNode.textContent = error instanceof Error ? error.message : "query failed";
-        renderCurrentStatus({
-          status: "failed",
-          current_step: {
-            display_message: error instanceof Error ? error.message : "query failed",
-            step_index: 0,
-            step_total: 0
-          },
-          recent_steps: [],
-          elapsed_ms: 0,
-          model_usage_summary: {},
-          tool_usage_summary: {}
-        });
+        if (payload && !validateChatResponseContract(payload)) {
+          renderAnswer(payload);
+          renderCandidateDates(payload);
+          renderEvidence(payload);
+          renderTrace(payload);
+          renderPrivacy(payload);
+          renderCurrentStatus(payload.current_status || buildClientFailureStatus(error.message, payload));
+        } else if (payload) {
+          renderInvalidApiResponse(validateChatResponseContract(payload), payload);
+        } else {
+          renderCurrentStatus(buildClientFailureStatus(error instanceof Error ? error.message : "query failed", null));
+        }
       } finally {
         runButton.disabled = false;
       }

@@ -550,6 +550,7 @@
             <tr><td>9-H</td><td>Agent Runtime Trace で DeepSeek、tools、specialist model、cached artifact、fallback を可視化。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-H2</td><td>Current Status Bar と polling API で、実行中の actor/action、elapsed time、recent steps を表示。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-H3</td><td>完了後の Current Status Bar を Done/Failed の要約表示にし、詳細 trace は別パネルへ分離。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>9-H4</td><td>Chat UI/API contract を固定し、request validation / preflight / agent failure を区別して表示。</td><td class="status">基本実装済み</td></tr>
           </tbody>
         </table>
       </section>
@@ -866,6 +867,16 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           主要な used model/tool だけを表示します。<code>not_used</code> の model/tool や
           validator/privacy/UI renderer などの細かい step は既定では出さず、詳細 timeline 側で確認します。
         </p>
+        <p>
+          9-H4 では chat UI/API の response contract を固定しました。
+          <code>/api/chat/query</code> と polling run API は、成功時も安全なエラー時も
+          <code>mode</code>、<code>answer_state</code>、<code>failure_stage</code>、
+          <code>current_status</code>、<code>trace_events</code>、<code>trace_summary</code>、
+          privacy flags、candidate dates、evidence、model/tool summary を返します。
+          request validation や preflight で agent 実行前に止まった場合は、Agent unknown ではなく
+          「リクエスト形式の問題」や「モデル/DB設定の確認」の失敗として表示します。
+          UI は必須 field を確認し、不足があれば <code>Invalid API response</code> として明示します。
+        </p>
       </section>
 
       <section id="limitations">
@@ -883,6 +894,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
       <section id="history">
         <h2>更新履歴</h2>
         <ul>
+          <li>2026-05-26: Chat UI/API contract を固定し、実行前 validation / preflight failure と agent failure を区別。</li>
           <li>2026-05-26: 完了後の Current Status Bar を concise summary にし、未使用 model/tool と低レベル step を既定非表示化。</li>
           <li>2026-05-26: Current Status Bar と polling run API を追加し、実行中の actor/action と compact timeline を表示。</li>
           <li>2026-05-26: Agent Runtime Trace を追加し、DeepSeek/tools/specialist model/cached artifact/fallback を UI で安全に可視化。</li>

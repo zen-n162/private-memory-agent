@@ -787,6 +787,24 @@ timeline is still available after completion, but it is grouped and collapsed
 by stage. This is not chain-of-thought streaming; it remains a privacy-safe
 metadata view.
 
+Phase 9-H4 adds an explicit UI/API contract for the chat console. Normal
+results and safe error results include stable fields such as `ok`, `run_id`,
+`mode`, `answer_state`, `answer_succeeded`, `failure_stage`,
+`failure_actor`, `current_status`, `trace_events`, `trace_summary`,
+`privacy`, `candidate_dates`, `evidence`, and model/tool summaries. Failures
+before agent execution are labeled separately:
+
+- `request_validation`: the request shape or option value was invalid.
+- `preflight`: local DB/model configuration or endpoint checks failed.
+- `answer_generation`: retrieval may have succeeded but answer synthesis
+  failed.
+
+The UI checks this contract before rendering. If the API shape is incomplete,
+it shows `Invalid API response: missing field ...` rather than rendering
+`mode=undefined` or `n/a` for all trace fields. Browser Network responses are
+safe to inspect for metadata, but they still should not be pasted publicly if
+answer text is visible.
+
 `GET /api/system/status` returns DB/index counts and configured endpoint
 metadata without model prompts. `POST /api/chat/query` uses the existing E2E
 retrieval/answer path directly rather than shelling out to the CLI.

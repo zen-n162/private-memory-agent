@@ -7,6 +7,7 @@ from threading import Lock, Thread
 from time import perf_counter
 from typing import Any
 
+from private_memory_agent.api.contract import build_chat_error_payload
 from private_memory_agent.api.console import ChatConsoleOptions, run_chat_console_query
 from private_memory_agent.tracing import (
     AgentTraceRecorder,
@@ -30,6 +31,8 @@ class ChatRunRecord:
     result: dict[str, Any] | None = None
     error_class: str | None = None
     safe_error_message: str | None = None
+    failure_stage: str | None = None
+    failure_actor: str | None = None
 
 
 class ChatRunRegistry:
@@ -72,10 +75,13 @@ class ChatRunRegistry:
             elapsed_ms=elapsed,
             warnings=tuple(warnings),
         )
+        payload["mode"] = record.options.mode
         events = record.recorder.to_list()
         if record.status == "succeeded" and record.result is not None:
             payload["completion_summary"] = _completion_summary(record.result, events=events)
             payload["failure_summary"] = None
+            payload["failure_stage"] = None
+            payload["failure_actor"] = None
         elif record.status == "failed":
             payload["completion_summary"] = None
             payload["failure_summary"] = _failure_summary(
@@ -83,9 +89,13 @@ class ChatRunRegistry:
                 events=events,
                 fallback_message=record.safe_error_message,
             )
+            payload["failure_stage"] = payload["failure_summary"]["failed_stage"]
+            payload["failure_actor"] = payload["failure_summary"]["failed_actor"]
         else:
             payload["completion_summary"] = None
             payload["failure_summary"] = None
+            payload["failure_stage"] = None
+            payload["failure_actor"] = None
         return payload
 
     def events(self, run_id: str) -> dict[str, Any]:
@@ -104,14 +114,26 @@ class ChatRunRegistry:
         record = self._get(run_id)
         if record.result is not None:
             return record.result
-        return {
-            "ok": False,
-            "run_id": record.run_id,
-            "status": record.status,
-            "current_status": self.status(run_id),
-            "error_class": record.error_class,
-            "safe_error_message": record.safe_error_message,
-        }
+        status_payload = self.status(run_id)
+        failure = status_payload.get("failure_summary") or {}
+        return build_chat_error_payload(
+            mode=record.options.mode,
+            run_id=record.run_id,
+            failure_stage=failure.get("failed_stage") or record.failure_stage or "unknown",
+            failure_actor=failure.get("failed_actor") or record.failure_actor or "ChatRunRegistry",
+            failed_action=failure.get("failed_action") or "execute_chat_run",
+            error_class=failure.get("error_class") or record.error_class or "ChatRunNotReady",
+            error_message=failure.get("safe_error_message")
+            or record.safe_error_message
+            or "chat run is not complete",
+            trace_events=record.recorder.to_list(),
+            current_status=status_payload,
+            show_answer=record.options.show_answer,
+            show_snippets=record.options.show_snippets,
+            show_photo_thumbnails=record.options.show_photo_thumbnails,
+            show_full_text=record.options.show_full_text,
+            show_raw_model_output=record.options.show_raw_model_output,
+        )
 
     def _execute(self, run_id: str) -> None:
         record = self._get(run_id)
@@ -138,6 +160,8 @@ class ChatRunRegistry:
                 record.status = "failed"
                 record.error_class = exc.__class__.__name__
                 record.safe_error_message = safe_message
+                record.failure_stage = "unknown"
+                record.failure_actor = "ChatRunRegistry"
                 record.finished_at_perf = perf_counter()
 
     def _get(self, run_id: str) -> ChatRunRecord:
@@ -208,8 +232,8 @@ def _failure_summary(
     )
     return {
         "summary_status": "failed",
-        "failed_stage": failed.get("stage") or "unknown",
-        "failed_actor": failed.get("actor_name") or "unknown",
+        "failed_stage": record.failure_stage or failed.get("stage") or "unknown",
+        "failed_actor": record.failure_actor or failed.get("actor_name") or "ChatRunRegistry",
         "failed_action": failed.get("action") or "unknown",
         "error_class": failed.get("error_class") or record.error_class,
         "safe_error_message": safe_message,

@@ -12,6 +12,7 @@ SemanticModel = Literal["none", "hash", "fake"]
 LeaderClient = Literal["fake", "openai-compatible"]
 EntityType = Literal["person", "place", "organization", "topic"]
 ChatConsoleMode = Literal["retrieval-only", "fake-model", "real-model"]
+ChatConsoleResponseMode = Literal["retrieval-only", "fake-model", "real-model", "unknown"]
 ChatConsoleSemanticModel = Literal[
     "none",
     "hash",
@@ -95,13 +96,24 @@ class ChatQueryRequest(APIModel):
 
 class ChatQueryResponse(APIModel):
     ok: bool
-    mode: ChatConsoleMode
+    request_id: str | None = None
+    run_id: str | None = None
+    mode: ChatConsoleResponseMode
+    answer_state: str | None = None
+    answer_succeeded: bool | None = None
+    error_class: str | None = None
+    error_message: str | None = None
+    failure_stage: str | None = None
+    failure_actor: str | None = None
+    current_status: dict[str, Any] | None = None
     answer: dict[str, Any]
     evidence: list[dict[str, Any]]
     evidence_display: dict[str, Any] | None = None
     temporal_event: dict[str, Any] | None = None
+    candidate_dates: list[dict[str, Any]] = Field(default_factory=list)
     trace: dict[str, Any]
     trace_events: list[dict[str, Any]] = Field(default_factory=list)
+    trace_summary: dict[str, Any] = Field(default_factory=dict)
     model_usage_summary: dict[str, Any] = Field(default_factory=dict)
     tool_usage_summary: dict[str, Any] = Field(default_factory=dict)
     fallback_summary: dict[str, Any] = Field(default_factory=dict)
@@ -111,6 +123,7 @@ class ChatQueryResponse(APIModel):
 
 class ChatRunStartResponse(APIModel):
     run_id: str
+    mode: ChatConsoleResponseMode | None = None
     status: str
     current_step: dict[str, Any] | None = None
     recent_steps: list[dict[str, Any]] = Field(default_factory=list)
@@ -122,6 +135,8 @@ class ChatRunStartResponse(APIModel):
     fallback_summary: dict[str, Any] = Field(default_factory=dict)
     completion_summary: dict[str, Any] | None = None
     failure_summary: dict[str, Any] | None = None
+    failure_stage: str | None = None
+    failure_actor: str | None = None
 
 
 class ChatRunStatusResponse(ChatRunStartResponse):

@@ -138,6 +138,13 @@ This document outlines the development roadmap for private-memory-agent.
   used sources, warning count, and major used models/tools. Unused models/tools
   and low-level validator/privacy/UI renderer steps move into optional details
   or the grouped Runtime Timeline.
+- Phase 9-H4 stabilizes the chat UI/API contract:
+  `/api/chat/query` and the polling run endpoints now expose a complete
+  structured payload for success and safe error cases, including `mode`,
+  answer state, failure stage/actor, trace summary, privacy flags, candidate
+  dates, evidence, and model/tool summaries. Request validation and preflight
+  failures are shown as request/config problems instead of ambiguous agent
+  failures, and the UI reports missing API fields explicitly.
 
 ## 実データE2E smokeの実行手順
 

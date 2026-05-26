@@ -17,6 +17,7 @@ from private_memory_agent.agent import (
     RetrievalPlan,
 )
 from private_memory_agent.agent.retrieval_planner import plan_metadata_for_error
+from private_memory_agent.api.contract import ensure_chat_response_contract
 from private_memory_agent.api.evidence_view import (
     EvidenceDisplayOptions,
     build_evidence_display_payload,
@@ -330,7 +331,11 @@ def _finalize_console_payload(
         trace["model_usage_summary"] = payload["model_usage_summary"]
         trace["tool_usage_summary"] = payload["tool_usage_summary"]
         trace["fallback_summary"] = payload["fallback_summary"]
-    return payload
+    return ensure_chat_response_contract(
+        payload,
+        run_id=trace_recorder.run_id,
+        mode=payload.get("mode"),
+    )
 
 
 def _validate_options(options: ChatConsoleOptions) -> None:

@@ -138,6 +138,48 @@ def test_chat_query_endpoint_defaults_to_visible_answer(temp_config_factory, tmp
 
 
 @requires_working_testclient
+def test_chat_query_invalid_mode_returns_structured_validation_error(
+    temp_config_factory,
+    tmp_path,
+):
+    app = create_app(db_path=tmp_path / "metadata.sqlite3", config_dir=temp_config_factory())
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/chat/query",
+        json={"question": "研究", "mode": "unsupported-mode"},
+    )
+
+    payload = response.json()
+    assert response.status_code == 400
+    assert payload["ok"] is False
+    assert payload["mode"] == "unknown"
+    assert payload["failure_stage"] == "request_validation"
+    assert payload["error_class"] == "InvalidRequest"
+    assert payload["answer_state"] == "not_generated"
+    assert payload["trace_events"] == []
+    assert payload["privacy"]["local_only"] is True
+
+
+@requires_working_testclient
+def test_chat_query_missing_question_returns_structured_validation_error(
+    temp_config_factory,
+    tmp_path,
+):
+    app = create_app(db_path=tmp_path / "metadata.sqlite3", config_dir=temp_config_factory())
+    client = TestClient(app)
+
+    response = client.post("/api/chat/query/start", json={"mode": "fake-model"})
+
+    payload = response.json()
+    assert response.status_code == 400
+    assert payload["ok"] is False
+    assert payload["failure_stage"] == "request_validation"
+    assert payload["current_status"]["failure_summary"]["failed_stage"] == "request_validation"
+    assert payload["privacy"]["raw_model_output_hidden"] is True
+
+
+@requires_working_testclient
 def test_system_status_endpoint_returns_count_only(temp_config_factory, tmp_path):
     db_path = tmp_path / "metadata.sqlite3"
     initialize_database(db_path).close()

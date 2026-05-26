@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from private_memory_agent import __version__
 from private_memory_agent.agent import (
@@ -42,6 +43,7 @@ from private_memory_agent.api.console import (
     build_system_status,
     run_chat_console_query,
 )
+from private_memory_agent.api.contract import build_chat_error_payload
 from private_memory_agent.api.evidence_view import EvidenceThumbnailError, create_media_thumbnail
 from private_memory_agent.api.runs import ChatRunRegistry
 from private_memory_agent.api.ui import agent_console_html
@@ -73,6 +75,48 @@ def create_app(
     app.state.config_dir = None if config_dir is None else Path(config_dir).expanduser()
     app.state.paths_config = None if paths_config is None else Path(paths_config).expanduser()
     app.state.chat_runs = ChatRunRegistry()
+
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_error_handler(
+        request: Request,
+        exc: RequestValidationError,
+    ) -> JSONResponse:
+        if _is_chat_api_path(request):
+            return JSONResponse(
+                status_code=400,
+                content=build_chat_error_payload(
+                    mode="unknown",
+                    failure_stage="request_validation",
+                    failure_actor="ChatAPI",
+                    failed_action="validate_chat_request",
+                    error_class="InvalidRequest",
+                    error_message="invalid chat request; check required fields and allowed values",
+                ),
+            )
+        return JSONResponse(status_code=422, content={"detail": exc.errors()})
+
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+        if _is_chat_api_path(request):
+            stage = "request_validation" if exc.status_code == 404 else "preflight"
+            message = exc.detail if isinstance(exc.detail, str) else "request could not be completed"
+            return JSONResponse(
+                status_code=exc.status_code,
+                content=build_chat_error_payload(
+                    mode="unknown",
+                    failure_stage=stage,
+                    failure_actor="ChatAPI",
+                    failed_action="handle_chat_request",
+                    error_class="InvalidRequest" if exc.status_code == 404 else "ChatAPIError",
+                    error_message=_safe_error(message),
+                ),
+                headers=exc.headers,
+            )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=exc.headers,
+        )
 
     @app.get("/", include_in_schema=False)
     def root() -> RedirectResponse:
@@ -115,18 +159,48 @@ def create_app(
         return result.to_dict()
 
     @app.post("/api/chat/query", response_model=ChatQueryResponse)
-    def chat_query(payload: ChatQueryRequest, request: Request) -> dict[str, Any]:
+    def chat_query(payload: ChatQueryRequest, request: Request) -> dict[str, Any] | JSONResponse:
         try:
             return run_chat_console_query(_chat_options_from_payload(payload, request))
         except (RuntimeError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail=_safe_error(str(exc))) from exc
+            return JSONResponse(
+                status_code=400,
+                content=build_chat_error_payload(
+                    mode=payload.mode,
+                    failure_stage="preflight",
+                    failure_actor="ChatAPI",
+                    failed_action="run_chat_console_query",
+                    error_class=exc.__class__.__name__,
+                    error_message=_safe_error(str(exc)),
+                    show_answer=payload.show_answer,
+                    show_snippets=payload.show_snippets,
+                    show_photo_thumbnails=payload.show_photo_thumbnails,
+                    show_full_text=payload.show_full_text,
+                    show_raw_model_output=payload.show_raw_model_output,
+                ),
+            )
 
     @app.post("/api/chat/query/start", response_model=ChatRunStartResponse)
-    def chat_query_start(payload: ChatQueryRequest, request: Request) -> dict[str, Any]:
+    def chat_query_start(payload: ChatQueryRequest, request: Request) -> dict[str, Any] | JSONResponse:
         try:
             return request.app.state.chat_runs.start(_chat_options_from_payload(payload, request))
         except (RuntimeError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail=_safe_error(str(exc))) from exc
+            return JSONResponse(
+                status_code=400,
+                content=build_chat_error_payload(
+                    mode=payload.mode,
+                    failure_stage="preflight",
+                    failure_actor="ChatAPI",
+                    failed_action="start_chat_run",
+                    error_class=exc.__class__.__name__,
+                    error_message=_safe_error(str(exc)),
+                    show_answer=payload.show_answer,
+                    show_snippets=payload.show_snippets,
+                    show_photo_thumbnails=payload.show_photo_thumbnails,
+                    show_full_text=payload.show_full_text,
+                    show_raw_model_output=payload.show_raw_model_output,
+                ),
+            )
 
     @app.get("/api/chat/runs/{run_id}/status", response_model=ChatRunStatusResponse)
     def chat_run_status(run_id: str, request: Request) -> dict[str, Any]:
@@ -265,6 +339,10 @@ def _request_db_path(request: Request, db_path: Path | None) -> Path:
     if db_path is not None:
         return Path(db_path).expanduser()
     return Path(request.app.state.db_path).expanduser()
+
+
+def _is_chat_api_path(request: Request) -> bool:
+    return str(request.url.path).startswith("/api/chat/")
 
 
 def _chat_options_from_payload(payload: ChatQueryRequest, request: Request) -> ChatConsoleOptions:
