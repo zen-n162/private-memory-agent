@@ -120,6 +120,8 @@ class ChatRunStartResponse(APIModel):
     model_usage_summary: dict[str, Any] = Field(default_factory=dict)
     tool_usage_summary: dict[str, Any] = Field(default_factory=dict)
     fallback_summary: dict[str, Any] = Field(default_factory=dict)
+    completion_summary: dict[str, Any] | None = None
+    failure_summary: dict[str, Any] | None = None
 
 
 class ChatRunStatusResponse(ChatRunStartResponse):

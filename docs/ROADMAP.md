@@ -132,6 +132,12 @@ This document outlines the development roadmap for private-memory-agent.
   the current actor/action, elapsed time, recent completed steps, and compact
   model/tool chips while a local query runs. The detailed runtime timeline is
   grouped by stage and collapsed by default.
+- Phase 9-H3 makes the Current Status Bar quieter after completion:
+  during execution it still shows the live actor/action, but after success it
+  collapses to Done, elapsed time, answer state, candidate/evidence counts,
+  used sources, warning count, and major used models/tools. Unused models/tools
+  and low-level validator/privacy/UI renderer steps move into optional details
+  or the grouped Runtime Timeline.
 
 ## 実データE2E smokeの実行手順
 

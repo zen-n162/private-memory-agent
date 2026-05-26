@@ -6,7 +6,7 @@ from private_memory_agent.api.console import (
     build_system_status,
     run_chat_console_query,
 )
-from private_memory_agent.api.runs import ChatRunRegistry
+from private_memory_agent.api.runs import ChatRunRecord, ChatRunRegistry
 from private_memory_agent.api.schemas import ChatQueryRequest
 from private_memory_agent.api.ui import agent_console_html
 from private_memory_agent.retrieval import index_text
@@ -54,6 +54,10 @@ def test_agent_console_html_is_self_contained_and_points_to_chat_api():
     assert "Runtime Timeline" in html
     assert "Model / Tool Summary" in html
     assert 'id="current-status-bar"' in html
+    assert "renderCompletedStatus" in html
+    assert "renderFailedStatus" in html
+    assert "詳細ログを表示" in html
+    assert "未使用のTool/Modelを表示" in html
     assert "/api/chat/query/start" in html
     assert "/api/chat/runs/${runId}/status" in html
     assert "groupTraceEvents" in html
@@ -322,11 +326,52 @@ def test_chat_run_registry_returns_status_events_and_result(
     serialized = json.dumps({"status": final_status, "events": events, "result": result}, ensure_ascii=False)
 
     assert final_status["status"] == "succeeded"
+    assert final_status["completion_summary"]["summary_status"] == "done"
+    assert final_status["completion_summary"]["answer_succeeded"] is True
+    assert final_status["completion_summary"]["evidence_reference_count"] >= 1
+    assert final_status["completion_summary"]["major_models_used"]
+    assert all(
+        "not used" not in item
+        for item in final_status["completion_summary"]["major_models_used"]
+    )
     assert final_status["current_step"]
     assert events["trace_events"]
     assert result["answer"]["answer_succeeded"] is True
     assert "FakeLeaderModel" in events["model_usage_summary"]
     assert "registry private evidence" not in serialized
+
+
+def test_chat_run_registry_failed_status_has_safe_failure_summary(tmp_path):
+    registry = ChatRunRegistry()
+    recorder = AgentTraceRecorder(run_id="failed-run")
+    recorder.event(
+        actor_type="leader_model",
+        actor_name="DeepSeek Leader",
+        stage="answer_synthesis",
+        action="generate_structured_answer",
+        status="failed",
+        error_class="ModelRuntimeError",
+        safe_error_message="model endpoint request timed out",
+    )
+    record = ChatRunRecord(
+        run_id="failed-run",
+        options=ChatConsoleOptions(question="秘密の質問", db_path=tmp_path / "none.sqlite3"),
+        recorder=recorder,
+        status="failed",
+        error_class="ModelRuntimeError",
+        safe_error_message="model endpoint request timed out",
+    )
+    registry._runs["failed-run"] = record
+
+    status = registry.status("failed-run")
+    serialized = json.dumps(status, ensure_ascii=False)
+
+    assert status["status"] == "failed"
+    assert status["failure_summary"]["failed_actor"] == "DeepSeek Leader"
+    assert status["failure_summary"]["error_class"] == "ModelRuntimeError"
+    assert "timed out" in status["failure_summary"]["safe_error_message"]
+    assert "retrieval-only" in status["failure_summary"]["suggested_next_action"]
+    assert "秘密の質問" not in serialized
 
 
 def test_chat_console_system_status_is_privacy_safe(temp_config_factory, tmp_path):

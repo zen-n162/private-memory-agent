@@ -1149,6 +1149,17 @@ def agent_console_html() -> str:
     }
     function renderCurrentStatus(statusPayload) {
       clear(currentStatusBar);
+      if (statusPayload.status === "succeeded" && statusPayload.completion_summary) {
+        renderCompletedStatus(statusPayload);
+        return;
+      }
+      if (statusPayload.status === "failed") {
+        renderFailedStatus(statusPayload);
+        return;
+      }
+      renderLiveStatus(statusPayload);
+    }
+    function renderLiveStatus(statusPayload) {
       const head = document.createElement("div");
       head.className = "current-status-head";
       head.appendChild(el("span", statusPayload.status || "idle", `status-badge ${statusPayload.status === "running" ? "succeeded" : statusPayload.status || "skipped"}`));
@@ -1179,6 +1190,72 @@ def agent_console_html() -> str:
         recent.appendChild(el("div", `${item.status}: ${item.actor_name || "Agent"} - ${item.display_message || item.action || ""}`));
       });
       currentStatusBar.appendChild(recent);
+    }
+    function renderCompletedStatus(statusPayload) {
+      const summary = statusPayload.completion_summary || {};
+      const head = document.createElement("div");
+      head.className = "current-status-head";
+      head.appendChild(el("span", "Done", "status-badge succeeded"));
+      head.appendChild(el("span", formatElapsed(statusPayload.elapsed_ms || 0), "muted-small"));
+      head.appendChild(el("span", `warnings=${summary.warning_count || 0}`, "muted-small"));
+      currentStatusBar.appendChild(head);
+      currentStatusBar.appendChild(el("div", summary.display_message || "実行が完了しました。", "current-status-message"));
+      const metrics = document.createElement("div");
+      metrics.className = "tag-row";
+      metrics.appendChild(pill(`answer_succeeded=${Boolean(summary.answer_succeeded)}`, summary.answer_succeeded ? "strong" : "warn"));
+      metrics.appendChild(pill(`answer_state=${summary.answer_state || "unknown"}`));
+      metrics.appendChild(pill(`候補日 ${summary.candidate_date_count || 0}件`));
+      metrics.appendChild(pill(`Evidence ${summary.evidence_reference_count || 0}件`));
+      metrics.appendChild(pill(`sources=${(summary.used_sources || []).join(", ") || "none"}`));
+      currentStatusBar.appendChild(metrics);
+      appendCompactUsageSection("Models", summary.major_models_used || []);
+      appendCompactUsageSection("Tools", summary.major_tools_used || []);
+      if ((summary.unused_models_tools || []).length) {
+        const unused = document.createElement("details");
+        unused.className = "trace-row";
+        const unusedSummary = document.createElement("summary");
+        unusedSummary.appendChild(el("div", "未使用のTool/Modelを表示", "muted-small"));
+        unused.appendChild(unusedSummary);
+        unused.appendChild(renderList(summary.unused_models_tools));
+        currentStatusBar.appendChild(unused);
+      }
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "secondary-button";
+      button.textContent = "詳細ログを表示";
+      button.addEventListener("click", () => tracePanel.scrollIntoView({behavior: "smooth", block: "start"}));
+      currentStatusBar.appendChild(button);
+    }
+    function renderFailedStatus(statusPayload) {
+      const failure = statusPayload.failure_summary || {};
+      const head = document.createElement("div");
+      head.className = "current-status-head";
+      head.appendChild(el("span", "Failed", "status-badge failed"));
+      head.appendChild(el("span", formatElapsed(statusPayload.elapsed_ms || 0), "muted-small"));
+      currentStatusBar.appendChild(head);
+      currentStatusBar.appendChild(el("div", `${failure.failed_actor || "Agent"} の ${failure.failed_stage || "unknown"} で失敗しました。`, "current-status-message error"));
+      const meta = document.createElement("div");
+      meta.className = "tag-row";
+      if (failure.error_class) meta.appendChild(pill(failure.error_class, "bad"));
+      if (failure.failed_action) meta.appendChild(pill(`action=${failure.failed_action}`));
+      if (failure.safe_error_message) meta.appendChild(pill(failure.safe_error_message, "warn"));
+      currentStatusBar.appendChild(meta);
+      currentStatusBar.appendChild(el("div", failure.suggested_next_action || "retrieval-only で候補を確認するか timeout を増やしてください。", "status-line"));
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "secondary-button";
+      button.textContent = "詳細ログを表示";
+      button.addEventListener("click", () => tracePanel.scrollIntoView({behavior: "smooth", block: "start"}));
+      currentStatusBar.appendChild(button);
+    }
+    function appendCompactUsageSection(label, items) {
+      const values = (items || []).filter(Boolean);
+      if (!values.length) return;
+      currentStatusBar.appendChild(el("div", label, "muted-small"));
+      const row = document.createElement("div");
+      row.className = "tag-row";
+      values.slice(0, 6).forEach((item) => row.appendChild(pill(item, "strong")));
+      currentStatusBar.appendChild(row);
     }
     function appendUsageChips(target, summary) {
       Object.entries(summary || {}).slice(0, 8).forEach(([name, value]) => {
