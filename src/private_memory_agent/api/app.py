@@ -393,6 +393,8 @@ def _chat_options_from_payload(payload: ChatQueryRequest, request: Request) -> C
         limit=payload.limit,
         temporal_top_candidate_dates=payload.temporal_top_candidate_dates,
         temporal_top_evidence_per_date=payload.temporal_top_evidence_per_date,
+        verify_with_vision=payload.verify_with_vision,
+        max_live_vision_checks=payload.max_live_vision_checks,
         timeout_seconds=payload.timeout_seconds,
         max_tokens=payload.max_tokens,
         model_key=payload.model_key,

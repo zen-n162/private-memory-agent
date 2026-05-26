@@ -559,6 +559,7 @@
             <tr><td>9-H9c</td><td>async run に result_ready/finalizing を追加し、succeeded は result 保存後だけ返す。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-I</td><td>日付範囲なしの「いつ」質問を all-available-memory scope で chunk し、event subtype と dated evidence から候補日を抽出。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-I2</td><td>open-ended temporal query に top-level diagnostics、event signal 表示、recent-first fast pass、performance timing を追加。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>9-J</td><td>写真を探す質問を visual evidence search として扱い、cached Qwen3-VL 注釈から photo gallery answer を返す。</td><td class="status">基本実装済み</td></tr>
           </tbody>
         </table>
       </section>
@@ -871,6 +872,18 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           UI では「期間を指定すると精度と速度が上がる」ことを warning として示します。
         </p>
         <p>
+          9-J では <code>ラーメンが写っている写真はどれ？</code> のような非 temporal の写真探索質問を、
+          <code>visual_evidence_search</code> として扱います。DeepSeek Leader が利用可能なら
+          <code>VisualEvidencePlan</code> を作り、target description、target type、target entities、
+          visual/textual signal、acceptance/rejection criteria、<code>photo_gallery</code> output を決めます。
+          Leader planning が失敗した場合は deterministic fallback を使い、fallback として trace に残します。
+          検索はまず cached Qwen3-VL 風の写真注釈を読み、annotation text / object-scene description を
+          safe な LIKE search で探します。live Qwen3-VL verification は任意 control として残し、
+          既定では実行しません。UI は Matching Photos panel を表示し、thumbnail、evidence ID、
+          relevance、matched signal、cached/live vision usage を見せます。candidate date は不要です。
+          filename、full path、GPS、EXIF、OCR 全文、raw caption、raw model output は既定では表示しません。
+        </p>
+        <p>
           9-H では local chat UI に <strong>Agent Runtime Trace</strong> を追加しました。
           DeepSeek Leader が live call されたか、決定的 fallback が使われたか、日付 parser、
           photo date search、LINE/ノート検索、cached Qwen3-VL photo annotation、semantic retrieval、
@@ -975,6 +988,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
       <section id="history">
         <h2>更新履歴</h2>
         <ul>
+          <li>2026-05-26: visual evidence search を追加し、写真探索質問を Matching Photos gallery と cached Qwen3-VL annotation 診断で表示。</li>
           <li>2026-05-26: open-ended temporal query の診断を top-level に出し、event subtype/signal、recent-first fast pass、performance timing を追加。</li>
           <li>2026-05-26: 期間指定なしの temporal event query を all-available-memory scope で扱い、ramen などの event subtype と dated evidence から候補日を抽出。</li>
           <li>2026-05-26: async run に result_ready/finalizing を追加し、succeeded と result 保存を atomic に接続。</li>

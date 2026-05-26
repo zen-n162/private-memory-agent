@@ -15,8 +15,8 @@ from private_memory_agent.tracing import (
 
 CHAT_CONSOLE_MODES = {"retrieval-only", "fake-model", "real-model"}
 CHAT_RESPONSE_MODES = {*CHAT_CONSOLE_MODES, "unknown"}
-CHAT_API_RESPONSE_SCHEMA_VERSION = "2026-05-26.9i2"
-CHAT_UI_RESPONSE_SCHEMA_VERSION = "2026-05-26.9i2"
+CHAT_API_RESPONSE_SCHEMA_VERSION = "2026-05-26.9j"
+CHAT_UI_RESPONSE_SCHEMA_VERSION = "2026-05-26.9j"
 REQUIRED_CHAT_RESPONSE_KEYS = (
     "ok",
     "mode",
@@ -155,6 +155,9 @@ def build_chat_error_payload(
         "evidence": [],
         "evidence_display": {"candidate_dates": [], "evidence_reference_groups": {}},
         "temporal_event": None,
+        "visual_query": None,
+        "matching_photos": [],
+        "matching_photo_count": 0,
         "candidate_dates": [],
         "trace": trace,
         "trace_events": safe_trace_events,
@@ -204,6 +207,8 @@ def ensure_chat_response_contract(
     payload["answer_succeeded"] = bool(answer.get("answer_succeeded"))
     payload["candidate_dates"] = _candidate_dates(payload)
     payload["candidate_date_count"] = len(payload["candidate_dates"])
+    payload["matching_photos"] = _matching_photos(payload)
+    payload["matching_photo_count"] = len(payload["matching_photos"])
     payload["evidence_count"] = len(payload.get("evidence") or [])
     payload["evidence_reference_count"] = len(answer.get("evidence_references") or [])
     payload["evidence_builder_succeeded"] = _evidence_builder_succeeded(payload)
@@ -280,6 +285,7 @@ def _completion_summary(payload: dict[str, Any], *, timeline_available: bool) ->
         "answer_succeeded": bool(payload.get("answer_succeeded")),
         "answer_state": payload.get("answer_state") or answer.get("answer_state") or "unknown",
         "candidate_date_count": int(payload.get("candidate_date_count") or 0),
+        "matching_photo_count": int(payload.get("matching_photo_count") or 0),
         "evidence_reference_count": int(payload.get("evidence_reference_count") or 0),
         "evidence_count": int(payload.get("evidence_count") or 0),
         "used_sources": list(answer.get("used_sources") or []),
@@ -390,6 +396,12 @@ def _candidate_dates(payload: dict[str, Any]) -> list[dict[str, Any]]:
     temporal = payload.get("temporal_event") if isinstance(payload.get("temporal_event"), dict) else {}
     candidates = display.get("candidate_dates") or temporal.get("candidate_dates") or []
     return list(candidates) if isinstance(candidates, list) else []
+
+
+def _matching_photos(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    display = payload.get("evidence_display") if isinstance(payload.get("evidence_display"), dict) else {}
+    photos = payload.get("matching_photos") or display.get("matching_photos") or []
+    return list(photos) if isinstance(photos, list) else []
 
 
 def _evidence_builder_succeeded(payload: dict[str, Any]) -> bool:

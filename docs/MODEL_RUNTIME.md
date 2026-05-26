@@ -830,6 +830,20 @@ undated evidence exists, the API returns a structured unknown with
 `undated_evidence_count`; it should not call DeepSeek with an invalid empty
 candidate payload or surface `ModelRuntimeError` for that condition.
 
+Phase 9-J adds visual evidence search for photo-gallery questions such as
+`ラーメンが写っている写真はどれ？`. The local Leader can create a
+`VisualEvidencePlan` with target entities, visual signals, acceptance criteria,
+and `output_type=photo_gallery`; deterministic fallback remains available and
+is surfaced in trace/fallback metadata. The default visual path reads cached
+Qwen3-VL-style photo annotations and does not call Qwen3-VL live. Optional live
+verification controls are represented in the API/UI, but live checks are capped
+and disabled by default. Responses distinguish cached annotation use from live
+vision calls through `qwen_vl_cached_annotations_used_count`,
+`qwen_vl_live_call_count`, trace events, and model usage summaries. Matching
+photo thumbnails are served only through indexed local media IDs and do not
+expose full paths, GPS, EXIF, OCR, raw captions, raw prompts, or raw model
+output.
+
 Phase 9-H8 distinguishes final failures from recovered intermediate failures.
 If a Leader planning call fails but deterministic fallback succeeds and the
 final answer succeeds, the chat response clears `failure_stage`, sets

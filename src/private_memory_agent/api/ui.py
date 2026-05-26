@@ -479,6 +479,7 @@ def agent_console_html() -> str:
           <label class="inline"><input id="show-photo-thumbnails" type="checkbox" checked> show_photo_thumbnails</label>
           <label class="inline"><input id="show-full-text" type="checkbox"> show_full_text</label>
           <label class="inline"><input id="show-raw-model-output" type="checkbox"> show_raw_model_output</label>
+          <label class="inline"><input id="verify-with-vision" type="checkbox"> verify_with_vision</label>
         </fieldset>
 
         <div class="grid-2">
@@ -516,6 +517,10 @@ def agent_console_html() -> str:
             Max tokens
             <input id="max-tokens" type="number" min="1" max="4096" value="256">
           </label>
+          <label>
+            Live vision checks
+            <input id="max-live-vision-checks" type="number" min="0" max="20" value="0">
+          </label>
         </div>
 
         <button id="run" type="submit">Run</button>
@@ -541,6 +546,11 @@ def agent_console_html() -> str:
         <section>
           <h2>Privacy</h2>
           <div id="privacy-panel" class="stack"><div class="status-line">Answers are shown by default locally. Evidence snippets remain hidden.</div></div>
+        </section>
+
+        <section class="full">
+          <h2>Matching Photos</h2>
+          <div id="matching-photos-panel" class="stack"><div class="status-line">No matching photos yet.</div></div>
         </section>
 
         <section class="full">
@@ -581,6 +591,7 @@ def agent_console_html() -> str:
     const recentStepsNode = document.querySelector("#recent-steps");
     const runButton = document.querySelector("#run");
     const answerPanel = document.querySelector("#answer-panel");
+    const matchingPhotosPanel = document.querySelector("#matching-photos-panel");
     const datesPanel = document.querySelector("#candidate-dates-panel");
     const evidencePanel = document.querySelector("#evidence-panel");
     const tracePanel = document.querySelector("#trace-panel");
@@ -737,6 +748,7 @@ def agent_console_html() -> str:
         return;
       }
       renderAnswer(result);
+      renderMatchingPhotos(result);
       renderCandidateDates(result);
       renderEvidence(result);
       renderTrace(result);
@@ -821,6 +833,8 @@ def agent_console_html() -> str:
         answer_synthesis_succeeded: Boolean(payload.answer_synthesis_succeeded),
         evidence_reference_count: payload.evidence_reference_count ?? (answer.evidence_references || []).length,
         evidence_count: payload.evidence_count ?? (payload.evidence || []).length,
+        matching_photo_count: payload.matching_photo_count ?? (payload.matching_photos || []).length,
+        query_type: payload.query_type || "generic",
         candidate_date_count: payload.candidate_date_count ?? (display.candidate_dates || []).length,
         unknowns_count: (answer.unknowns || []).length,
         error_class: payload.answer_error_class || answer.error_class || "none"
@@ -848,6 +862,10 @@ def agent_console_html() -> str:
     }
     function renderCandidateDates(payload) {
       clear(datesPanel);
+      if (payload.query_type === "visual_evidence_search") {
+        datesPanel.appendChild(el("div", "Visual evidence search does not require candidate dates.", "status-line"));
+        return;
+      }
       const dates = payload.evidence_display?.candidate_dates || [];
       if (!dates.length) {
         datesPanel.appendChild(el("div", "No candidate dates returned.", "status-line"));
@@ -882,6 +900,42 @@ def agent_console_html() -> str:
         details.appendChild(body);
         datesPanel.appendChild(details);
       });
+    }
+    function renderMatchingPhotos(payload) {
+      clear(matchingPhotosPanel);
+      if (payload.query_type !== "visual_evidence_search") {
+        matchingPhotosPanel.appendChild(el("div", "Current query is not a visual photo-gallery search.", "status-line"));
+        return;
+      }
+      const display = payload.evidence_display || {};
+      const matching = payload.matching_photos || display.matching_photos || [];
+      const candidates = display.candidate_photos || [];
+      const rejected = display.rejected_photos || [];
+      const summary = document.createElement("div");
+      summary.className = "tag-row";
+      summary.appendChild(pill(`matching=${matching.length}`, matching.length ? "strong" : "warn"));
+      summary.appendChild(pill(`candidate=${candidates.length}`));
+      summary.appendChild(pill(`rejected=${rejected.length}`));
+      summary.appendChild(pill(`query_type=${payload.query_type}`));
+      matchingPhotosPanel.appendChild(summary);
+      if (!matching.length && !candidates.length && !rejected.length) {
+        matchingPhotosPanel.appendChild(el("div", "No photo candidates returned.", "status-line"));
+        return;
+      }
+      appendSourceEvidence(matchingPhotosPanel, "Matching Photos", matching, {thumbnailLimit: 12});
+      if (candidates.length) appendSourceEvidence(matchingPhotosPanel, "Candidate / Weak Photos", candidates, {thumbnailLimit: 6});
+      if (rejected.length) {
+        const rejectedDetails = document.createElement("details");
+        rejectedDetails.className = "candidate-card";
+        const summaryNode = document.createElement("summary");
+        summaryNode.appendChild(el("div", `Rejected / Weak evidence (${rejected.length})`, "trace-title"));
+        rejectedDetails.appendChild(summaryNode);
+        const body = document.createElement("div");
+        body.className = "candidate-body";
+        appendSourceEvidence(body, "Rejected / Weak Photos", rejected, {thumbnailLimit: 6});
+        rejectedDetails.appendChild(body);
+        matchingPhotosPanel.appendChild(rejectedDetails);
+      }
     }
     function renderCandidateSourceTabs(target, item, index) {
       const tabs = [
@@ -1043,6 +1097,8 @@ def agent_console_html() -> str:
       tags.appendChild(pill(`used_by_answer=${Boolean(item.used_by_answer)}`));
       if (item.reason_label) tags.appendChild(pill(item.reason_label, "warn"));
       if (item.reason_category) tags.appendChild(pill(`reason_code=${item.reason_category}`));
+      if ((item.matched_visual_signals || []).length) tags.appendChild(pill(`signals=${item.matched_visual_signals.join(", ")}`));
+      if (item.verification_status) tags.appendChild(pill(`verification=${item.verification_status}`));
       return tags;
     }
     function openPreview(src, caption) {
@@ -1080,6 +1136,7 @@ def agent_console_html() -> str:
       });
       renderRuntimeTrace(payload);
       renderTemporalDiagnostics(trace.temporal_diagnostics || null);
+      renderVisualDiagnostics(trace.visual_diagnostics || (payload.query_type === "visual_evidence_search" ? payload.diagnostics : null));
     }
     function renderRuntimeTrace(payload) {
       const events = payload.trace_events || [];
@@ -1320,6 +1377,39 @@ def agent_console_html() -> str:
         tracePanel.appendChild(list);
       }
     }
+    function renderVisualDiagnostics(diagnostics) {
+      if (!diagnostics) return;
+      tracePanel.appendChild(el("h3", "Visual Evidence Diagnostics"));
+      renderKv(tracePanel, {
+        visual_query_detected: diagnostics.visual_query_detected,
+        visual_plan_created: diagnostics.visual_plan_created,
+        visual_plan_fallback_used: diagnostics.visual_plan_fallback_used,
+        target_description: diagnostics.target_description,
+        target_type: diagnostics.target_type,
+        target_entities: diagnostics.target_entities || [],
+        generated_by: diagnostics.generated_by || "n/a",
+        visual_signal_count: diagnostics.visual_signal_count,
+        textual_signal_count: diagnostics.textual_signal_count,
+        visual_signals: diagnostics.visual_signals || [],
+        textual_signals: diagnostics.textual_signals || [],
+        photo_candidates_before_filtering: diagnostics.photo_candidates_before_filtering,
+        photo_candidates_after_filtering: diagnostics.photo_candidates_after_filtering,
+        used_photo_count: diagnostics.used_photo_count,
+        candidate_photo_count: diagnostics.candidate_photo_count,
+        rejected_photo_count: diagnostics.rejected_photo_count,
+        matching_photo_count: diagnostics.matching_photo_count,
+        source_method_counts: diagnostics.source_method_counts || {},
+        semantic_requested: diagnostics.semantic_requested,
+        semantic_used: diagnostics.semantic_used,
+        semantic_candidate_count: diagnostics.semantic_candidate_count,
+        live_vision_verification_requested: diagnostics.live_vision_verification_requested,
+        live_vision_verification_used: diagnostics.live_vision_verification_used,
+        max_live_vision_checks: diagnostics.max_live_vision_checks,
+        qwen_vl_cached_annotations_used_count: diagnostics.qwen_vl_cached_annotations_used_count,
+        qwen_vl_live_call_count: diagnostics.qwen_vl_live_call_count,
+        performance_timing_by_stage: diagnostics.performance_timing_by_stage || {}
+      });
+    }
     function renderPrivacy(payload) {
       clear(privacyPanel);
       const privacy = payload.privacy || {};
@@ -1375,6 +1465,7 @@ def agent_console_html() -> str:
         answer_succeeded: Boolean(payload?.answer_succeeded),
         answer_state: payload?.answer_state || answer.answer_state || "unknown",
         candidate_date_count: payload?.candidate_date_count || 0,
+        matching_photo_count: payload?.matching_photo_count || 0,
         evidence_reference_count: payload?.evidence_reference_count || 0,
         evidence_count: payload?.evidence_count || 0,
         used_sources: answer.used_sources || [],
@@ -1434,6 +1525,7 @@ def agent_console_html() -> str:
       metrics.appendChild(pill(`answer_succeeded=${Boolean(summary.answer_succeeded)}`, summary.answer_succeeded ? "strong" : "warn"));
       metrics.appendChild(pill(`answer_state=${summary.answer_state || "unknown"}`));
       metrics.appendChild(pill(`候補日 ${summary.candidate_date_count || 0}件`));
+      if (summary.matching_photo_count !== undefined) metrics.appendChild(pill(`写真 ${summary.matching_photo_count || 0}件`));
       metrics.appendChild(pill(`Evidence ${summary.evidence_reference_count || 0}件`));
       metrics.appendChild(pill(`sources=${(summary.used_sources || []).join(", ") || "none"}`));
       currentStatusBar.appendChild(metrics);
@@ -1625,7 +1717,9 @@ def agent_console_html() -> str:
         show_raw_model_output: checked("#show-raw-model-output"),
         limit: Number(value("#limit")),
         timeout_seconds: timeoutValue > 0 ? timeoutValue : null,
-        max_tokens: Number(value("#max-tokens"))
+        max_tokens: Number(value("#max-tokens")),
+        verify_with_vision: checked("#verify-with-vision"),
+        max_live_vision_checks: Number(value("#max-live-vision-checks"))
       };
       try {
         safeConsoleState("start requested", {source: "start", mode: payload.mode, status: "queued"});

@@ -34,6 +34,11 @@ REASON_LABELS_JA: dict[str, str] = {
     "event_intent_visual_signal": "イベント意図に合う画像特徴があります",
     "temporal_event_specific_photo_match": "イベントに直接関係する写真候補です",
     "temporal_event_text_match": "イベントに関係するLINE/メモ候補です",
+    "visual_direct_match": "探している対象が写っている可能性が高い写真です",
+    "visual_signal_match": "画像注釈の一部が検索意図と一致しています",
+    "weak_visual_match": "画像注釈との一致が弱い候補です",
+    "no_visual_signal_match": "画像注釈が検索意図と一致しません",
+    "low_visual_document_or_screenshot_keyword": "画面・文書系の画像らしく視覚根拠として弱いです",
     "examined_candidate_not_used": "確認しましたが回答根拠には使っていません",
     "weak_or_rejected_temporal_candidate": "弱い候補として退けています",
     "generic_only_match": "一般的な語だけが一致しており根拠として弱いです",
@@ -367,6 +372,9 @@ def _base_detail(evidence_id: str, source: str, base: dict[str, Any]) -> dict[st
         "reason_label": reason_label_for_code(reason_category),
         "used_by_answer": used_by_answer,
         "occurred_at": base.get("occurred_at"),
+        "matched_visual_signals": list(base.get("matched_visual_signals") or []),
+        "source_methods": list(base.get("source_methods") or []),
+        "verification_status": base.get("verification_status"),
     }
 
 

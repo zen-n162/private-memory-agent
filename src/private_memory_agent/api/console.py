@@ -51,6 +51,7 @@ from private_memory_agent.tracing import (
     summarize_model_usage,
     summarize_tool_usage,
 )
+from private_memory_agent.visual import LeaderVisualEvidencePlanner, answer_visual_evidence_query
 
 ConsoleMode = Literal["retrieval-only", "fake-model", "real-model"]
 ConsoleSource = Literal["photos", "line", "notes"]
@@ -103,6 +104,8 @@ class ChatConsoleOptions:
     limit: int = 5
     temporal_top_candidate_dates: int = 10
     temporal_top_evidence_per_date: int = 5
+    verify_with_vision: bool = False
+    max_live_vision_checks: int = 0
     timeout_seconds: float | None = None
     max_tokens: int = DEFAULT_E2E_REAL_MODEL_MAX_TOKENS
     model_key: str = "leader"
@@ -145,6 +148,17 @@ def run_chat_console_query(
         action="detect_temporal_event_query",
         status="skipped",
         safe_output_summary="query did not match temporal event workflow",
+    )
+    visual_payload = _maybe_visual_console_payload(options, trace_recorder=trace_recorder)
+    if visual_payload is not None:
+        return _finalize_console_payload(visual_payload, trace_recorder)
+    trace_recorder.event(
+        actor_type="tool",
+        actor_name="VisualEvidenceDetector",
+        stage="visual_evidence_detection",
+        action="detect_visual_evidence_query",
+        status="skipped",
+        safe_output_summary="query did not match visual photo-gallery workflow",
     )
     config = load_config(config_dir=options.config_dir, paths_config=options.paths_config)
     trace_recorder.event(
@@ -341,6 +355,7 @@ def _finalize_console_payload(
         metadata={
             "evidence_count": len(payload.get("evidence") or []),
             "has_temporal_event": bool(payload.get("temporal_event")),
+            "query_type": payload.get("query_type"),
         },
     )
     trace_events = trace_recorder.to_list()
@@ -389,6 +404,8 @@ def _validate_options(options: ChatConsoleOptions) -> None:
         raise ValueError("temporal_top_candidate_dates must be between 1 and 50")
     if options.temporal_top_evidence_per_date <= 0 or options.temporal_top_evidence_per_date > 20:
         raise ValueError("temporal_top_evidence_per_date must be between 1 and 20")
+    if options.max_live_vision_checks < 0 or options.max_live_vision_checks > 20:
+        raise ValueError("max_live_vision_checks must be between 0 and 20")
 
 
 def _maybe_temporal_console_payload(
@@ -557,6 +574,188 @@ def _temporal_event_planner(
             safe_error_message="leader endpoint preflight failed; deterministic fallback will be used",
         )
         return None
+
+
+def _maybe_visual_console_payload(
+    options: ChatConsoleOptions,
+    *,
+    trace_recorder: AgentTraceRecorder,
+) -> dict[str, Any] | None:
+    if options.sources and "photos" not in options.sources:
+        return None
+    result = answer_visual_evidence_query(
+        options.question,
+        db_path=options.db_path,
+        visual_planner=_visual_evidence_planner(options, trace_recorder=trace_recorder),
+        trace_recorder=trace_recorder,
+        semantic_enabled=options.semantic,
+        max_photo_candidates=max(options.limit * 10, 30),
+        verify_with_vision=options.verify_with_vision,
+        max_live_vision_checks=options.max_live_vision_checks,
+    )
+    if result is None:
+        return None
+    privacy = _privacy_payload(options)
+    answer = result.answer.to_dict(show_answer=options.show_answer)
+    visual_query = result.plan.to_dict(show_plan=False)
+    evidence = [item.to_evidence_dict() for item in result.evidence]
+    display = build_evidence_display_payload(
+        options.db_path,
+        evidence=evidence,
+        answer_evidence_references=answer["evidence_references"],
+        options=_evidence_display_options(options),
+    )
+    used_ids = set(answer["evidence_references"])
+    matching_photos = [
+        display["by_id"][evidence_id]
+        for evidence_id in answer["evidence_references"]
+        if evidence_id in display.get("by_id", {})
+    ]
+    candidate_photos = [
+        item
+        for item in (display.get("groups", {}).get("photos") or [])
+        if item.get("evidence_role") == "candidate" and item.get("evidence_id") not in used_ids
+    ]
+    rejected_photos = [
+        item
+        for item in (display.get("groups", {}).get("photos") or [])
+        if item.get("evidence_role") == "rejected"
+    ]
+    display["matching_photos"] = matching_photos
+    display["candidate_photos"] = candidate_photos
+    display["rejected_photos"] = rejected_photos
+    warnings = _unique_strings((*result.warnings, *privacy["warnings"]))
+    trace = _visual_trace_payload(result, options=options)
+    payload = {
+        "ok": result.ok,
+        "mode": options.mode,
+        "answer": answer,
+        "evidence": evidence,
+        "evidence_display": display,
+        "temporal_event": None,
+        "visual_query": visual_query,
+        "matching_photos": matching_photos,
+        "matching_photo_count": len(matching_photos),
+        "query_type": "visual_evidence_search",
+        "date_range": visual_query.get("date_range"),
+        "event_type": None,
+        "event_subtype": None,
+        "diagnostics": result.diagnostics,
+        "trace": trace,
+        "privacy": privacy,
+        "warnings": list(warnings),
+    }
+    return payload
+
+
+def _visual_evidence_planner(
+    options: ChatConsoleOptions,
+    *,
+    trace_recorder: AgentTraceRecorder,
+) -> LeaderVisualEvidencePlanner | None:
+    if options.mode != "real-model" or not options.leader_plan:
+        return None
+    step_id = trace_recorder.start(
+        actor_type="leader_model",
+        actor_name="DeepSeek Leader",
+        stage="leader_endpoint_preflight",
+        action="preflight_visual_evidence_planner",
+        provider="llama_cpp",
+        invocation_type="live_call",
+        safe_input_summary="leader endpoint metadata only",
+    )
+    try:
+        config = load_config(config_dir=options.config_dir, paths_config=options.paths_config)
+        model_spec = config.model_registry.get(options.model_key)
+        if model_spec is None:
+            trace_recorder.finish(
+                step_id,
+                status="failed",
+                error_class="ValueError",
+                safe_error_message="configured leader model key was not found",
+            )
+            return None
+        endpoint = endpoint_from_model_spec(model_spec)
+        if endpoint is None:
+            trace_recorder.finish(
+                step_id,
+                status="failed",
+                error_class="ValueError",
+                safe_error_message="configured leader endpoint URL is missing",
+            )
+            return None
+        preflight = preflight_chat_endpoint(endpoint, allow_remote=options.allow_remote)
+        trace_recorder.finish(
+            step_id,
+            safe_output_summary=f"leader endpoint ok; served_model={preflight.served_model_name}",
+            metadata={"served_model_name": preflight.served_model_name, "endpoint_role": endpoint.role},
+        )
+        client = OpenAICompatibleHTTPClient(
+            base_url=endpoint.base_url,
+            model=preflight.served_model_name or endpoint.model_id,
+            timeout_seconds=options.timeout_seconds or DEFAULT_E2E_REAL_MODEL_TIMEOUT_SECONDS,
+            allow_remote=options.allow_remote,
+        )
+        return LeaderVisualEvidencePlanner(
+            client,
+            model=preflight.served_model_name or endpoint.model_id,
+            max_tokens=min(max(options.max_tokens, 128), 512),
+            temperature=0.0,
+        )
+    except (ModelRuntimeError, RuntimeError, ValueError) as exc:
+        trace_recorder.finish(
+            step_id,
+            status="failed",
+            error_class=exc.__class__.__name__,
+            safe_error_message="leader endpoint preflight failed; deterministic visual fallback will be used",
+        )
+        return None
+
+
+def _visual_trace_payload(result: Any, *, options: ChatConsoleOptions) -> dict[str, Any]:
+    should_use_count = len(result.answer.evidence_references)
+    diagnostics = result.diagnostics
+    return {
+        "query_type": "visual_evidence_search",
+        "visual_evidence": True,
+        "visual_diagnostics": diagnostics,
+        "plan_created": True,
+        "plan": {
+            "plan_created": True,
+            "main_entity_count": diagnostics.get("target_entity_count", 0),
+            "specific_concept_count": diagnostics.get("visual_signal_count", 0),
+            "generic_concept_count": 0,
+            "retrieval_query_count": diagnostics.get("visual_signal_count", 0),
+        },
+        "source_coverage": {},
+        "evidence_source_counts": {"photos": len(result.evidence)},
+        "semantic_candidate_count": diagnostics.get("semantic_candidate_count", 0),
+        "reranked_candidate_count": 0,
+        "retrieval_stage_counts": diagnostics,
+        "repair_attempted": False,
+        "repair_improved": False,
+        "retrieval_repair_count": 0,
+        "repair_reason": None,
+        "usable_evidence_succeeded": should_use_count > 0,
+        "usable_evidence_count": should_use_count,
+        "unusable_evidence_count": max(0, len(result.evidence) - should_use_count),
+        "should_use_evidence_count": should_use_count,
+        "average_plan_relevance_score": None,
+        "final_relevance_score": result.answer.confidence,
+        "relevance_policy": "strict" if options.strict_relevance else "soft",
+        "relevance_policy_passed": True if not options.strict_relevance else should_use_count > 0,
+        "minimum_relevance_score": options.minimum_relevance_score,
+        "plan_relevance_specificity_counts": {},
+        "insufficient_evidence_reason": None
+        if should_use_count
+        else "no photos satisfied the visual acceptance criteria",
+        "json_extraction_succeeded": None,
+        "json_extraction_strategy": "not_applicable_visual_evidence",
+        "json_retry_used": False,
+        "json_retry_succeeded": False,
+        "matching_photo_count": should_use_count,
+        "warnings": list(result.warnings),
+    }
 
 
 def _build_plan(

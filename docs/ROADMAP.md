@@ -134,6 +134,14 @@ This document outlines the development roadmap for private-memory-agent.
   before expanding with chunk/candidate/evidence caps. Diagnostics report
   timing by stage, conversion from dated evidence to candidate dates, and
   whether the search expanded beyond the fast pass.
+- Phase 9-J adds visual evidence search and photo-gallery answers:
+  photo-oriented questions such as `ラーメンが写っている写真はどれ？` now enter
+  `visual_evidence_search` instead of temporal date clustering. The visual plan
+  is created by the local Leader when available, with deterministic fallback,
+  then cached Qwen3-VL-style photo annotations are searched and judged into
+  used, candidate, and rejected photo evidence. The UI shows a Matching Photos
+  panel with thumbnail payloads, visual diagnostics, cached-vs-live vision
+  usage, and no full paths/GPS/EXIF/raw captions by default.
 - Phase 9-H adds an Agent Runtime Trace for the local console:
   `/api/chat/query` now returns ordered `trace_events`, `model_usage_summary`,
   `tool_usage_summary`, and `fallback_summary`. `/ui` shows a timeline of

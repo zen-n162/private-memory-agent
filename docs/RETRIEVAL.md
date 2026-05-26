@@ -665,6 +665,30 @@ fields include `date_scope_strategy`, `inferred_search_range_start`,
 `evidence_to_candidate_date_conversion_rate`. For broad open-ended questions,
 adding a date range still improves speed and precision.
 
+Phase 9-J adds a separate visual evidence search path for photo-gallery
+questions. A question such as `ラーメンが写っている写真はどれ？` is classified as
+`visual_evidence_search`, not as a temporal candidate-date query. The
+`VisualEvidencePlan` contains a target description, open-vocabulary target
+type, target entities, visual/textual signals, source priorities, acceptance
+criteria, rejection criteria, output type `photo_gallery`, and verification
+strategy. DeepSeek Leader can create this plan through the local leader
+endpoint; if planning fails or is disabled, a deterministic fallback is marked
+as `fallback_used`.
+
+The `PhotoVisualSearchTool` searches cached Qwen3-VL-style photo annotations
+first. It uses annotation text / object-scene descriptions and safe LIKE search
+over photo annotation text. Semantic visual retrieval and live Qwen3-VL
+verification are represented as optional controls and diagnostics; by default
+the path uses cached annotations only and reports `semantic_used=false` and
+`qwen_vl_live_call_count=0`. `VisualEvidenceJudge` separates definite matches
+from weak candidates and rejected photos. For ramen-like queries, a specific
+ramen/noodle/bowl signal can become used evidence, while generic food/table
+evidence remains candidate/weak unless it directly supports the requested
+target. The API returns `matching_photo_count`, `matching_photos`,
+`visual_query`, visual diagnostics, and path-free thumbnail URLs. If no photo
+meets the acceptance criteria, PMA returns a structured unknown answer rather
+than a generic `ModelRuntimeError`.
+
 Phase 9-H6 makes the chat API explicit about two stages:
 
 - Evidence builder: query understanding, parsed date range, temporal

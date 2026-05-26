@@ -88,6 +88,8 @@ class ChatQueryRequest(APIModel):
     limit: int = Field(default=5, gt=0, le=20)
     temporal_top_candidate_dates: int = Field(default=10, gt=0, le=50)
     temporal_top_evidence_per_date: int = Field(default=5, gt=0, le=20)
+    verify_with_vision: bool = False
+    max_live_vision_checks: int = Field(default=0, ge=0, le=20)
     timeout_seconds: float | None = Field(default=None, gt=0)
     max_tokens: int = Field(default=256, gt=0, le=4096)
     model_key: str = "leader"
@@ -119,6 +121,9 @@ class ChatQueryResponse(APIModel):
     evidence: list[dict[str, Any]]
     evidence_display: dict[str, Any] | None = None
     temporal_event: dict[str, Any] | None = None
+    visual_query: dict[str, Any] | None = None
+    matching_photos: list[dict[str, Any]] = Field(default_factory=list)
+    matching_photo_count: int = 0
     query_type: str | None = None
     date_range: dict[str, Any] | None = None
     event_type: str | None = None
