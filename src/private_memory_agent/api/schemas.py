@@ -90,6 +90,12 @@ class ChatQueryRequest(APIModel):
     temporal_top_evidence_per_date: int = Field(default=5, gt=0, le=20)
     verify_with_vision: bool = False
     max_live_vision_checks: int = Field(default=0, ge=0, le=20)
+    max_capability_steps: int = Field(default=12, gt=0, le=50)
+    max_replans: int = Field(default=1, ge=0, le=5)
+    max_runtime_seconds: int = Field(default=60, gt=0, le=600)
+    max_model_calls: int = Field(default=3, ge=0, le=20)
+    max_candidates_per_capability: int = Field(default=50, gt=0, le=1000)
+    max_evidence_sent_to_answer: int = Field(default=50, gt=0, le=500)
     timeout_seconds: float | None = Field(default=None, gt=0)
     max_tokens: int = Field(default=256, gt=0, le=4096)
     model_key: str = "leader"
@@ -117,6 +123,12 @@ class ChatQueryResponse(APIModel):
     recovered_failure_count: int = 0
     recovered_failures: list[dict[str, Any]] = Field(default_factory=list)
     current_status: dict[str, Any] | None = None
+    task_plan: dict[str, Any] | None = None
+    selected_capabilities: list[str] = Field(default_factory=list)
+    executed_steps: list[dict[str, Any]] = Field(default_factory=list)
+    observations: list[dict[str, Any]] = Field(default_factory=list)
+    replans: list[dict[str, Any]] = Field(default_factory=list)
+    evidence_sufficiency: dict[str, Any] | None = None
     answer: dict[str, Any]
     evidence: list[dict[str, Any]]
     evidence_display: dict[str, Any] | None = None

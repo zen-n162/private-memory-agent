@@ -549,6 +549,11 @@ def agent_console_html() -> str:
         </section>
 
         <section class="full">
+          <h2>Autonomous Plan</h2>
+          <div id="autonomous-plan-panel" class="stack"><div class="status-line">No autonomous plan yet.</div></div>
+        </section>
+
+        <section class="full">
           <h2>Matching Photos</h2>
           <div id="matching-photos-panel" class="stack"><div class="status-line">No matching photos yet.</div></div>
         </section>
@@ -594,6 +599,7 @@ def agent_console_html() -> str:
     const matchingPhotosPanel = document.querySelector("#matching-photos-panel");
     const datesPanel = document.querySelector("#candidate-dates-panel");
     const evidencePanel = document.querySelector("#evidence-panel");
+    const autonomousPlanPanel = document.querySelector("#autonomous-plan-panel");
     const tracePanel = document.querySelector("#trace-panel");
     const privacyPanel = document.querySelector("#privacy-panel");
     const systemPanel = document.querySelector("#system-panel");
@@ -668,6 +674,12 @@ def agent_console_html() -> str:
       "recovered_failure_count",
       "recovered_failures",
       "current_status",
+      "task_plan",
+      "selected_capabilities",
+      "executed_steps",
+      "observations",
+      "replans",
+      "evidence_sufficiency",
       "trace_events",
       "trace_summary",
       "privacy",
@@ -691,6 +703,7 @@ def agent_console_html() -> str:
       clear(answerPanel);
       clear(datesPanel);
       clear(evidencePanel);
+      clear(autonomousPlanPanel);
       clear(tracePanel);
       clear(privacyPanel);
       answerPanel.appendChild(el("div", safeMessage, "status-line error"));
@@ -751,6 +764,7 @@ def agent_console_html() -> str:
       renderMatchingPhotos(result);
       renderCandidateDates(result);
       renderEvidence(result);
+      renderAutonomousPlan(result);
       renderTrace(result);
       renderPrivacy(result);
       statusNode.textContent = result.ok ? "Done" : "Done; review warnings";
@@ -859,6 +873,69 @@ def agent_console_html() -> str:
         block.appendChild(list);
         target.appendChild(block);
       });
+    }
+    function renderAutonomousPlan(payload) {
+      clear(autonomousPlanPanel);
+      const plan = payload.task_plan || null;
+      if (!plan) {
+        autonomousPlanPanel.appendChild(el("div", "No autonomous TaskPlan returned.", "status-line"));
+        return;
+      }
+      const row = document.createElement("div");
+      row.className = "tag-row";
+      row.appendChild(pill(`output=${plan.expected_output_type || "unknown"}`, "strong"));
+      row.appendChild(pill(`generated_by=${plan.generated_by || "unknown"}`));
+      row.appendChild(pill(`fallback=${Boolean(plan.fallback_used)}`));
+      row.appendChild(pill(`capabilities=${(payload.selected_capabilities || []).length}`));
+      row.appendChild(pill(`steps=${(payload.executed_steps || []).length}`));
+      row.appendChild(pill(`replans=${(payload.replans || []).length}`));
+      autonomousPlanPanel.appendChild(row);
+      renderKv(autonomousPlanPanel, {
+        answer_goal: plan.answer_goal || "n/a",
+        question_summary: plan.question_summary || "raw question hidden",
+        evidence_sufficient: payload.evidence_sufficiency?.sufficient ?? "n/a",
+        sufficiency_reason: payload.evidence_sufficiency?.reason || "n/a",
+        privacy_policy: plan.privacy_policy || "n/a",
+        uncertainty_policy: plan.uncertainty_policy || "n/a"
+      });
+      if ((payload.selected_capabilities || []).length) {
+        autonomousPlanPanel.appendChild(el("h3", "Selected Capabilities"));
+        const caps = document.createElement("div");
+        caps.className = "chip-list";
+        payload.selected_capabilities.forEach((name) => caps.appendChild(pill(name, "strong")));
+        autonomousPlanPanel.appendChild(caps);
+      }
+      if ((payload.executed_steps || []).length) {
+        const details = document.createElement("details");
+        details.className = "trace-row";
+        details.open = true;
+        const summary = document.createElement("summary");
+        summary.appendChild(el("div", `Execution Steps (${payload.executed_steps.length})`, "trace-title"));
+        details.appendChild(summary);
+        const list = document.createElement("div");
+        list.className = "runtime-trace trace-detail";
+        payload.executed_steps.forEach((step) => {
+          const item = document.createElement("div");
+          item.className = "evidence-item";
+          const tags = document.createElement("div");
+          tags.className = "tag-row";
+          tags.appendChild(pill(step.capability_name || "unknown", "strong"));
+          tags.appendChild(pill(step.status || "unknown"));
+          tags.appendChild(pill(`candidates=${step.candidate_count ?? 0}`));
+          if (step.confidence !== null && step.confidence !== undefined) tags.appendChild(pill(`confidence=${step.confidence}`));
+          item.appendChild(tags);
+          item.appendChild(el("div", step.safe_summary || "safe observation unavailable", "muted-small"));
+          list.appendChild(item);
+        });
+        details.appendChild(list);
+        autonomousPlanPanel.appendChild(details);
+      }
+      if ((payload.replans || []).length) {
+        autonomousPlanPanel.appendChild(el("h3", "Replans / Repair Suggestions"));
+        payload.replans.forEach((item) => {
+          autonomousPlanPanel.appendChild(el("div", `${item.reason || "replan"}: ${item.safe_detail || item.status || "proposed"}`, "status-line"));
+        });
+      }
     }
     function renderCandidateDates(payload) {
       clear(datesPanel);
@@ -1134,6 +1211,19 @@ def agent_console_html() -> str:
         insufficient_evidence_reason: trace.insufficient_evidence_reason || "none",
         json_extraction_strategy: trace.json_extraction_strategy || "none"
       });
+      const autonomous = trace.autonomous_plan || {};
+      if (autonomous.plan_created) {
+        tracePanel.appendChild(el("h3", "Autonomous Plan Summary"));
+        renderKv(tracePanel, {
+          generated_by: autonomous.generated_by,
+          expected_output_type: autonomous.expected_output_type,
+          selected_capability_count: autonomous.selected_capability_count,
+          executed_step_count: autonomous.executed_step_count,
+          observation_count: autonomous.observation_count,
+          replan_count: autonomous.replan_count,
+          budget_exhausted: autonomous.budget_exhausted
+        });
+      }
       renderRuntimeTrace(payload);
       renderTemporalDiagnostics(trace.temporal_diagnostics || null);
       renderVisualDiagnostics(trace.visual_diagnostics || (payload.query_type === "visual_evidence_search" ? payload.diagnostics : null));
@@ -1183,6 +1273,7 @@ def agent_console_html() -> str:
     function stageGroup(stage) {
       if (["query_received", "configuration", "run_queue"].includes(stage)) return "Input";
       if (stage.includes("planning") || stage.includes("date_range") || stage.includes("temporal_event_detection")) return "Planning";
+      if (stage.includes("capability_execution")) return "Capability Execution";
       if (stage.includes("retrieval") || stage.includes("search") || stage.includes("support") || stage.includes("photo")) return "Retrieval";
       if (stage.includes("relevance") || stage.includes("acceptance")) return "Evidence Judging";
       if (stage.includes("repair")) return "Repair";
@@ -1769,6 +1860,7 @@ def agent_console_html() -> str:
           renderAnswer(payload);
           renderCandidateDates(payload);
           renderEvidence(payload);
+          renderAutonomousPlan(payload);
           renderTrace(payload);
           renderPrivacy(payload);
           renderCurrentStatus(payload.current_status || buildClientFailureStatus(error.message, payload));

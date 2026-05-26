@@ -15,8 +15,8 @@ from private_memory_agent.tracing import (
 
 CHAT_CONSOLE_MODES = {"retrieval-only", "fake-model", "real-model"}
 CHAT_RESPONSE_MODES = {*CHAT_CONSOLE_MODES, "unknown"}
-CHAT_API_RESPONSE_SCHEMA_VERSION = "2026-05-26.9j"
-CHAT_UI_RESPONSE_SCHEMA_VERSION = "2026-05-26.9j"
+CHAT_API_RESPONSE_SCHEMA_VERSION = "2026-05-26.10a"
+CHAT_UI_RESPONSE_SCHEMA_VERSION = "2026-05-26.10a"
 REQUIRED_CHAT_RESPONSE_KEYS = (
     "ok",
     "mode",
@@ -36,6 +36,12 @@ REQUIRED_CHAT_RESPONSE_KEYS = (
     "recovered_failure_count",
     "recovered_failures",
     "current_status",
+    "task_plan",
+    "selected_capabilities",
+    "executed_steps",
+    "observations",
+    "replans",
+    "evidence_sufficiency",
     "trace_events",
     "trace_summary",
     "privacy",
@@ -151,6 +157,12 @@ def build_chat_error_payload(
         "recovered_failure_count": 0,
         "recovered_failures": [],
         "current_status": status_payload,
+        "task_plan": None,
+        "selected_capabilities": [],
+        "executed_steps": [],
+        "observations": [],
+        "replans": [],
+        "evidence_sufficiency": None,
         "answer": answer,
         "evidence": [],
         "evidence_display": {"candidate_dates": [], "evidence_reference_groups": {}},
@@ -227,6 +239,12 @@ def ensure_chat_response_contract(
     payload["failure_actor"] = failure_actor
     payload["recovered_failure_count"] = recovered_summary["recovered_failure_count"]
     payload["recovered_failures"] = recovered_summary["recovered_failures"]
+    payload["task_plan"] = payload.get("task_plan")
+    payload["selected_capabilities"] = list(payload.get("selected_capabilities") or [])
+    payload["executed_steps"] = list(payload.get("executed_steps") or [])
+    payload["observations"] = list(payload.get("observations") or [])
+    payload["replans"] = list(payload.get("replans") or [])
+    payload["evidence_sufficiency"] = payload.get("evidence_sufficiency")
     payload["trace_summary"] = _trace_summary(trace, trace_events)
     payload["model_usage_summary"] = summarize_model_usage(trace_events)
     payload["tool_usage_summary"] = summarize_tool_usage(trace_events)
@@ -288,6 +306,7 @@ def _completion_summary(payload: dict[str, Any], *, timeline_available: bool) ->
         "matching_photo_count": int(payload.get("matching_photo_count") or 0),
         "evidence_reference_count": int(payload.get("evidence_reference_count") or 0),
         "evidence_count": int(payload.get("evidence_count") or 0),
+        "selected_capabilities": list(payload.get("selected_capabilities") or [])[:12],
         "used_sources": list(answer.get("used_sources") or []),
         "warning_count": len(payload.get("warnings") or []),
         "recovered_failure_count": int(payload.get("recovered_failure_count") or 0),

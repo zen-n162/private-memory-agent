@@ -844,6 +844,23 @@ photo thumbnails are served only through indexed local media IDs and do not
 expose full paths, GPS, EXIF, OCR, raw captions, raw prompts, or raw model
 output.
 
+Phase 10-A introduces DeepSeek Leader as a capability planner, not only an
+answer generator. The chat console exposes a `CapabilityRegistry` and asks the
+Leader for a strict JSON `TaskPlan` when real-model planning is enabled. The
+plan selects local capabilities such as date parsing, photo annotation search,
+LINE/notes search, semantic search, reranking, evidence judging, clustering,
+answer synthesis, privacy filtering, and UI rendering. If the Leader planner
+fails, deterministic fallback creates a generic plan and the failure is visible
+as a recovered/fallback planning event. Unit tests use fake clients and do not
+load real models.
+
+The `CapabilityExecutor` records safe observations and budgets such as
+`max_capability_steps`, `max_replans`, `max_runtime_seconds`,
+`max_model_calls`, `max_live_vision_calls`,
+`max_candidates_per_capability`, and `max_evidence_sent_to_answer`. These
+controls are metadata and safety limits around existing local workflows. They
+do not permit external APIs, model downloads, or raw private output.
+
 Phase 9-H8 distinguishes final failures from recovered intermediate failures.
 If a Leader planning call fails but deterministic fallback succeeds and the
 final answer succeeds, the chat response clears `failure_stage`, sets

@@ -367,7 +367,8 @@
           役割を分けたローカル処理の組み合わせとして設計されています。
         </p>
         <div class="diagram" aria-label="AI エージェント構成図">
-          <div class="node core"><strong>Leader Agent</strong><br>質問と証拠から最終回答を作る。</div>
+          <div class="node core"><strong>Leader Agent</strong><br>質問を理解し、TaskPlan と capability 選択を作り、最終回答を作る。</div>
+          <div class="node core"><strong>Capability Registry</strong><br>日付解析、写真検索、LINE/ノート検索、semantic、rerank、judge、UI 表示を登録する。</div>
           <div class="node core"><strong>Retrieval Agent</strong><br>FTS、フィルタ、任意の意味検索で証拠を集める。</div>
           <div class="node"><strong>Photo Understanding Agent</strong><br>画像説明、物体候補、OCR などを保存する。</div>
           <div class="node"><strong>Japanese Text Agent</strong><br>LINE とノートから話題、日付、行動候補を抽出する。</div>
@@ -384,6 +385,7 @@
           <div class="step">ingest</div>
           <div class="step">normalize</div>
           <div class="step">index</div>
+          <div class="step">plan capabilities</div>
           <div class="step">retrieve</div>
           <div class="step">pack evidence</div>
           <div class="step">reason</div>
@@ -393,7 +395,8 @@
         <p>
           取り込み後、写真は必要に応じてローカルで前処理し、写真注釈もテキスト検索インデックスへ入れます。
           FTS、キーワード fallback、任意のベクトル検索で証拠を取得し、
-          Leader Agent に渡す前に「証拠パック」として整形します。最終回答は
+          Leader Agent または deterministic fallback が選んだ capability plan に沿って
+          「証拠パック」として整形します。最終回答は
           Evidence Critic と Privacy Guard のルールを通ってから表示されます。
         </p>
       </section>
@@ -560,6 +563,7 @@
             <tr><td>9-I</td><td>日付範囲なしの「いつ」質問を all-available-memory scope で chunk し、event subtype と dated evidence から候補日を抽出。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-I2</td><td>open-ended temporal query に top-level diagnostics、event signal 表示、recent-first fast pass、performance timing を追加。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-J</td><td>写真を探す質問を visual evidence search として扱い、cached Qwen3-VL 注釈から photo gallery answer を返す。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>10-A</td><td>CapabilityRegistry、TaskPlan、CapabilityExecutor、Observation、EvidenceCritic を追加し、DeepSeek/fallback が既存 tool を組み合わせる計画を UI に表示。</td><td class="status">基本実装済み</td></tr>
           </tbody>
         </table>
       </section>
@@ -884,6 +888,21 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           filename、full path、GPS、EXIF、OCR 全文、raw caption、raw model output は既定では表示しません。
         </p>
         <p>
+          10-A では、query pattern ごとに別々の pipeline を増やすのではなく、
+          <strong>CapabilityRegistry</strong> と <strong>TaskPlan</strong> を導入しました。
+          registry には <code>date.parse</code>、<code>photo.search_by_concept</code>、
+          <code>photo.search_cached_annotations</code>、<code>line.search_text</code>、
+          <code>notes.search_text</code>、<code>memory.semantic_search</code>、
+          <code>memory.rerank</code>、<code>evidence.cluster_by_date</code>、
+          <code>evidence.judge</code>、<code>answer.synthesize</code>、
+          <code>privacy.filter</code>、写真 gallery や候補日表示の UI capability を登録します。
+          real-model では DeepSeek Leader が strict JSON の TaskPlan を作れるようにし、
+          失敗時は deterministic fallback が同じ形式の plan を作ります。
+          API と UI は selected capabilities、execution steps、observations、replans、
+          evidence sufficiency を表示し、詳細 trace からどの capability が選ばれたか確認できます。
+          raw question、raw evidence、chain-of-thought、raw model output は表示しません。
+        </p>
+        <p>
           9-H では local chat UI に <strong>Agent Runtime Trace</strong> を追加しました。
           DeepSeek Leader が live call されたか、決定的 fallback が使われたか、日付 parser、
           photo date search、LINE/ノート検索、cached Qwen3-VL photo annotation、semantic retrieval、
@@ -988,6 +1007,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
       <section id="history">
         <h2>更新履歴</h2>
         <ul>
+          <li>2026-05-26: CapabilityRegistry / TaskPlan / CapabilityExecutor を追加し、Autonomous Plan panel で選択 capability と観測結果を表示。</li>
           <li>2026-05-26: visual evidence search を追加し、写真探索質問を Matching Photos gallery と cached Qwen3-VL annotation 診断で表示。</li>
           <li>2026-05-26: open-ended temporal query の診断を top-level に出し、event subtype/signal、recent-first fast pass、performance timing を追加。</li>
           <li>2026-05-26: 期間指定なしの temporal event query を all-available-memory scope で扱い、ramen などの event subtype と dated evidence から候補日を抽出。</li>

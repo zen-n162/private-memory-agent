@@ -21,6 +21,10 @@ ACTION_DISPLAY_MESSAGES = {
     "create_event_intent_plan": "DeepSeek Leader がイベント意図と検索方針を作成しています...",
     "use_supplied_event_intent_plan": "既存のイベント意図計画を使用しています...",
     "load_local_config": "ローカル設定を読み込んでいます...",
+    "preflight_capability_planner": "DeepSeek Leader の capability planner 接続を確認しています...",
+    "create_task_plan": "DeepSeek Leader が使う capability と実行順序を計画しています...",
+    "execute_capability_step": "選択された capability を実行しています...",
+    "critique_evidence": "EvidenceCritic が根拠の十分性を確認しています...",
     "create_retrieval_plan": "DeepSeek Leader が検索計画を作成しています...",
     "fallback_query_path": "決定的 fallback の検索経路に切り替えています...",
     "detect_temporal_event_query": "temporal event query か確認しています...",
@@ -43,6 +47,8 @@ ACTION_DISPLAY_MESSAGES = {
 
 NEXT_STEP_HINTS = {
     "query_received": "次に query type と検索経路を判定します。",
+    "autonomous_capability_planning": "次に選択された capability を順に実行します。",
+    "capability_execution": "次に既存の evidence builder で実データを確認します。",
     "event_intent_planning": "次に source-specific retrieval を実行します。",
     "photo_date_search": "次に cached annotation と日別候補を確認します。",
     "line_notes_temporal_support": "次に candidate date の根拠を評価します。",

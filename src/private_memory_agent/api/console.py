@@ -27,6 +27,14 @@ from private_memory_agent.api.evidence_view import (
     EvidenceDisplayOptions,
     build_evidence_display_payload,
 )
+from private_memory_agent.capabilities import (
+    CapabilityExecutionOptions,
+    CapabilityExecutionResult,
+    CapabilityRegistry,
+    EvidenceCritic,
+    LeaderCapabilityPlanner,
+    build_capability_execution,
+)
 from private_memory_agent.config import ConfigBundle, load_config
 from private_memory_agent.e2e import (
     DEFAULT_E2E_REAL_MODEL_MAX_TOKENS,
@@ -106,6 +114,12 @@ class ChatConsoleOptions:
     temporal_top_evidence_per_date: int = 5
     verify_with_vision: bool = False
     max_live_vision_checks: int = 0
+    max_capability_steps: int = 12
+    max_replans: int = 1
+    max_runtime_seconds: int = 60
+    max_model_calls: int = 3
+    max_candidates_per_capability: int = 50
+    max_evidence_sent_to_answer: int = 50
     timeout_seconds: float | None = None
     max_tokens: int = DEFAULT_E2E_REAL_MODEL_MAX_TOKENS
     model_key: str = "leader"
@@ -138,8 +152,10 @@ def run_chat_console_query(
         },
     )
     _validate_options(options)
+    capability_result = _build_capability_execution(options, trace_recorder=trace_recorder)
     temporal_payload = _maybe_temporal_console_payload(options, trace_recorder=trace_recorder)
     if temporal_payload is not None:
+        _attach_autonomous_capability_payload(temporal_payload, capability_result)
         return _finalize_console_payload(temporal_payload, trace_recorder)
     trace_recorder.event(
         actor_type="tool",
@@ -151,6 +167,7 @@ def run_chat_console_query(
     )
     visual_payload = _maybe_visual_console_payload(options, trace_recorder=trace_recorder)
     if visual_payload is not None:
+        _attach_autonomous_capability_payload(visual_payload, capability_result)
         return _finalize_console_payload(visual_payload, trace_recorder)
     trace_recorder.event(
         actor_type="tool",
@@ -251,6 +268,7 @@ def run_chat_console_query(
                 "error_message": failure_metadata["error_message"],
             },
         )
+    _attach_autonomous_capability_payload(payload, capability_result)
     return _finalize_console_payload(payload, trace_recorder)
 
 
@@ -308,6 +326,138 @@ def build_system_status(
     }
 
 
+def _build_capability_execution(
+    options: ChatConsoleOptions,
+    *,
+    trace_recorder: AgentTraceRecorder,
+) -> CapabilityExecutionResult:
+    return build_capability_execution(
+        options.question,
+        sources=options.sources,
+        registry=CapabilityRegistry.default(),
+        leader_planner=_autonomous_capability_planner(options, trace_recorder=trace_recorder),
+        trace_recorder=trace_recorder,
+        options=CapabilityExecutionOptions(
+            max_steps=options.max_capability_steps,
+            max_replans=options.max_replans,
+            max_runtime_seconds=options.max_runtime_seconds,
+            max_model_calls=options.max_model_calls,
+            max_live_vision_calls=options.max_live_vision_checks,
+            max_candidates_per_capability=options.max_candidates_per_capability,
+            max_evidence_sent_to_answer=options.max_evidence_sent_to_answer,
+        ),
+    )
+
+
+def _autonomous_capability_planner(
+    options: ChatConsoleOptions,
+    *,
+    trace_recorder: AgentTraceRecorder,
+) -> LeaderCapabilityPlanner | None:
+    if options.mode != "real-model" or not options.leader_plan:
+        return None
+    step_id = trace_recorder.start(
+        actor_type="leader_model",
+        actor_name="DeepSeek Leader",
+        stage="leader_endpoint_preflight",
+        action="preflight_capability_planner",
+        provider="llama_cpp",
+        invocation_type="live_call",
+        safe_input_summary="leader endpoint metadata only",
+    )
+    try:
+        config = load_config(config_dir=options.config_dir, paths_config=options.paths_config)
+        model_spec = config.model_registry.get(options.model_key)
+        if model_spec is None:
+            trace_recorder.finish(
+                step_id,
+                status="failed",
+                error_class="ValueError",
+                safe_error_message="configured leader model key was not found",
+            )
+            return None
+        endpoint = endpoint_from_model_spec(model_spec)
+        if endpoint is None:
+            trace_recorder.finish(
+                step_id,
+                status="failed",
+                error_class="ValueError",
+                safe_error_message="configured leader endpoint URL is missing",
+            )
+            return None
+        preflight = preflight_chat_endpoint(endpoint, allow_remote=options.allow_remote)
+        trace_recorder.finish(
+            step_id,
+            safe_output_summary=f"leader endpoint ok; served_model={preflight.served_model_name}",
+            metadata={"served_model_name": preflight.served_model_name, "endpoint_role": endpoint.role},
+        )
+        client = OpenAICompatibleHTTPClient(
+            base_url=endpoint.base_url,
+            model=preflight.served_model_name or endpoint.model_id,
+            timeout_seconds=options.timeout_seconds or DEFAULT_E2E_REAL_MODEL_TIMEOUT_SECONDS,
+            allow_remote=options.allow_remote,
+        )
+        return LeaderCapabilityPlanner(
+            client,
+            model=preflight.served_model_name or endpoint.model_id,
+            max_tokens=min(max(options.max_tokens, 256), 900),
+            temperature=0.0,
+        )
+    except (ModelRuntimeError, RuntimeError, ValueError) as exc:
+        trace_recorder.finish(
+            step_id,
+            status="failed",
+            error_class=exc.__class__.__name__,
+            safe_error_message="leader capability planner preflight failed; deterministic fallback will be used",
+        )
+        return None
+
+
+def _attach_autonomous_capability_payload(
+    payload: dict[str, Any],
+    result: CapabilityExecutionResult,
+) -> None:
+    capability_payload = result.to_payload()
+    payload.update(
+        {
+            "task_plan": capability_payload["task_plan"],
+            "selected_capabilities": capability_payload["selected_capabilities"],
+            "executed_steps": capability_payload["executed_steps"],
+            "observations": capability_payload["observations"],
+            "replans": capability_payload["replans"],
+        },
+    )
+    sufficiency = EvidenceCritic().critique_payload(payload, result.task_plan)
+    payload["evidence_sufficiency"] = sufficiency
+    if not sufficiency["sufficient"] and result.task_plan.max_replans > 0:
+        payload["replans"] = [
+            *payload["replans"],
+            {
+                "replan_id": "replan_evidence_insufficient",
+                "reason": "evidence_insufficient",
+                "safe_detail": sufficiency["reason"],
+                "status": "proposed",
+                "selected_capabilities": list(result.task_plan.selected_capabilities),
+            },
+        ][: result.task_plan.max_replans]
+    trace = payload.get("trace")
+    if isinstance(trace, dict):
+        trace["autonomous_plan"] = capability_payload["autonomous_plan"]
+        trace["selected_capabilities"] = capability_payload["selected_capabilities"]
+        trace["capability_observation_count"] = len(payload["observations"])
+        trace["evidence_sufficiency"] = sufficiency
+    payload["warnings"] = _unique_strings(
+        (
+            *list(payload.get("warnings") or []),
+            *(
+                ["Autonomous evidence critic found insufficient evidence for the selected output type."]
+                if not sufficiency["sufficient"]
+                else []
+            ),
+        ),
+    )
+
+
 def _finalize_console_payload(
     payload: dict[str, Any],
     trace_recorder: AgentTraceRecorder,
@@ -356,6 +506,7 @@ def _finalize_console_payload(
             "evidence_count": len(payload.get("evidence") or []),
             "has_temporal_event": bool(payload.get("temporal_event")),
             "query_type": payload.get("query_type"),
+            "selected_capability_count": len(payload.get("selected_capabilities") or []),
         },
     )
     trace_events = trace_recorder.to_list()
@@ -406,6 +557,18 @@ def _validate_options(options: ChatConsoleOptions) -> None:
         raise ValueError("temporal_top_evidence_per_date must be between 1 and 20")
     if options.max_live_vision_checks < 0 or options.max_live_vision_checks > 20:
         raise ValueError("max_live_vision_checks must be between 0 and 20")
+    if options.max_capability_steps <= 0 or options.max_capability_steps > 50:
+        raise ValueError("max_capability_steps must be between 1 and 50")
+    if options.max_replans < 0 or options.max_replans > 5:
+        raise ValueError("max_replans must be between 0 and 5")
+    if options.max_runtime_seconds <= 0 or options.max_runtime_seconds > 600:
+        raise ValueError("max_runtime_seconds must be between 1 and 600")
+    if options.max_model_calls < 0 or options.max_model_calls > 20:
+        raise ValueError("max_model_calls must be between 0 and 20")
+    if options.max_candidates_per_capability <= 0 or options.max_candidates_per_capability > 1000:
+        raise ValueError("max_candidates_per_capability must be between 1 and 1000")
+    if options.max_evidence_sent_to_answer <= 0 or options.max_evidence_sent_to_answer > 500:
+        raise ValueError("max_evidence_sent_to_answer must be between 1 and 500")
 
 
 def _maybe_temporal_console_payload(

@@ -689,6 +689,27 @@ target. The API returns `matching_photo_count`, `matching_photos`,
 meets the acceptance criteria, PMA returns a structured unknown answer rather
 than a generic `ModelRuntimeError`.
 
+Phase 10-A adds an autonomous capability planning layer above these existing
+paths. Instead of treating temporal, visual, and text workflows as unrelated
+query-pattern branches, the chat console now builds a privacy-safe `TaskPlan`
+from a `CapabilityRegistry`. Initial capabilities include `date.parse`,
+`metadata.search_by_date_range`, `photo.search_by_concept`,
+`photo.search_cached_annotations`, `vision.verify_images`, `line.search_text`,
+`notes.search_text`, `memory.semantic_search`, `memory.rerank`,
+`evidence.cluster_by_date`, `evidence.judge`, `answer.synthesize`,
+`privacy.filter`, and UI render capabilities for photo galleries, candidate
+dates, and evidence lists.
+
+In real-model mode, DeepSeek Leader can select capabilities and an
+`expected_output_type` such as `candidate_dates`, `photo_gallery`,
+`evidence_list`, `timeline`, or `hybrid`. If Leader planning fails or is
+disabled, deterministic fallback creates a generic plan and marks
+`fallback_used=true`. The executor records safe `observations` for each
+capability step and an `EvidenceCritic` reports whether the final evidence
+satisfies the selected output type. These plan/observation fields are metadata:
+they do not expose raw LINE text, note bodies, captions, filenames, paths, GPS,
+EXIF, OCR text, raw prompts, or raw model output.
+
 Phase 9-H6 makes the chat API explicit about two stages:
 
 - Evidence builder: query understanding, parsed date range, temporal

@@ -207,6 +207,16 @@ This document outlines the development roadmap for private-memory-agent.
   result is stored; inconsistent completed-without-result states are exposed as
   `finalizing`, and the UI waits for `result_ready=true` before rendering
   `/result`.
+- Phase 10-A adds an autonomous capability planner/executor layer:
+  the chat console now exposes a `CapabilityRegistry`, a structured `TaskPlan`,
+  selected capabilities, executed steps, observations, replans, and an evidence
+  sufficiency critic. The first implementation wraps the existing temporal,
+  visual, text, semantic, reranker, evidence-judge, answer, privacy, and UI
+  paths rather than replacing them. DeepSeek Leader can create a strict JSON
+  task plan in real-model mode; deterministic fallback remains available and
+  visible in trace metadata. `/ui` includes an Autonomous Plan panel so users
+  can see whether the agent selected candidate-date, photo-gallery, evidence
+  list, timeline, or hybrid capability composition.
 
 ## 実データE2E smokeの実行手順
 
