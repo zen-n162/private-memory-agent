@@ -24,6 +24,11 @@ SUPPORTED_TEMPORAL_SOURCES = ("photos", "line", "notes")
 DEFAULT_MAX_PHOTOS = 2000
 DEFAULT_TOP_DAYS = 8
 DEFAULT_OUTING_THRESHOLD = 0.45
+DEFAULT_CHUNK_AFTER_DAYS = 45
+DEFAULT_LONG_RANGE_DAYS = 180
+DEFAULT_TOP_CANDIDATE_DATES = 10
+DEFAULT_TOP_EVIDENCE_PER_DATE = 5
+DEFAULT_CANDIDATES_PER_LONG_RANGE_CHUNK = 5
 
 OUTING_TERMS = (
     "外出",
@@ -319,6 +324,11 @@ def answer_temporal_event_query(
     db_path: Path | str,
     today: date | None = None,
     top_days: int = DEFAULT_TOP_DAYS,
+    top_candidate_dates: int | None = DEFAULT_TOP_CANDIDATE_DATES,
+    top_evidence_per_date: int = DEFAULT_TOP_EVIDENCE_PER_DATE,
+    chunk_after_days: int = DEFAULT_CHUNK_AFTER_DAYS,
+    long_range_days: int = DEFAULT_LONG_RANGE_DAYS,
+    candidates_per_long_range_chunk: int = DEFAULT_CANDIDATES_PER_LONG_RANGE_CHUNK,
     max_photos: int = DEFAULT_MAX_PHOTOS,
     outing_threshold: float = DEFAULT_OUTING_THRESHOLD,
     fallback_terms: tuple[str, ...] | None = None,
@@ -358,30 +368,33 @@ def answer_temporal_event_query(
             warnings=("SQLite DB does not exist",),
         )
 
+    range_days = _range_days(parsed.date_range)
+    candidate_limit = max(1, int(top_candidate_dates if top_candidate_dates is not None else top_days))
+    evidence_limit = max(1, int(top_evidence_per_date))
+    chunks = _temporal_date_chunks(
+        parsed.date_range,
+        chunk_after_days=max(1, int(chunk_after_days)),
+    )
+    chunking_enabled = len(chunks) > 1
+    long_range = range_days > int(long_range_days)
+    per_chunk_candidate_limit = max(1, int(candidates_per_long_range_chunk))
+
     photo_diagnostics = photo_date_range_diagnostics(
         db,
         start=parsed.date_range.start,
         end=parsed.date_range.end,
     )
-    photos = search_photos_by_date_range(
+    photos, chunk_clusters, chunk_reports = _collect_chunked_photo_candidates(
         db,
-        start=parsed.date_range.start,
-        end=parsed.date_range.end,
-        limit=max_photos,
+        chunks=chunks,
+        max_photos=max_photos,
         outing_threshold=outing_threshold,
+        cap_candidates_per_chunk=per_chunk_candidate_limit if long_range else None,
     )
-    clusters = cluster_photo_candidates_by_day(
-        db,
-        photos,
-        outing_threshold=outing_threshold,
+    ranked_clusters = _rank_clusters(_dedupe_clusters(tuple(chunk_clusters)))
+    pre_prune_photo_used_clusters = tuple(
+        item for item in ranked_clusters if item.confidence >= outing_threshold
     )
-    ranked_clusters = tuple(
-        sorted(
-            clusters,
-            key=lambda item: (-item.confidence, item.date),
-        )[:top_days],
-    )
-    photo_used_clusters = tuple(item for item in ranked_clusters if item.confidence >= outing_threshold)
     fallback = _line_note_support_for_range(
         db,
         start=parsed.date_range.start,
@@ -391,25 +404,57 @@ def answer_temporal_event_query(
     )
     fallback_clusters = (
         _fallback_clusters_from_support(fallback)
-        if not photo_used_clusters or not photos
+        if not pre_prune_photo_used_clusters or not photos
         else ()
     )
-    used_clusters = photo_used_clusters or fallback_clusters
-    candidate_clusters = _dedupe_clusters((*ranked_clusters, *fallback_clusters))[:top_days]
+    candidates_before_pruning = _dedupe_clusters((*ranked_clusters, *fallback_clusters))
+    candidate_clusters = tuple(
+        _prune_cluster_evidence(cluster, evidence_limit)
+        for cluster in _rank_clusters(candidates_before_pruning)[:candidate_limit]
+    )
+    photo_used_clusters = tuple(
+        item for item in candidate_clusters if item.photo_count > 0 and item.confidence >= outing_threshold
+    )
+    fallback_used_clusters = tuple(
+        item for item in candidate_clusters if item.photo_count == 0 and item.support_evidence_ids
+    )
+    used_clusters = photo_used_clusters or fallback_used_clusters
     evidence = _build_temporal_evidence(photos, candidate_clusters, used_clusters)
     answer = _build_temporal_answer(parsed, used_clusters, candidate_clusters)
     coverage = timestamp_coverage(db)
     parsed_range = parsed.date_range.to_dict()
+    pruning_reason = _pruning_reason(
+        before=len(candidates_before_pruning),
+        after=len(candidate_clusters),
+        chunking_enabled=chunking_enabled,
+        long_range=long_range,
+    )
     diagnostics = {
         "db_exists": True,
         **coverage,
         **photo_diagnostics,
         "parsed_date_range": parsed_range,
+        "original_date_range": {
+            "start": parsed_range["start"],
+            "end": parsed_range["end"],
+            "end_exclusive": True,
+        },
         "parsed_date_range_start": parsed_range["start"],
         "parsed_date_range_end": parsed_range["end"],
         "date_range_source": parsed_range["source"],
         "parsed_temporal_expression": parsed_range["expression"],
         "timezone": parsed_range["timezone"],
+        "date_range_days": range_days,
+        "chunking_enabled": chunking_enabled,
+        "chunk_count": len(chunks),
+        "chunk_size": "month" if chunking_enabled else "none",
+        "chunks": chunk_reports,
+        "candidates_before_pruning": len(candidates_before_pruning),
+        "candidates_after_pruning": len(candidate_clusters),
+        "top_candidate_dates": candidate_limit,
+        "top_evidence_per_date": evidence_limit,
+        "evidence_sent_count": len(evidence),
+        "pruning_reason": pruning_reason,
         "photo_candidates_examined": len(photos),
         "candidate_day_count": len(candidate_clusters),
         "used_day_count": len(used_clusters),
@@ -423,6 +468,8 @@ def answer_temporal_event_query(
         "fallback_sources_used": list(fallback["fallback_sources_used"]),
     }
     warnings: list[str] = []
+    if chunking_enabled:
+        warnings.append("broad temporal range was chunked and candidate dates were pruned")
     if photos and not photo_used_clusters and not fallback_clusters:
         warnings.append("photo candidates were found, but outing evidence was weak")
     if not photos and not fallback_clusters:
@@ -957,7 +1004,149 @@ def _fallback_clusters_from_support(support: dict[str, Any]) -> tuple[DailyEvent
     return tuple(clusters[:DEFAULT_TOP_DAYS])
 
 
+def _range_days(date_range: TemporalDateRange) -> int:
+    return max(0, (date_range.end - date_range.start).days)
+
+
+def _temporal_date_chunks(
+    date_range: TemporalDateRange,
+    *,
+    chunk_after_days: int,
+) -> tuple[TemporalDateRange, ...]:
+    if _range_days(date_range) <= chunk_after_days:
+        return (date_range,)
+    chunks: list[TemporalDateRange] = []
+    cursor = _month_start(date_range.start)
+    while cursor < date_range.end:
+        next_month = _add_months(cursor, 1)
+        start = max(date_range.start, cursor)
+        end = min(date_range.end, next_month)
+        if start < end:
+            label = start.strftime("%Y-%m")
+            chunks.append(
+                TemporalDateRange(
+                    start=start,
+                    end=end,
+                    label=label,
+                    source=date_range.source,
+                    expression=f"{date_range.expression or date_range.label}:{label}",
+                    timezone=date_range.timezone,
+                ),
+            )
+        cursor = next_month
+    return tuple(chunks or (date_range,))
+
+
+def _collect_chunked_photo_candidates(
+    db_path: Path | str,
+    *,
+    chunks: tuple[TemporalDateRange, ...],
+    max_photos: int,
+    outing_threshold: float,
+    cap_candidates_per_chunk: int | None,
+) -> tuple[tuple[PhotoCandidate, ...], tuple[DailyEventCluster, ...], list[dict[str, Any]]]:
+    all_photos: list[PhotoCandidate] = []
+    all_clusters: list[DailyEventCluster] = []
+    reports: list[dict[str, Any]] = []
+    seen_photo_ids: set[int] = set()
+    for chunk in chunks:
+        chunk_photos = search_photos_by_date_range(
+            db_path,
+            start=chunk.start,
+            end=chunk.end,
+            limit=max_photos,
+            outing_threshold=outing_threshold,
+        )
+        for photo in chunk_photos:
+            if photo.media_item_id in seen_photo_ids:
+                continue
+            seen_photo_ids.add(photo.media_item_id)
+            all_photos.append(photo)
+        chunk_clusters = _rank_clusters(
+            cluster_photo_candidates_by_day(
+                db_path,
+                chunk_photos,
+                outing_threshold=outing_threshold,
+            ),
+        )
+        if cap_candidates_per_chunk is not None:
+            chunk_clusters = chunk_clusters[:cap_candidates_per_chunk]
+        all_clusters.extend(chunk_clusters)
+        reports.append(
+            {
+                "start": chunk.start.isoformat(),
+                "end": chunk.end.isoformat(),
+                "label": chunk.label,
+                "photo_candidates_count": len(chunk_photos),
+                "candidate_day_count": len(chunk_clusters),
+            },
+        )
+    return tuple(all_photos), tuple(all_clusters), reports
+
+
+def _rank_clusters(clusters: tuple[DailyEventCluster, ...] | list[DailyEventCluster]) -> tuple[DailyEventCluster, ...]:
+    return tuple(
+        sorted(
+            clusters,
+            key=lambda item: (
+                -item.confidence,
+                -item.outing_score,
+                -(item.line_support_count + item.notes_support_count),
+                item.date,
+            ),
+        ),
+    )
+
+
+def _prune_cluster_evidence(cluster: DailyEventCluster, limit: int) -> DailyEventCluster:
+    remaining = max(1, limit)
+    top = tuple(cluster.top_evidence_ids[:remaining])
+    remaining -= len(top)
+    support = tuple(cluster.support_evidence_ids[:remaining]) if remaining > 0 else ()
+    remaining -= len(support)
+    candidate = tuple(cluster.candidate_evidence_ids[:remaining]) if remaining > 0 else ()
+    remaining -= len(candidate)
+    rejected = tuple(cluster.rejected_evidence_ids[:remaining]) if remaining > 0 else ()
+    return DailyEventCluster(
+        date=cluster.date,
+        photo_count=cluster.photo_count,
+        annotated_photo_count=cluster.annotated_photo_count,
+        outing_score=cluster.outing_score,
+        confidence=cluster.confidence,
+        top_evidence_ids=top,
+        candidate_evidence_ids=candidate,
+        rejected_evidence_ids=rejected,
+        line_support_count=cluster.line_support_count,
+        notes_support_count=cluster.notes_support_count,
+        support_evidence_ids=support,
+        reason=cluster.reason,
+    )
+
+
+def _pruning_reason(
+    *,
+    before: int,
+    after: int,
+    chunking_enabled: bool,
+    long_range: bool,
+) -> str:
+    if before > after and long_range:
+        return "long_range_chunked_and_top_candidates_pruned"
+    if before > after:
+        return "top_candidates_pruned"
+    if chunking_enabled:
+        return "range_chunked_without_candidate_pruning"
+    return "not_pruned"
+
+
 def _parse_date_range(text: str, *, today: date) -> TemporalDateRange | None:
+    year_season = re.search(r"(?P<year>\d{4})\s*年\s*(?P<season>春|夏|秋|冬)", text)
+    if year_season:
+        return _season_range(
+            int(year_season.group("year")),
+            year_season.group("season"),
+            expression=_clean_expression(year_season.group(0)),
+        )
     year_month = re.search(r"(?P<year>\d{4})\s*年\s*(?P<month>\d{1,2})\s*月", text)
     if year_month:
         return _month_range(
@@ -988,14 +1177,40 @@ def _parse_date_range(text: str, *, today: date) -> TemporalDateRange | None:
             month = 12
         return _month_range(year, month, label="先月", expression="先月")
     if "去年" in text and "夏" in text:
-        year = today.year - 1
-        return TemporalDateRange(
-            date(year, 6, 1),
-            date(year, 9, 1),
-            f"{year}年夏",
+        return _season_range(
+            today.year - 1,
+            "夏",
             expression="去年の夏",
         )
+    year_only = re.search(r"(?P<year>\d{4})\s*年(?!\s*(?:\d{1,2}\s*月|春|夏|秋|冬))", text)
+    if year_only:
+        year = int(year_only.group("year"))
+        return TemporalDateRange(
+            date(year, 1, 1),
+            date(year + 1, 1, 1),
+            f"{year}年",
+            expression=_clean_expression(year_only.group(0)),
+        )
     return None
+
+
+def _season_range(year: int, season: str, *, expression: str | None = None) -> TemporalDateRange | None:
+    if season == "春":
+        start = date(year, 3, 1)
+        end = date(year, 6, 1)
+    elif season == "夏":
+        start = date(year, 6, 1)
+        end = date(year, 9, 1)
+    elif season == "秋":
+        start = date(year, 9, 1)
+        end = date(year, 12, 1)
+    elif season == "冬":
+        start = date(year, 12, 1)
+        end = date(year + 1, 3, 1)
+    else:
+        return None
+    label = f"{year}年{season}"
+    return TemporalDateRange(start=start, end=end, label=label, expression=expression or label)
 
 
 def _month_range(

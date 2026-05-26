@@ -85,6 +85,8 @@ class ChatQueryRequest(APIModel):
     show_raw_model_output: bool = False
     snippet_chars: int = Field(default=160, gt=0, le=500)
     limit: int = Field(default=5, gt=0, le=20)
+    temporal_top_candidate_dates: int = Field(default=10, gt=0, le=50)
+    temporal_top_evidence_per_date: int = Field(default=5, gt=0, le=20)
     timeout_seconds: float | None = Field(default=None, gt=0)
     max_tokens: int = Field(default=256, gt=0, le=4096)
     model_key: str = "leader"

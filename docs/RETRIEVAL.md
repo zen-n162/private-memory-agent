@@ -586,7 +586,8 @@ uses a read-only metadata workflow before falling back to broad text/vector
 retrieval:
 
 1. Parse the date range deterministically for forms such as `2025年12月`,
-   `2025/12`, `2025-12`, `去年12月`, `先月`, and `去年の夏`.
+   `2025/12`, `2025-12`, `2025年夏`, `2025年`, `去年12月`, `先月`,
+   and `去年の夏`.
 2. Query `media_items` by capture timestamp in `taken_at` in that range.
 3. Score outing likelihood from safe metadata and local photo annotation text.
 4. Group candidates by day and add same-day LINE/notes support counts.
@@ -604,6 +605,16 @@ not look like grounded answer support. Expanded candidate cards show date,
 confidence, photo/annotation counts, LINE/note support counts, reason summary,
 and grouped supporting evidence.
 
+Phase 9-F adds broad-range chunking and pruning. If a temporal range is longer
+than 45 days, PMA splits the search by month, merges candidate days, ranks them
+by outing confidence/support, and keeps a compact top set before answer display
+or model generation. Defaults are 10 candidate dates and 5 evidence IDs per
+date. Diagnostics include `chunk_count`, `chunk_size`,
+`candidates_before_pruning`, `candidates_after_pruning`,
+`top_candidate_dates`, `top_evidence_per_date`, `evidence_sent_count`, and
+`pruning_reason`. This keeps broad questions such as `2025年夏で出かけたのはいつ？`
+usable without sending an unbounded prompt.
+
 CLI smoke:
 
 ```bash
@@ -611,6 +622,11 @@ pma query "2025年12月で出かけたのはいつ？" --config configs/paths.lo
 pma query "2025年12月で出かけたのはいつ？" \
   --config configs/paths.local.yaml \
   --temporal-diagnostics
+pma query "2025年夏で出かけたのはいつ？" \
+  --config configs/paths.local.yaml \
+  --temporal-diagnostics \
+  --temporal-top-candidate-dates 10 \
+  --temporal-top-evidence-per-date 5
 ```
 
 Default output includes dates, counts, confidence, reason categories, and

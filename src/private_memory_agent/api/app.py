@@ -138,6 +138,8 @@ def create_app(
                     show_raw_model_output=payload.show_raw_model_output,
                     snippet_chars=payload.snippet_chars,
                     limit=payload.limit,
+                    temporal_top_candidate_dates=payload.temporal_top_candidate_dates,
+                    temporal_top_evidence_per_date=payload.temporal_top_evidence_per_date,
                     timeout_seconds=payload.timeout_seconds,
                     max_tokens=payload.max_tokens,
                     model_key=payload.model_key,

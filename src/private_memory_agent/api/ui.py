@@ -812,6 +812,16 @@ def agent_console_html() -> str:
         date_range_source: diagnostics.date_range_source,
         parsed_temporal_expression: diagnostics.parsed_temporal_expression,
         timezone: diagnostics.timezone || "n/a",
+        date_range_days: diagnostics.date_range_days,
+        chunking_enabled: diagnostics.chunking_enabled,
+        chunk_count: diagnostics.chunk_count,
+        chunk_size: diagnostics.chunk_size,
+        candidates_before_pruning: diagnostics.candidates_before_pruning,
+        candidates_after_pruning: diagnostics.candidates_after_pruning,
+        top_candidate_dates: diagnostics.top_candidate_dates,
+        top_evidence_per_date: diagnostics.top_evidence_per_date,
+        evidence_sent_count: diagnostics.evidence_sent_count,
+        pruning_reason: diagnostics.pruning_reason,
         date_range_query_column: diagnostics.date_range_query_column,
         date_range_query_status: diagnostics.date_range_query_status,
         media_items_with_taken_at_count: diagnostics.media_items_with_taken_at_count,
@@ -830,6 +840,15 @@ def agent_console_html() -> str:
       if (diagnostics.nearby_month_counts) {
         tracePanel.appendChild(el("h3", "Nearby Month Counts"));
         renderKv(tracePanel, diagnostics.nearby_month_counts);
+      }
+      if (diagnostics.chunks && diagnostics.chunks.length) {
+        tracePanel.appendChild(el("h3", "Temporal Chunks"));
+        const list = document.createElement("div");
+        list.className = "stack";
+        diagnostics.chunks.forEach((chunk) => {
+          list.appendChild(el("div", `${chunk.label}: ${chunk.start}..${chunk.end} photos=${chunk.photo_candidates_count} days=${chunk.candidate_day_count}`, "status-line mono wrap"));
+        });
+        tracePanel.appendChild(list);
       }
     }
     function renderPrivacy(payload) {

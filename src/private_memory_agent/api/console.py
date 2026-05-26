@@ -89,6 +89,8 @@ class ChatConsoleOptions:
     show_raw_model_output: bool = False
     snippet_chars: int = 160
     limit: int = 5
+    temporal_top_candidate_dates: int = 10
+    temporal_top_evidence_per_date: int = 5
     timeout_seconds: float | None = None
     max_tokens: int = DEFAULT_E2E_REAL_MODEL_MAX_TOKENS
     model_key: str = "leader"
@@ -247,6 +249,10 @@ def _validate_options(options: ChatConsoleOptions) -> None:
         raise ValueError("timeout_seconds must be positive")
     if options.snippet_chars <= 0:
         raise ValueError("snippet_chars must be positive")
+    if options.temporal_top_candidate_dates <= 0 or options.temporal_top_candidate_dates > 50:
+        raise ValueError("temporal_top_candidate_dates must be between 1 and 50")
+    if options.temporal_top_evidence_per_date <= 0 or options.temporal_top_evidence_per_date > 20:
+        raise ValueError("temporal_top_evidence_per_date must be between 1 and 20")
 
 
 def _maybe_temporal_console_payload(options: ChatConsoleOptions) -> dict[str, Any] | None:
@@ -256,6 +262,8 @@ def _maybe_temporal_console_payload(options: ChatConsoleOptions) -> dict[str, An
         options.question,
         db_path=options.db_path,
         top_days=options.limit,
+        top_candidate_dates=options.temporal_top_candidate_dates,
+        top_evidence_per_date=options.temporal_top_evidence_per_date,
     )
     if result is None:
         return None

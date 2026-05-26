@@ -884,6 +884,18 @@ def build_parser() -> argparse.ArgumentParser:
             "Can be passed more than once."
         ),
     )
+    query_parser.add_argument(
+        "--temporal-top-candidate-dates",
+        type=int,
+        default=10,
+        help="Maximum candidate dates to keep for temporal event queries after chunking/pruning.",
+    )
+    query_parser.add_argument(
+        "--temporal-top-evidence-per-date",
+        type=int,
+        default=5,
+        help="Maximum evidence IDs retained per candidate date for temporal event queries.",
+    )
     query_parser.set_defaults(func=_query_command)
 
     events_parser = subparsers.add_parser("events", help="Build and inspect tentative events.")
@@ -2089,6 +2101,8 @@ def _query_command(args: argparse.Namespace) -> int:
                 args.question,
                 db_path=args.db,
                 fallback_terms=temporal_terms or None,
+                top_candidate_dates=args.temporal_top_candidate_dates,
+                top_evidence_per_date=args.temporal_top_evidence_per_date,
             )
             if temporal_result is not None:
                 print(

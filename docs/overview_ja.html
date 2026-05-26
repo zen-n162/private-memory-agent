@@ -544,6 +544,7 @@
             <tr><td>9-B</td><td>時間範囲イベント質問を、写真日時、注釈、日別クラスタ、LINE/ノート同日サポートで扱う。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-C0</td><td>写真・動画の capture timestamp を監査し、EXIF/XMP/video/filename から <code>taken_at</code> を安全に backfill。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-C</td><td>temporal query の parsed date range、写真 coverage、filter 診断、LINE/ノート fallback を安全に表示。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>9-F</td><td>広い temporal query を月単位に chunk し、candidate date と evidence を pruning して表示する。</td><td class="status">基本実装済み</td></tr>
           </tbody>
         </table>
       </section>
@@ -805,6 +806,16 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           その日付を弱い fallback evidence として示し、写真で確認できていないことを明記します。
           既定では LINE 本文、ノート本文、caption、OCR、ファイル名、フルパス、GPS、EXIF は表示しません。
         </p>
+        <p>
+          9-F では <code>2025年夏で出かけたのはいつ？</code> や <code>2025年に出かけた日は？</code> のような
+          広い temporal query を扱うため、45 日を超える範囲を月単位に chunk します。
+          各 chunk で候補日を作り、外出らしさ、同日サポート、confidence で順位付けした上で、
+          既定では candidate date を 10 件、各日付の evidence ID を 5 件までに絞ります。
+          UI/API は <code>chunk_count</code>、<code>candidates_before_pruning</code>、
+          <code>candidates_after_pruning</code>、<code>evidence_sent_count</code>、
+          <code>pruning_reason</code> を表示し、answer generation が失敗しても候補日と診断を確認しやすくします。
+          この処理も path、GPS、EXIF、本文全文を表示しない privacy-safe な count/ID 中心の出力です。
+        </p>
       </section>
 
       <section id="limitations">
@@ -822,6 +833,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
       <section id="history">
         <h2>更新履歴</h2>
         <ul>
+          <li>2026-05-26: 広い temporal query 向けに季節/年 parsing、月単位 chunking、candidate/evidence pruning 診断を追加。</li>
           <li>2026-05-26: local chat UI の evidence viewer を改善し、candidate date accordion、source tab、reason label、path-free thumbnail を追加。</li>
           <li>2026-05-26: timestamp backfill の実書き込みを <code>--apply</code> で明示し、dry-run/apply message を追加。</li>
           <li>2026-05-26: timestamp audit/backfill が <code>storage.sqlite_path</code> を使うようにし、期待 DB へ書き込む経路を修正。</li>

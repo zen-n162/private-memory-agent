@@ -105,6 +105,11 @@ This document outlines the development roadmap for private-memory-agent.
   groups supporting evidence by source tabs, maps machine reason codes to
   Japanese labels, and can show local photo thumbnails by evidence ID. LINE/note
   snippets and fuller text remain explicit privacy controls.
+- Phase 9-F adds temporal query chunking and candidate pruning:
+  broad date ranges such as `2025年夏` and `2025年` are parsed into structured
+  ranges, split into monthly chunks when needed, ranked by candidate-day
+  confidence, and reduced to compact top dates/evidence before answer display.
+  UI/API diagnostics expose chunk counts, pruning counts, and evidence budgets.
 
 ## 実データE2E smokeの実行手順
 

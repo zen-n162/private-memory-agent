@@ -97,6 +97,17 @@ def test_temporal_parser_understands_japanese_month_and_relative_dates():
     assert previous_month is not None
     assert previous_month.date_range.start.isoformat() == "2026-04-01"
 
+    summer = parse_temporal_event_query("2025年夏で出かけたのはいつ？", today=date(2026, 5, 26))
+    assert summer is not None
+    assert summer.date_range.start.isoformat() == "2025-06-01"
+    assert summer.date_range.end.isoformat() == "2025-09-01"
+    assert summer.date_range.expression == "2025年夏"
+
+    full_year = parse_temporal_event_query("2025年に出かけた日は？", today=date(2026, 5, 26))
+    assert full_year is not None
+    assert full_year.date_range.start.isoformat() == "2025-01-01"
+    assert full_year.date_range.end.isoformat() == "2026-01-01"
+
 
 def test_photo_date_range_search_returns_safe_metadata_only(tmp_path):
     db_path = tmp_path / "temporal.sqlite3"
@@ -438,3 +449,74 @@ def test_temporal_all_sources_missing_reports_clear_unknown(tmp_path):
     assert payload["diagnostics"]["line_date_support_count"] == 0
     assert payload["diagnostics"]["notes_date_support_count"] == 0
     assert "写真、LINE、ノート" in payload["answer"]["unknowns"][0]
+
+
+def test_broad_temporal_range_is_chunked_and_candidate_dates_are_pruned(tmp_path):
+    db_path = tmp_path / "temporal.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        for month in (6, 7, 8):
+            for day in (3, 10, 17, 24):
+                _insert_photo(
+                    storage,
+                    taken_at=f"2025-{month:02d}-{day:02d}T10:00:00",
+                    annotation_text="駅とカフェで外出した写真",
+                )
+    finally:
+        storage.close()
+
+    result = answer_temporal_event_query(
+        "2025年夏で出かけたのはいつ？",
+        db_path=db_path,
+        top_candidate_dates=4,
+        top_evidence_per_date=1,
+    )
+    assert result is not None
+    payload = result.to_dict(show_answer=True)
+
+    assert result.ok is True
+    assert payload["diagnostics"]["chunking_enabled"] is True
+    assert payload["diagnostics"]["chunk_count"] == 3
+    assert payload["diagnostics"]["chunk_size"] == "month"
+    assert payload["diagnostics"]["candidates_before_pruning"] == 12
+    assert payload["diagnostics"]["candidates_after_pruning"] == 4
+    assert payload["diagnostics"]["top_candidate_dates"] == 4
+    assert payload["diagnostics"]["top_evidence_per_date"] == 1
+    assert payload["diagnostics"]["evidence_sent_count"] <= 4
+    assert len(payload["candidate_dates"]) == 4
+    assert len(payload["answer"]["dates"]) == 4
+
+
+def test_chat_console_broad_temporal_query_returns_candidates_without_model_error(
+    temp_config_factory,
+    tmp_path,
+):
+    db_path = tmp_path / "temporal.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        _insert_photo(
+            storage,
+            taken_at="2025-07-12T10:00:00",
+            annotation_text="駅とレストランで外出",
+            path="/private/broad-secret.jpg",
+        )
+    finally:
+        storage.close()
+
+    payload = run_chat_console_query(
+        ChatConsoleOptions(
+            config_dir=temp_config_factory(),
+            db_path=db_path,
+            question="2025年夏で出かけたのはいつ？",
+            mode="real-model",
+        ),
+    )
+    serialized = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["trace"]["temporal_event"] is True
+    assert payload["answer"]["answer_succeeded"] is True
+    assert payload["answer"]["error_class"] is None
+    assert payload["trace"]["temporal_diagnostics"]["chunking_enabled"] is True
+    assert payload["evidence_display"]["candidate_dates"]
+    assert "/private/broad-secret.jpg" not in serialized
+    assert "駅とレストラン" not in serialized
