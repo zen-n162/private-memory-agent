@@ -595,10 +595,13 @@ def agent_console_html() -> str:
         tags.className = "tag-row";
         tags.appendChild(pill(item.date || "unknown", "strong"));
         tags.appendChild(pill(`confidence=${item.confidence ?? "n/a"}`));
+        tags.appendChild(pill(`event_score=${item.event_score ?? item.confidence ?? "n/a"}`));
         tags.appendChild(pill(`photos=${item.photo_count ?? 0}`));
         tags.appendChild(pill(`annotated=${item.annotated_photo_count ?? 0}`));
         tags.appendChild(pill(`LINE=${item.line_support_count ?? 0}`));
         tags.appendChild(pill(`notes=${item.notes_support_count ?? 0}`));
+        tags.appendChild(pill(`visual=${item.matched_visual_signal_count ?? 0}`));
+        tags.appendChild(pill(`text=${item.matched_textual_signal_count ?? 0}`));
         tags.appendChild(pill(`used_evidence=${item.used_evidence_count ?? 0}`));
         if (item.reason_summary) tags.appendChild(pill(item.reason_summary, "warn"));
         summary.appendChild(tags);
@@ -820,6 +823,17 @@ def agent_console_html() -> str:
         date_range_parse_warnings: diagnostics.date_range_parse_warnings || [],
         parsed_temporal_expression: diagnostics.parsed_temporal_expression,
         timezone: diagnostics.timezone || "n/a",
+        event_type: diagnostics.event_type,
+        event_description: diagnostics.event_description,
+        event_intent_plan_created: diagnostics.event_intent_plan_created,
+        event_intent_fallback_used: diagnostics.event_intent_fallback_used,
+        visual_signal_count: diagnostics.visual_signal_count,
+        textual_signal_count: diagnostics.textual_signal_count,
+        source_priorities: diagnostics.source_priorities || [],
+        source_constraints: diagnostics.source_constraints || [],
+        candidate_date_count: diagnostics.candidate_date_count,
+        repair_attempted: diagnostics.repair_attempted,
+        repair_reason: diagnostics.repair_reason || "none",
         months_covered: diagnostics.months_covered || [],
         date_range_days: diagnostics.date_range_days,
         chunking_enabled: diagnostics.chunking_enabled,
@@ -861,6 +875,14 @@ def agent_console_html() -> str:
           final_candidate_date_count_by_month: diagnostics.final_candidate_date_count_by_month || {},
           line_support_count_by_month: diagnostics.line_support_count_by_month || {},
           notes_support_count_by_month: diagnostics.notes_support_count_by_month || {}
+        });
+      }
+      if (diagnostics.event_score_by_date) {
+        tracePanel.appendChild(el("h3", "Event Intent Scores"));
+        renderKv(tracePanel, {
+          event_score_by_date: diagnostics.event_score_by_date || {},
+          matched_visual_signal_counts_by_date: diagnostics.matched_visual_signal_counts_by_date || {},
+          matched_textual_signal_counts_by_date: diagnostics.matched_textual_signal_counts_by_date || {}
         });
       }
       if (diagnostics.chunks && diagnostics.chunks.length) {

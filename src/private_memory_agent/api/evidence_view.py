@@ -397,6 +397,11 @@ def _render_candidate_date(
     return {
         "date": candidate_date.get("date"),
         "confidence": candidate_date.get("confidence"),
+        "event_score": candidate_date.get("event_score"),
+        "matched_visual_signals": candidate_date.get("matched_visual_signals", []),
+        "matched_textual_signals": candidate_date.get("matched_textual_signals", []),
+        "matched_visual_signal_count": candidate_date.get("matched_visual_signal_count", 0),
+        "matched_textual_signal_count": candidate_date.get("matched_textual_signal_count", 0),
         "reason": candidate_date.get("reason"),
         "reason_codes": reason_codes,
         "reason_labels": reason_labels,

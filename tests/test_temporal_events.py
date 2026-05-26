@@ -5,12 +5,33 @@ from private_memory_agent.api.console import ChatConsoleOptions, run_chat_consol
 from private_memory_agent.cli import main
 from private_memory_agent.storage import initialize_database
 from private_memory_agent.temporal import (
+    DeterministicEventIntentPlanner,
+    EventIntentPlan,
     answer_temporal_event_query,
     cluster_photo_candidates_by_day,
     parse_temporal_event_query,
     score_outing_likelihood,
     search_photos_by_date_range,
 )
+
+
+class _FakeDiningPlanner:
+    def plan(self, question, date_range):
+        return EventIntentPlan(
+            query_type="temporal_event_search",
+            date_range=date_range,
+            event_type="dining_out",
+            event_description="synthetic dining plan",
+            visual_signals=("料理", "レストラン", "テーブル"),
+            textual_signals=("ご飯", "レストラン", "集合"),
+            source_priorities=("photos", "line", "notes"),
+            positive_evidence_criteria=("food or restaurant signal",),
+            weak_evidence_criteria=("generic outing only",),
+            negative_evidence_criteria=("スクリーンショット",),
+            repair_queries=("ご飯 レストラン",),
+            fallback_used=False,
+            planner="fake",
+        )
 
 
 def _insert_photo(
@@ -641,3 +662,107 @@ def test_chat_console_month_range_response_exposes_safe_month_coverage(
     assert payload["trace"]["temporal_diagnostics"]["photo_count_by_month"]["2025-10"] == 1
     assert "/private/month-range-secret.jpg" not in serialized
     assert "PRIVATE station cafe outing" not in serialized
+
+
+def test_temporal_dining_out_intent_finds_food_photo_and_demotes_generic_outdoor(
+    tmp_path,
+):
+    db_path = tmp_path / "temporal.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        food_id = _insert_photo(
+            storage,
+            taken_at="2025-12-05T19:00:00",
+            annotation_text="料理 レストラン テーブル",
+            path="/private/food-secret.jpg",
+        )
+        generic_id = _insert_photo(
+            storage,
+            taken_at="2025-12-06T14:00:00",
+            annotation_text="屋外 公園",
+            path="/private/generic-secret.jpg",
+        )
+        line_id = _insert_line(
+            storage,
+            sent_at="2025-12-07T18:00:00",
+            text="PRIVATE LINE レストラン 集合 ご飯",
+        )
+    finally:
+        storage.close()
+
+    result = answer_temporal_event_query(
+        "2025年12月でご飯を食べに行っているのはいつ？",
+        db_path=db_path,
+        event_planner=_FakeDiningPlanner(),
+    )
+    assert result is not None
+    payload = result.to_dict(show_answer=True)
+    serialized = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["query"]["event_type"] == "dining_out"
+    assert payload["diagnostics"]["event_type"] == "dining_out"
+    assert payload["diagnostics"]["visual_signal_count"] == 3
+    assert payload["diagnostics"]["textual_signal_count"] == 3
+    dates = {item["date"]: item for item in payload["candidate_dates"]}
+    assert "2025-12-05" in dates
+    assert dates["2025-12-05"]["event_score"] >= 0.45
+    assert dates["2025-12-05"]["matched_visual_signal_count"] >= 2
+    assert f"media_items:{food_id}" in payload["answer"]["evidence_references"]
+    assert "2025-12-07" in dates
+    assert f"line_messages:{line_id}" in dates["2025-12-07"]["support_evidence_ids"]
+    generic_evidence = next(
+        item for item in payload["evidence"] if item["evidence_id"] == f"media_items:{generic_id}"
+    )
+    assert generic_evidence["used_by_answer"] is False
+    assert generic_evidence["evidence_role"] in {"candidate", "rejected"}
+    assert "/private/food-secret.jpg" not in serialized
+    assert "PRIVATE LINE" not in serialized
+
+
+def test_deterministic_event_planner_infers_dining_out_open_vocabulary():
+    parsed = parse_temporal_event_query("2025年12月でご飯を食べに行っているのはいつ？")
+    assert parsed is not None
+    plan = DeterministicEventIntentPlanner().plan(
+        "2025年12月でご飯を食べに行っているのはいつ？",
+        parsed.date_range,
+    )
+    assert plan.event_type == "dining_out"
+    assert "レストラン" in plan.visual_signals
+    assert "ご飯" in plan.textual_signals
+
+
+def test_chat_console_dining_query_exposes_event_intent_diagnostics(
+    temp_config_factory,
+    tmp_path,
+):
+    db_path = tmp_path / "temporal.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        _insert_photo(
+            storage,
+            taken_at="2025-12-05T19:00:00",
+            annotation_text="料理 レストラン テーブル",
+            path="/private/ui-dining-secret.jpg",
+        )
+    finally:
+        storage.close()
+
+    payload = run_chat_console_query(
+        ChatConsoleOptions(
+            config_dir=temp_config_factory(),
+            db_path=db_path,
+            question="2025年12月でご飯を食べに行っているのはいつ？",
+            mode="retrieval-only",
+        ),
+    )
+    serialized = json.dumps(payload, ensure_ascii=False)
+    diagnostics = payload["trace"]["temporal_diagnostics"]
+
+    assert diagnostics["event_type"] == "dining_out"
+    assert diagnostics["visual_signal_count"] > 0
+    assert diagnostics["textual_signal_count"] > 0
+    assert diagnostics["candidate_date_count"] > 0
+    assert diagnostics["event_score_by_date"]
+    assert payload["evidence_display"]["candidate_dates"][0]["event_score"] >= 0.45
+    assert "/private/ui-dining-secret.jpg" not in serialized
+    assert "料理 レストラン" not in serialized

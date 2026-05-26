@@ -546,6 +546,7 @@
             <tr><td>9-C</td><td>temporal query の parsed date range、写真 coverage、filter 診断、LINE/ノート fallback を安全に表示。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-F</td><td>広い temporal query を月単位に chunk し、candidate date と evidence を pruning して表示する。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-F2</td><td><code>2025年10月から12月</code> のような日本語月範囲と月別 coverage/pruning 診断。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>9-G</td><td>EventIntentPlan で dining_out などの意図を推定し、event-specific な写真/LINE/ノート検索を行う。</td><td class="status">基本実装済み</td></tr>
           </tbody>
         </table>
       </section>
@@ -828,6 +829,16 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           <code>pruned_months</code> を表示します。複数月を解析したのに最終候補が 1 か月だけに偏った場合は、
           parser が失敗したのか pruning の結果なのか分かるよう warning を出します。
         </p>
+        <p>
+          9-G では temporal query に <code>EventIntentPlan</code> を導入しました。
+          <code>2025年12月でご飯を食べに行っているのはいつ？</code> のような質問は、
+          generic outing ではなく <code>dining_out</code> として扱い、写真注釈では料理、レストラン、
+          カフェ、テーブル、メニューなどの visual signal を、LINE/ノートでは食事、集合、予約などの
+          textual signal を探します。generic な屋外写真は候補として調べても、event-specific signal が
+          なければ弱い evidence として扱います。UI diagnostics には event type、signal count、
+          source priority、candidate date ごとの event score と matched signal count を表示し、
+          raw evidence 本文は既定で表示しません。
+        </p>
       </section>
 
       <section id="limitations">
@@ -845,6 +856,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
       <section id="history">
         <h2>更新履歴</h2>
         <ul>
+          <li>2026-05-26: EventIntentPlan による dining_out などの event-specific temporal retrieval と UI 診断を追加。</li>
           <li>2026-05-26: 日本語の月範囲 parsing と月別 temporal coverage/pruning 診断を追加。</li>
           <li>2026-05-26: 広い temporal query 向けに季節/年 parsing、月単位 chunking、candidate/evidence pruning 診断を追加。</li>
           <li>2026-05-26: local chat UI の evidence viewer を改善し、candidate date accordion、source tab、reason label、path-free thumbnail を追加。</li>

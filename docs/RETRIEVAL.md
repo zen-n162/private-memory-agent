@@ -589,10 +589,16 @@ retrieval:
    `2025/12`, `2025-12`, `2025年夏`, `2025年`, `去年12月`, `先月`,
    `去年の夏`, and multi-month ranges like `2025年10月から12月`,
    `2025年10月〜12月`, and `2025年10月から2025年12月まで`.
-2. Query `media_items` by capture timestamp in `taken_at` in that range.
-3. Score outing likelihood from safe metadata and local photo annotation text.
-4. Group candidates by day and add same-day LINE/notes support counts.
-5. Return candidate dates with confidence and privacy-safe evidence IDs.
+2. Infer an `EventIntentPlan` for the event kind. Generic outing remains the
+   fallback, but event types are open vocabulary: `dining_out`, `meeting`,
+   `travel`, `shopping`, `work`, `research`, or `unknown_event`.
+3. Query `media_items` by capture timestamp in `taken_at` in that range.
+4. Score event likelihood from safe metadata, local photo annotation text, and
+   event-specific visual signals.
+5. Search LINE/notes for event-specific textual signals and cluster support by
+   day.
+6. Return candidate dates with confidence, event scores, matched signal counts,
+   and privacy-safe evidence IDs.
 
 The output separates evidence roles:
 
@@ -625,6 +631,15 @@ parsed but final top candidates only cover one month, PMA emits a warning such
 as "Final candidates only cover 2025-10 although parsed range includes
 2025-11, 2025-12." This distinguishes parser bugs from normal pruning.
 
+Phase 9-G adds event-intent planning. Queries such as
+`2025年12月でご飯を食べに行っているのはいつ？` are treated as dining-out
+searches rather than generic outings. The planner supplies visual signals such
+as food/restaurant/table/menu terms and textual signals for LINE/notes. Generic
+outdoor photos can still be examined, but they are weak for `dining_out` unless
+they match the event-specific plan. UI/API diagnostics expose `event_type`,
+`visual_signal_count`, `textual_signal_count`, `source_priorities`,
+`event_score_by_date`, and matched signal counts without printing raw evidence.
+
 CLI smoke:
 
 ```bash
@@ -638,6 +653,9 @@ pma query "2025年夏で出かけたのはいつ？" \
   --temporal-top-candidate-dates 10 \
   --temporal-top-evidence-per-date 5
 pma query "2025年10月から12月で出かけたのはいつ？" \
+  --config configs/paths.local.yaml \
+  --temporal-diagnostics
+pma query "2025年12月でご飯を食べに行っているのはいつ？" \
   --config configs/paths.local.yaml \
   --temporal-diagnostics
 ```

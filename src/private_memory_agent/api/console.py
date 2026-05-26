@@ -38,7 +38,7 @@ from private_memory_agent.runtime import (
     endpoint_from_model_spec,
     preflight_chat_endpoint,
 )
-from private_memory_agent.temporal import answer_temporal_event_query
+from private_memory_agent.temporal import LeaderEventIntentPlanner, answer_temporal_event_query
 
 ConsoleMode = Literal["retrieval-only", "fake-model", "real-model"]
 ConsoleSource = Literal["photos", "line", "notes"]
@@ -264,6 +264,7 @@ def _maybe_temporal_console_payload(options: ChatConsoleOptions) -> dict[str, An
         top_days=options.limit,
         top_candidate_dates=options.temporal_top_candidate_dates,
         top_evidence_per_date=options.temporal_top_evidence_per_date,
+        event_planner=_temporal_event_planner(options),
     )
     if result is None:
         return None
@@ -303,10 +304,10 @@ def _maybe_temporal_console_payload(options: ChatConsoleOptions) -> dict[str, An
             "reranked_candidate_count": 0,
             "retrieval_stage_counts": result.diagnostics,
             "temporal_diagnostics": result.diagnostics,
-            "repair_attempted": False,
+            "repair_attempted": bool(result.diagnostics.get("repair_attempted")),
             "repair_improved": False,
             "retrieval_repair_count": 0,
-            "repair_reason": None,
+            "repair_reason": result.diagnostics.get("repair_reason"),
             "usable_evidence_succeeded": should_use_count > 0,
             "usable_evidence_count": should_use_count,
             "unusable_evidence_count": max(0, len(result.evidence) - should_use_count),
@@ -331,6 +332,34 @@ def _maybe_temporal_console_payload(options: ChatConsoleOptions) -> dict[str, An
         "privacy": privacy,
         "warnings": list(warnings),
     }
+
+
+def _temporal_event_planner(options: ChatConsoleOptions) -> LeaderEventIntentPlanner | None:
+    if options.mode != "real-model" or not options.leader_plan:
+        return None
+    try:
+        config = load_config(config_dir=options.config_dir, paths_config=options.paths_config)
+        model_spec = config.model_registry.get(options.model_key)
+        if model_spec is None:
+            return None
+        endpoint = endpoint_from_model_spec(model_spec)
+        if endpoint is None:
+            return None
+        preflight = preflight_chat_endpoint(endpoint, allow_remote=options.allow_remote)
+        client = OpenAICompatibleHTTPClient(
+            base_url=endpoint.base_url,
+            model=preflight.served_model_name or endpoint.model_id,
+            timeout_seconds=options.timeout_seconds or DEFAULT_E2E_REAL_MODEL_TIMEOUT_SECONDS,
+            allow_remote=options.allow_remote,
+        )
+        return LeaderEventIntentPlanner(
+            client,
+            model=preflight.served_model_name or endpoint.model_id,
+            max_tokens=min(max(options.max_tokens, 128), 512),
+            temperature=0.0,
+        )
+    except (ModelRuntimeError, RuntimeError, ValueError):
+        return None
 
 
 def _build_plan(

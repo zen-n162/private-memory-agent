@@ -114,6 +114,11 @@ This document outlines the development roadmap for private-memory-agent.
   expressions such as `2025年10月から12月` and `2025年10月〜12月` now parse to
   multi-month ranges, and diagnostics expose parsed range confidence, month
   coverage, per-month photo/candidate/support counts, and pruned months.
+- Phase 9-G adds event-intent planning for temporal search:
+  temporal questions now infer open-vocabulary event types such as `dining_out`
+  and use event-specific visual/textual signals, event scores, matched signal
+  counts, and privacy-safe UI diagnostics. Generic outing evidence is weaker
+  when it does not match the inferred event intent.
 
 ## 実データE2E smokeの実行手順
 
