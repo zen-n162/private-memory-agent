@@ -542,6 +542,7 @@
             <tr><td>8-O</td><td>semantic retrieval 構成を usable evidence quality で比較し、device 診断も出す。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-A</td><td>localhost の evidence-first agent console。回答状態、証拠 ID、source coverage、relevance、plan、repair、privacy を安全に確認。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-B</td><td>時間範囲イベント質問を、写真日時、注釈、日別クラスタ、LINE/ノート同日サポートで扱う。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>9-C0</td><td>写真・動画の capture timestamp を監査し、EXIF/XMP/video/filename から <code>taken_at</code> を安全に backfill。</td><td class="status">基本実装済み</td></tr>
           </tbody>
         </table>
       </section>
@@ -591,6 +592,9 @@ pma search text "架空の検索語" --config configs/paths.local.yaml
 pma retrieve "架空の質問"
 pma query "架空の質問"
 pma query "2025年12月で出かけたのはいつ？" --config configs/paths.local.yaml
+pma media timestamps audit --config configs/paths.local.yaml
+pma media timestamps audit --config configs/paths.local.yaml --month-histogram
+pma media timestamps backfill --config configs/paths.local.yaml --dry-run --limit 20 --method auto
 pma runtime plan lightweight_query
 pma eval run --summary
 python -m pip install -e ".[dev]"
@@ -753,6 +757,22 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           <code>should_use=false</code> の候補は answer evidence として扱いません。
           既定ではファイル名、フルパス、GPS、LINE 本文、ノート本文、OCR、写真 caption 全文は表示しません。
         </p>
+        <p>
+          temporal event query が写真の日付で動くには <code>media_items.taken_at</code> が必要です。
+          9-C0 では <code>pma media timestamps audit</code> で taken_at の有無、実ファイル存在数、
+          EXIF/XMP/video/filename から抽出可能な件数、unsupported format、parse error、
+          任意の month histogram を path なしで確認できます。
+          大きなライブラリでは抽出可能性の確認は既定で sample に制限し、全件 deep audit は
+          <code>--extract-limit 0</code> を明示した時だけ行います。
+          <code>pma media timestamps backfill --dry-run --limit 20 --method auto</code> は
+          source file を read-only のまま調べ、書き込み候補数だけを返します。
+          実書き込みは <code>--write</code> を明示した時だけです。
+          <code>exiftool</code> があれば JPEG、HEIC、MOV、MP4、XMP を優先し、
+          なければ Pillow で画像 EXIF を読みます。file mtime は低 confidence の fallback なので、
+          <code>--fallback file-mtime</code> を明示した時だけ使います。
+          DB には timestamp source、confidence、timezone 情報を保存し、既存の高 confidence timestamp は
+          既定では上書きしません。
+        </p>
       </section>
 
       <section id="limitations">
@@ -770,6 +790,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
       <section id="history">
         <h2>更新履歴</h2>
         <ul>
+          <li>2026-05-26: media timestamp audit/backfill を追加し、<code>taken_at</code> の source/confidence を保存できるように更新。</li>
           <li>2026-05-26: temporal event query を追加し、写真日時検索、外出 score、日別 cluster、候補/使用/弱い evidence の分離を実装。</li>
           <li>2026-05-25: local chat UI の <code>show_answer</code> を既定 ON にし、hidden/unknown/failed/visible answer を区別。</li>
           <li>2026-05-25: localhost evidence-first agent console、<code>/api/chat/query</code>、<code>/api/system/status</code> を追加。</li>

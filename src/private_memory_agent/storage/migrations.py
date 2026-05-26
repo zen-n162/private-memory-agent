@@ -330,4 +330,21 @@ SELECT
 FROM text_search_documents;
 """,
     ),
+    Migration(
+        version=5,
+        name="add_media_timestamp_provenance",
+        sql="""
+ALTER TABLE media_items ADD COLUMN taken_at_source TEXT;
+ALTER TABLE media_items ADD COLUMN taken_at_confidence TEXT;
+ALTER TABLE media_items ADD COLUMN taken_at_timezone TEXT;
+ALTER TABLE media_items ADD COLUMN taken_at_timezone_unknown INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE media_items ADD COLUMN metadata_updated_at TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_media_items_taken_at_source
+ON media_items(taken_at_source);
+
+CREATE INDEX IF NOT EXISTS idx_media_items_taken_at_confidence
+ON media_items(taken_at_confidence);
+""",
+    ),
 )

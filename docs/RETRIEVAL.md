@@ -588,6 +588,37 @@ Default output includes dates, counts, confidence, reason categories, and
 evidence IDs only. It does not print filenames, full paths, GPS coordinates,
 raw LINE text, note bodies, OCR text, or full photo captions.
 
+Temporal photo search depends on `media_items.taken_at`. If imported media rows
+do not have capture timestamps yet, run the timestamp audit:
+
+```bash
+pma media timestamps audit --config configs/paths.local.yaml
+pma media timestamps audit --config configs/paths.local.yaml --month-histogram
+```
+
+The audit reports count-only coverage: total media rows, rows with/missing
+`taken_at`, existing/missing source files, extractable EXIF/XMP/video/filename
+timestamps, optional file-mtime fallback counts, unsupported formats, and parse
+errors. It does not print paths or metadata payloads.
+For large libraries, extraction probing is sampled by default; use
+`--extract-limit 0` only when you intentionally want a deep all-file audit.
+
+Preview backfill before writing:
+
+```bash
+pma media timestamps backfill --config configs/paths.local.yaml \
+  --dry-run \
+  --limit 20 \
+  --method auto
+```
+
+`exiftool` is preferred when installed because it can read JPEG, HEIC, MOV, MP4,
+and XMP metadata. Without `exiftool`, PMA falls back to Pillow for supported
+image EXIF. Stored timestamp provenance includes `taken_at_source`,
+`taken_at_confidence`, `taken_at_timezone`, and `taken_at_timezone_unknown`.
+File modification time is low-confidence and is only used when
+`--fallback file-mtime` is explicitly selected. Source files remain read-only.
+
 ## Optional Integration Tests
 
 Real embedding model tests are skipped unless explicitly enabled:

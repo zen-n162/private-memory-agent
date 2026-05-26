@@ -92,6 +92,10 @@ This document outlines the development roadmap for private-memory-agent.
   date parsing, read-only photo date-range search, outing likelihood scoring,
   daily clustering, and same-day LINE/notes support counts. The UI separates
   used evidence from examined candidates and weak/rejected evidence.
+- Phase 9-C0 adds media timestamp audit/backfill:
+  `pma media timestamps audit` reports `taken_at` coverage and extractability
+  counts without paths, while `pma media timestamps backfill` can dry-run or
+  explicitly write capture timestamps with source/confidence provenance.
 
 ## 実データE2E smokeの実行手順
 
@@ -329,3 +333,23 @@ note bodies, OCR text, or full captions.
 In the local UI, candidate dates appear in the answer panel. Evidence is grouped
 as used, examined candidate, or rejected/weak. Evidence with `should_use=false`
 is never marked as `used_by_answer=true`.
+
+Temporal event queries require usable `media_items.taken_at` values. Check
+coverage before judging temporal quality:
+
+```bash
+pma media timestamps audit --config configs/paths.local.yaml
+pma media timestamps audit --config configs/paths.local.yaml --month-histogram
+pma media timestamps backfill --config configs/paths.local.yaml \
+  --dry-run \
+  --limit 20 \
+  --method auto
+```
+
+Backfill is dry-run by default. Use `--write` only after reviewing count-only
+diagnostics. `exiftool` is preferred when available; Pillow is the lightweight
+fallback for image EXIF. `--fallback file-mtime` is low-confidence and should be
+used only when capture metadata is unavailable and modification time is
+acceptable for the use case.
+Audit extraction probing is sampled by default for large libraries. Use
+`--extract-limit 0` only for an intentional deep all-file audit.

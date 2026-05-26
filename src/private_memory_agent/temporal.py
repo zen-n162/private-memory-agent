@@ -17,6 +17,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from private_memory_agent.media_timestamps import timestamp_coverage
 from private_memory_agent.retrieval.text import media_annotation_search_text, normalize_text
 
 SUPPORTED_TEMPORAL_SOURCES = ("photos", "line", "notes")
@@ -341,8 +342,11 @@ def answer_temporal_event_query(
     used_clusters = tuple(item for item in ranked_clusters if item.confidence >= outing_threshold)
     evidence = _build_temporal_evidence(photos, ranked_clusters, used_clusters)
     answer = _build_temporal_answer(parsed, used_clusters, ranked_clusters)
+    coverage = timestamp_coverage(db)
     diagnostics = {
         "db_exists": True,
+        **coverage,
+        "parsed_date_range": parsed.date_range.to_dict(),
         "photo_candidates_examined": len(photos),
         "candidate_day_count": len(ranked_clusters),
         "used_day_count": len(used_clusters),

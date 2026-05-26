@@ -64,6 +64,12 @@ from private_memory_agent.evaluation import (
     write_golden_outputs,
 )
 from private_memory_agent.ingestion import ingest_line_exports, ingest_notes, ingest_photos
+from private_memory_agent.media_timestamps import (
+    audit_media_timestamps,
+    backfill_media_timestamps,
+    format_timestamp_audit,
+    format_timestamp_backfill,
+)
 from private_memory_agent.models import ModelRegistry
 from private_memory_agent.retrieval import (
     FakeEmbeddingModel,
@@ -142,6 +148,141 @@ def build_parser() -> argparse.ArgumentParser:
         help="SQLite database path to inspect.",
     )
     stats_parser.set_defaults(func=_stats_command)
+
+    media_parser = subparsers.add_parser(
+        "media",
+        help="Inspect and repair privacy-safe local media metadata.",
+    )
+    media_subparsers = media_parser.add_subparsers(dest="media_command")
+    media_timestamps_parser = media_subparsers.add_parser(
+        "timestamps",
+        help="Audit or backfill media capture timestamps.",
+    )
+    media_timestamps_subparsers = media_timestamps_parser.add_subparsers(
+        dest="media_timestamps_command",
+    )
+    media_timestamps_audit_parser = media_timestamps_subparsers.add_parser(
+        "audit",
+        help="Audit media timestamp coverage without printing paths.",
+    )
+    _add_config_dir_argument(media_timestamps_audit_parser)
+    media_timestamps_audit_parser.add_argument(
+        "--db",
+        type=Path,
+        default=DEFAULT_E2E_DB_PATH,
+        help="SQLite database path to inspect.",
+    )
+    media_timestamps_audit_parser.add_argument(
+        "--method",
+        choices=("auto", "exiftool", "pillow"),
+        default="auto",
+        help="Timestamp extraction method used for extractability counts.",
+    )
+    media_timestamps_audit_parser.add_argument(
+        "--fallback",
+        choices=("none", "file-mtime"),
+        default="none",
+        help="Optional low-confidence fallback used for extractability counts.",
+    )
+    media_timestamps_audit_parser.add_argument(
+        "--month-histogram",
+        action="store_true",
+        help="Include month counts from stored taken_at values.",
+    )
+    media_timestamps_audit_parser.add_argument(
+        "--extract-limit",
+        type=int,
+        default=200,
+        help=(
+            "Maximum existing supported files to inspect for extractable timestamp "
+            "counts. Use 0 for all files."
+        ),
+    )
+    media_timestamps_audit_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print audit as JSON.",
+    )
+    media_timestamps_audit_parser.set_defaults(func=_media_timestamps_audit_command)
+
+    media_timestamps_backfill_parser = media_timestamps_subparsers.add_parser(
+        "backfill",
+        help="Backfill missing media capture timestamps from local files.",
+    )
+    _add_config_dir_argument(media_timestamps_backfill_parser)
+    media_timestamps_backfill_parser.add_argument(
+        "--db",
+        type=Path,
+        default=DEFAULT_E2E_DB_PATH,
+        help="SQLite database path to update.",
+    )
+    dry_run_group = media_timestamps_backfill_parser.add_mutually_exclusive_group()
+    dry_run_group.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        default=True,
+        help="Preview updates without writing. This is the default.",
+    )
+    dry_run_group.add_argument(
+        "--write",
+        dest="dry_run",
+        action="store_false",
+        help="Write backfilled timestamps to SQLite. Source files are still read-only.",
+    )
+    media_timestamps_backfill_parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Maximum media rows to process.",
+    )
+    media_timestamps_backfill_parser.add_argument(
+        "--source",
+        choices=("photos",),
+        default="photos",
+        help="Media source to backfill.",
+    )
+    media_timestamps_backfill_parser.add_argument(
+        "--method",
+        choices=("auto", "exiftool", "pillow"),
+        default="auto",
+        help="Timestamp extraction method.",
+    )
+    media_timestamps_backfill_parser.add_argument(
+        "--fallback",
+        choices=("none", "file-mtime"),
+        default="none",
+        help="Optional low-confidence fallback. Use file-mtime only when acceptable.",
+    )
+    media_timestamps_backfill_parser.add_argument(
+        "--min-confidence",
+        choices=("high", "medium", "low"),
+        default="high",
+        help="Minimum timestamp confidence to accept.",
+    )
+    media_timestamps_backfill_parser.add_argument(
+        "--only-missing",
+        action="store_true",
+        default=True,
+        help="Only fill rows where taken_at is missing. This is the default.",
+    )
+    media_timestamps_backfill_parser.add_argument(
+        "--overwrite-existing",
+        dest="only_missing",
+        action="store_false",
+        help="Allow updating rows that already have taken_at.",
+    )
+    media_timestamps_backfill_parser.add_argument(
+        "--show-errors",
+        action="store_true",
+        help="Show privacy-safe error examples by media_item_id.",
+    )
+    media_timestamps_backfill_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print backfill report as JSON.",
+    )
+    media_timestamps_backfill_parser.set_defaults(func=_media_timestamps_backfill_command)
 
     db_parser = subparsers.add_parser(
         "db",
@@ -1558,6 +1699,55 @@ def _stats_command(args: argparse.Namespace) -> int:
     load_config(config_dir=args.config_dir, paths_config=args.config)
     report = build_annotation_stats_report(args.db)
     print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
+    return 0
+
+
+def _media_timestamps_audit_command(args: argparse.Namespace) -> int:
+    load_config(config_dir=args.config_dir, paths_config=args.config)
+    if args.extract_limit is not None and args.extract_limit < 0:
+        print("Timestamp audit failed: --extract-limit must be 0 or positive.")
+        return 2
+    report = audit_media_timestamps(
+        args.db,
+        method=args.method,
+        fallback=args.fallback,
+        month_histogram=args.month_histogram,
+        extract_limit=None if args.extract_limit == 0 else args.extract_limit,
+    )
+    if args.json:
+        print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        print(format_timestamp_audit(report))
+    return 0
+
+
+def _media_timestamps_backfill_command(args: argparse.Namespace) -> int:
+    load_config(config_dir=args.config_dir, paths_config=args.config)
+    if args.limit is not None and args.limit <= 0:
+        print("Timestamp backfill failed: --limit must be positive.")
+        return 2
+    report = backfill_media_timestamps(
+        args.db,
+        dry_run=args.dry_run,
+        limit=args.limit,
+        source=args.source,
+        method=args.method,
+        fallback=args.fallback,
+        min_confidence=args.min_confidence,
+        only_missing=args.only_missing,
+        show_errors=args.show_errors,
+    )
+    if args.json:
+        print(
+            json.dumps(
+                report.to_dict(show_errors=args.show_errors),
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ),
+        )
+    else:
+        print(format_timestamp_backfill(report, show_errors=args.show_errors))
     return 0
 
 

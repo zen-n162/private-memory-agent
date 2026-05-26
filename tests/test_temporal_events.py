@@ -212,6 +212,34 @@ def test_temporal_insufficient_evidence_returns_unknown(tmp_path):
     assert result.diagnostics["weak_evidence_separated"] is True
 
 
+def test_temporal_diagnostics_recommend_timestamp_backfill_when_taken_at_missing(tmp_path):
+    db_path = tmp_path / "temporal.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        source_id = storage.source_items.insert_source(
+            source_type="photo",
+            source_uri="fixture://missing-taken-at",
+            content_sha256="sha-missing-taken-at",
+        )
+        storage.media_items.insert_media(
+            source_item_id=source_id,
+            media_type="image",
+            file_path="/synthetic/not-printed.jpg",
+            sha256="sha-missing-taken-at",
+            mime_type="image/jpeg",
+        )
+    finally:
+        storage.close()
+
+    result = answer_temporal_event_query("2025年12月で出かけたのはいつ？", db_path=db_path)
+
+    assert result is not None
+    assert result.diagnostics["media_items_with_taken_at_count"] == 0
+    assert result.diagnostics["media_items_missing_taken_at_count"] == 1
+    assert result.diagnostics["timestamp_backfill_recommended"] is True
+    assert result.diagnostics["parsed_date_range"]["start"] == "2025-12-01"
+
+
 def test_daily_clustering_groups_by_day_and_keeps_weak_candidates_separate(tmp_path):
     db_path = tmp_path / "temporal.sqlite3"
     storage = initialize_database(db_path)

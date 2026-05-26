@@ -1,0 +1,226 @@
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+from PIL import Image
+
+from private_memory_agent.cli import main
+from private_memory_agent.media_timestamps import (
+    audit_media_timestamps,
+    backfill_media_timestamps,
+    extract_media_timestamp,
+)
+from private_memory_agent.storage import initialize_database
+
+
+def _write_jpeg(path: Path, *, exif_datetime: str | None = None) -> None:
+    image = Image.new("RGB", (8, 6), color=(120, 80, 30))
+    kwargs = {}
+    if exif_datetime:
+        exif = Image.Exif()
+        exif[36867] = exif_datetime
+        kwargs["exif"] = exif
+    image.save(path, format="JPEG", **kwargs)
+
+
+def _insert_media(storage, path: Path, *, taken_at: str | None = None) -> int:
+    source_id = storage.source_items.insert_source(
+        source_type="photo",
+        source_uri=f"fixture://{path.name}",
+        content_sha256=f"sha-{path.name}",
+    )
+    return storage.media_items.insert_media(
+        source_item_id=source_id,
+        media_type="image",
+        file_path=str(path),
+        sha256=f"sha-{path.name}",
+        mime_type="image/jpeg",
+        taken_at=taken_at,
+    )
+
+
+def test_extract_media_timestamp_reads_pillow_exif(tmp_path):
+    image_path = tmp_path / "synthetic.jpg"
+    _write_jpeg(image_path, exif_datetime="2025:12:03 10:11:12")
+
+    result = extract_media_timestamp(image_path, method="pillow")
+
+    assert result.succeeded is True
+    assert result.taken_at == "2025-12-03T10:11:12"
+    assert result.source == "exif_datetime_original"
+    assert result.confidence == "high"
+
+
+def test_extract_media_timestamp_uses_file_mtime_only_when_enabled(tmp_path):
+    image_path = tmp_path / "no-exif.jpg"
+    _write_jpeg(image_path)
+    timestamp = datetime(2025, 12, 4, 9, 8, 7, tzinfo=timezone.utc).timestamp()
+    os.utime(image_path, (timestamp, timestamp))
+
+    without_fallback = extract_media_timestamp(image_path, method="pillow", fallback="none")
+    with_fallback = extract_media_timestamp(image_path, method="pillow", fallback="file-mtime")
+
+    assert without_fallback.succeeded is False
+    assert with_fallback.succeeded is True
+    assert with_fallback.source == "file_mtime"
+    assert with_fallback.confidence == "low"
+
+
+def test_extract_media_timestamp_can_parse_clear_filename_date(tmp_path):
+    image_path = tmp_path / "IMG_20251203_101112.jpg"
+    _write_jpeg(image_path)
+
+    result = extract_media_timestamp(image_path, method="pillow", fallback="none")
+
+    assert result.succeeded is True
+    assert result.taken_at == "2025-12-03T10:11:12"
+    assert result.source == "filename_datetime"
+    assert result.confidence == "medium"
+
+
+def test_timestamp_audit_reports_counts_without_paths(tmp_path):
+    db_path = tmp_path / "timestamps.sqlite3"
+    exif_path = tmp_path / "exif.jpg"
+    missing_path = tmp_path / "missing.jpg"
+    unsupported_path = tmp_path / "unsupported.bin"
+    _write_jpeg(exif_path, exif_datetime="2025:12:03 10:11:12")
+    unsupported_path.write_bytes(b"not-media")
+    storage = initialize_database(db_path)
+    try:
+        _insert_media(storage, exif_path)
+        _insert_media(storage, missing_path)
+        _insert_media(storage, unsupported_path)
+    finally:
+        storage.close()
+
+    report = audit_media_timestamps(db_path, method="pillow")
+    serialized = json.dumps(report.to_dict(), ensure_ascii=False)
+
+    assert report.total_media_items == 3
+    assert report.files_existing_count == 2
+    assert report.files_missing_count == 1
+    assert report.extractable_exif_datetime_count == 1
+    assert report.unsupported_format_count == 1
+    assert str(tmp_path) not in serialized
+    assert "exif.jpg" not in serialized
+
+
+def test_backfill_dry_run_does_not_write_taken_at(tmp_path):
+    db_path = tmp_path / "timestamps.sqlite3"
+    image_path = tmp_path / "exif.jpg"
+    _write_jpeg(image_path, exif_datetime="2025:12:03 10:11:12")
+    storage = initialize_database(db_path)
+    try:
+        media_id = _insert_media(storage, image_path)
+    finally:
+        storage.close()
+
+    report = backfill_media_timestamps(db_path, method="pillow", dry_run=True)
+    storage = initialize_database(db_path)
+    try:
+        row = storage.media_items.get(media_id)
+    finally:
+        storage.close()
+
+    assert report.dry_run_update_count == 1
+    assert report.updated_count == 0
+    assert row["taken_at"] is None
+
+
+def test_backfill_writes_timestamp_and_provenance(tmp_path):
+    db_path = tmp_path / "timestamps.sqlite3"
+    image_path = tmp_path / "exif.jpg"
+    _write_jpeg(image_path, exif_datetime="2025:12:03 10:11:12")
+    storage = initialize_database(db_path)
+    try:
+        media_id = _insert_media(storage, image_path)
+    finally:
+        storage.close()
+
+    report = backfill_media_timestamps(db_path, method="pillow", dry_run=False)
+    storage = initialize_database(db_path)
+    try:
+        row = storage.media_items.get(media_id)
+    finally:
+        storage.close()
+
+    assert report.updated_count == 1
+    assert row["taken_at"] == "2025-12-03T10:11:12"
+    assert row["taken_at_source"] == "exif_datetime_original"
+    assert row["taken_at_confidence"] == "high"
+    assert row["metadata_updated_at"]
+
+
+def test_backfill_does_not_overwrite_existing_taken_at_by_default(tmp_path):
+    db_path = tmp_path / "timestamps.sqlite3"
+    image_path = tmp_path / "exif.jpg"
+    _write_jpeg(image_path, exif_datetime="2025:12:03 10:11:12")
+    storage = initialize_database(db_path)
+    try:
+        media_id = _insert_media(storage, image_path, taken_at="2024-01-01T00:00:00")
+    finally:
+        storage.close()
+
+    report = backfill_media_timestamps(db_path, method="pillow", dry_run=False)
+    storage = initialize_database(db_path)
+    try:
+        row = storage.media_items.get(media_id)
+    finally:
+        storage.close()
+
+    assert report.total_selected_count == 0
+    assert row["taken_at"] == "2024-01-01T00:00:00"
+
+
+def test_backfill_respects_min_confidence(tmp_path):
+    db_path = tmp_path / "timestamps.sqlite3"
+    image_path = tmp_path / "IMG_20251203_101112.jpg"
+    _write_jpeg(image_path)
+    storage = initialize_database(db_path)
+    try:
+        _insert_media(storage, image_path)
+    finally:
+        storage.close()
+
+    high = backfill_media_timestamps(db_path, method="pillow", dry_run=True, min_confidence="high")
+    medium = backfill_media_timestamps(db_path, method="pillow", dry_run=True, min_confidence="medium")
+
+    assert high.dry_run_update_count == 0
+    assert high.error_classes["ConfidenceTooLow"] == 1
+    assert medium.dry_run_update_count == 1
+
+
+def test_timestamp_cli_backfill_output_is_privacy_safe(capsys, temp_config_factory, tmp_path):
+    db_path = tmp_path / "timestamps.sqlite3"
+    image_path = tmp_path / "secret-name.jpg"
+    _write_jpeg(image_path, exif_datetime="2025:12:03 10:11:12")
+    storage = initialize_database(db_path)
+    try:
+        media_id = _insert_media(storage, image_path)
+    finally:
+        storage.close()
+
+    exit_code = main(
+        [
+            "media",
+            "timestamps",
+            "backfill",
+            "--config-dir",
+            str(temp_config_factory()),
+            "--db",
+            str(db_path),
+            "--dry-run",
+            "--limit",
+            "1",
+            "--method",
+            "pillow",
+            "--show-errors",
+        ],
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "dry_run_update_count=1" in output
+    assert str(tmp_path) not in output
+    assert "secret-name" not in output

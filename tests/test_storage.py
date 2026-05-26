@@ -38,7 +38,18 @@ def test_initialize_database_applies_schema(tmp_path):
         view_names = {row["name"] for row in view_rows}
 
         assert "text_documents" in view_names
-        assert storage.schema_version == 4
+        assert storage.schema_version == 5
+        media_columns = {
+            row["name"]
+            for row in storage.connection.execute("PRAGMA table_info(media_items)").fetchall()
+        }
+        assert {
+            "taken_at_source",
+            "taken_at_confidence",
+            "taken_at_timezone",
+            "taken_at_timezone_unknown",
+            "metadata_updated_at",
+        } <= media_columns
     finally:
         storage.close()
 
@@ -49,9 +60,9 @@ def test_migrations_are_idempotent(tmp_path):
         first = apply_migrations(connection)
         second = apply_migrations(connection)
 
-        assert first == [1, 2, 3, 4]
+        assert first == [1, 2, 3, 4, 5]
         assert second == []
-        assert schema_version(connection) == 4
+        assert schema_version(connection) == 5
     finally:
         connection.close()
 
