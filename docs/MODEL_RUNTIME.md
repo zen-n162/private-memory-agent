@@ -840,6 +840,14 @@ Answer/Candidate Dates/Evidence rendering. `ChatRunNotReady` is treated as a
 pending result handoff and retried briefly after status succeeds. The UI also
 validates that at least one source is selected before sending a request.
 
+Phase 9-H9c makes the backend handoff atomic. Run status responses include
+`result_ready`, `result_available`, `result_saved_at`, and `terminal`.
+`status=succeeded` is only returned after the final normalized result has been
+stored, so `/api/chat/runs/{run_id}/result` should be immediately readable.
+If an internal handoff invariant is ever violated, `/status` reports
+`finalizing` and `/result` returns a pending/invariant payload instead of an
+agent failure. The UI keeps polling until `result_ready=true`.
+
 `GET /api/system/status` returns DB/index counts and configured endpoint
 metadata without model prompts. `POST /api/chat/query` uses the existing E2E
 retrieval/answer path directly rather than shelling out to the CLI.

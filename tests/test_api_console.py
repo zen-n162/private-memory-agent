@@ -869,6 +869,9 @@ def test_chat_run_registry_returns_status_events_and_result(
     serialized = json.dumps({"status": final_status, "events": events, "result": result}, ensure_ascii=False)
 
     assert final_status["status"] == "succeeded"
+    assert final_status["result_ready"] is True
+    assert final_status["result_available"] is True
+    assert final_status["terminal"] is True
     assert final_status["completion_summary"]["summary_status"] == "done"
     assert final_status["completion_summary"]["answer_succeeded"] is True
     assert final_status["completion_summary"]["evidence_reference_count"] >= 1
@@ -880,8 +883,64 @@ def test_chat_run_registry_returns_status_events_and_result(
     assert final_status["current_step"]
     assert events["trace_events"]
     assert result["answer"]["answer_succeeded"] is True
+    assert result["mode"] == "fake-model"
     assert "FakeLeaderModel" in events["model_usage_summary"]
     assert "registry private evidence" not in serialized
+
+
+def test_chat_run_registry_not_ready_result_is_pending(tmp_path):
+    registry = ChatRunRegistry()
+    recorder = AgentTraceRecorder(run_id="running-run")
+    recorder.event(
+        actor_type="tool",
+        actor_name="ChatRunRegistry",
+        stage="run_queue",
+        action="queue_chat_run",
+        status="queued",
+    )
+    record = ChatRunRecord(
+        run_id="running-run",
+        options=ChatConsoleOptions(question="秘密の質問", db_path=tmp_path / "none.sqlite3"),
+        recorder=recorder,
+        status="running",
+    )
+    registry._runs["running-run"] = record
+
+    result = registry.result("running-run")
+    serialized = json.dumps(result, ensure_ascii=False)
+
+    assert result["ok"] is False
+    assert result["error_class"] == "ChatRunNotReady"
+    assert result["status"] == "running"
+    assert result["result_ready"] is False
+    assert result["current_status"]["status"] == "running"
+    assert result["current_status"]["failure_summary"] is None
+    assert "秘密の質問" not in serialized
+
+
+def test_chat_run_registry_succeeded_without_result_reports_finalizing(tmp_path):
+    registry = ChatRunRegistry()
+    recorder = AgentTraceRecorder(run_id="handoff-run")
+    record = ChatRunRecord(
+        run_id="handoff-run",
+        options=ChatConsoleOptions(question="秘密の質問", db_path=tmp_path / "none.sqlite3"),
+        recorder=recorder,
+        status="succeeded",
+        result_ready=False,
+    )
+    registry._runs["handoff-run"] = record
+
+    status = registry.status("handoff-run")
+    result = registry.result("handoff-run")
+    serialized = json.dumps({"status": status, "result": result}, ensure_ascii=False)
+
+    assert status["status"] == "finalizing"
+    assert status["result_ready"] is False
+    assert status["terminal"] is False
+    assert result["error_class"] == "ChatRunResultInvariantError"
+    assert result["status"] == "finalizing"
+    assert result["result_ready"] is False
+    assert "秘密の質問" not in serialized
 
 
 def test_chat_run_registry_failed_status_has_safe_failure_summary(tmp_path):
@@ -906,11 +965,13 @@ def test_chat_run_registry_failed_status_has_safe_failure_summary(tmp_path):
     )
     registry._runs["failed-run"] = record
 
-    status = registry.status("failed-run")
     result = registry.result("failed-run")
+    status = registry.status("failed-run")
     serialized = json.dumps({"status": status, "result": result}, ensure_ascii=False)
 
     assert status["status"] == "failed"
+    assert status["result_ready"] is True
+    assert status["terminal"] is True
     assert status["mode"] == "retrieval-only"
     assert status["failure_summary"]["failed_actor"] == "DeepSeek Leader"
     assert status["failure_summary"]["error_class"] == "ModelRuntimeError"

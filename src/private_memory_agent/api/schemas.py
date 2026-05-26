@@ -144,6 +144,10 @@ class ChatRunStartResponse(APIModel):
     fallback_summary: dict[str, Any] = Field(default_factory=dict)
     recovered_failure_count: int = 0
     recovered_failures: list[dict[str, Any]] = Field(default_factory=list)
+    result_ready: bool = False
+    result_available: bool = False
+    result_saved_at: str | None = None
+    terminal: bool = False
     completion_summary: dict[str, Any] | None = None
     failure_summary: dict[str, Any] | None = None
     failure_stage: str | None = None
@@ -157,6 +161,10 @@ class ChatRunStatusResponse(ChatRunStartResponse):
 class ChatRunEventsResponse(APIModel):
     run_id: str
     status: str
+    result_ready: bool = False
+    result_available: bool = False
+    result_saved_at: str | None = None
+    terminal: bool = False
     trace_events: list[dict[str, Any]] = Field(default_factory=list)
     model_usage_summary: dict[str, Any] = Field(default_factory=dict)
     tool_usage_summary: dict[str, Any] = Field(default_factory=dict)

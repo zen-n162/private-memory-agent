@@ -1497,6 +1497,11 @@ def agent_console_html() -> str:
         const response = await fetch(`/api/chat/runs/${runId}/status`);
         const statusPayload = await response.json();
         if (!response.ok) throw new Error(statusPayload.detail || "status polling failed");
+        if (["succeeded", "failed"].includes(statusPayload.status) && !statusPayload.result_ready) {
+          statusPayload.status = "finalizing";
+          statusPayload.terminal = false;
+          statusPayload.warnings = [...(statusPayload.warnings || []), "terminal status is waiting for result handoff"];
+        }
         statusPayload.rendered_payload_source = "status";
         lastStatus = statusPayload;
         safeConsoleState(`status ${statusPayload.status}`, {
@@ -1506,7 +1511,7 @@ def agent_console_html() -> str:
           mode: statusPayload.mode
         });
         renderCurrentStatus(statusPayload);
-        if (["succeeded", "failed"].includes(statusPayload.status)) break;
+        if (["succeeded", "failed"].includes(statusPayload.status) && statusPayload.result_ready) break;
         await new Promise((resolve) => setTimeout(resolve, 500));
       }
       return lastStatus;
@@ -1619,7 +1624,7 @@ def agent_console_html() -> str:
         markRunPending(started.run_id);
         renderCurrentStatus(started);
         const finalStatus = await pollRun(started.run_id);
-        if (!["succeeded", "failed"].includes(finalStatus?.status)) {
+        if (!["succeeded", "failed"].includes(finalStatus?.status) || !finalStatus?.result_ready) {
           statusNode.className = "status-line error";
           statusNode.textContent = "Run did not reach a terminal status before polling ended.";
           renderCurrentStatus(buildClientFailureStatus("Run did not reach a terminal status before polling ended.", finalStatus));

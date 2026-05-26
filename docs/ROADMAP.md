@@ -178,6 +178,12 @@ This document outlines the development roadmap for private-memory-agent.
   `ChatRunNotReady` as pending, and renders Answer/Candidate Dates/Evidence
   only from the final result payload. Source selection is validated before the
   run starts.
+- Phase 9-H9c makes async result handoff atomic:
+  run status now exposes `result_ready`, `result_available`, `result_saved_at`,
+  and `terminal`. A run cannot report `succeeded` until the normalized final
+  result is stored; inconsistent completed-without-result states are exposed as
+  `finalizing`, and the UI waits for `result_ready=true` before rendering
+  `/result`.
 
 ## 実データE2E smokeの実行手順
 

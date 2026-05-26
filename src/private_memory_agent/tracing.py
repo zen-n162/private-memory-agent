@@ -11,7 +11,7 @@ from uuid import uuid4
 
 TRACE_PRIVACY_LEVEL = "safe_metadata_only"
 
-RUN_STATUSES = {"idle", "queued", "running", "succeeded", "failed"}
+RUN_STATUSES = {"idle", "queued", "running", "finalizing", "succeeded", "failed"}
 
 ACTION_DISPLAY_MESSAGES = {
     "queue_chat_run": "実行をキューに入れています...",

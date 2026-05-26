@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from threading import Lock, Thread
 from time import perf_counter
 from typing import Any
@@ -33,6 +34,8 @@ class ChatRunRecord:
     safe_error_message: str | None = None
     failure_stage: str | None = None
     failure_actor: str | None = None
+    result_ready: bool = False
+    result_saved_at: str | None = None
 
 
 class ChatRunRegistry:
@@ -68,21 +71,26 @@ class ChatRunRegistry:
         if record.result:
             warnings.extend(str(item) for item in record.result.get("warnings", []))
         elapsed = self._elapsed_ms(record)
+        public_status = self._public_status(record)
         payload = build_current_status(
             run_id=record.run_id,
-            status=record.status,
+            status=public_status,
             events=record.recorder.to_list(),
             elapsed_ms=elapsed,
             warnings=tuple(warnings),
         )
         payload["mode"] = record.options.mode
+        payload["result_ready"] = bool(record.result_ready)
+        payload["result_available"] = bool(record.result is not None)
+        payload["result_saved_at"] = record.result_saved_at
+        payload["terminal"] = public_status in {"succeeded", "failed"}
         events = record.recorder.to_list()
-        if record.status == "succeeded" and record.result is not None:
+        if public_status == "succeeded" and record.result is not None:
             payload["completion_summary"] = _completion_summary(record.result, events=events)
             payload["failure_summary"] = None
             payload["failure_stage"] = None
             payload["failure_actor"] = None
-        elif record.status == "failed":
+        elif public_status == "failed":
             payload["completion_summary"] = None
             payload["failure_summary"] = _failure_summary(
                 record,
@@ -103,7 +111,11 @@ class ChatRunRegistry:
         events = record.recorder.to_list()
         return {
             "run_id": record.run_id,
-            "status": record.status,
+            "status": self._public_status(record),
+            "result_ready": bool(record.result_ready),
+            "result_available": bool(record.result is not None),
+            "result_saved_at": record.result_saved_at,
+            "terminal": self._public_status(record) in {"succeeded", "failed"},
             "trace_events": events,
             "model_usage_summary": summarize_model_usage(events),
             "tool_usage_summary": summarize_tool_usage(events),
@@ -112,17 +124,54 @@ class ChatRunRegistry:
 
     def result(self, run_id: str) -> dict[str, Any]:
         record = self._get(run_id)
-        if record.result is not None:
+        if record.result_ready and record.result is not None:
             return record.result
-        status_payload = self.status(run_id)
+        public_status = self._public_status(record)
+        if record.status == "failed":
+            payload = self._failure_result_payload(record)
+            with self._lock:
+                record.result = payload
+                record.result_ready = True
+                record.result_saved_at = _timestamp()
+            return payload
+        if record.status == "succeeded" and not record.result_ready:
+            return _not_ready_payload(
+                record,
+                status="finalizing",
+                error_class="ChatRunResultInvariantError",
+                message="run completed but final result is still being saved",
+            )
+        return _not_ready_payload(
+            record,
+            status=public_status,
+            error_class="ChatRunNotReady",
+            message="chat run is not complete",
+        )
+
+    def _failure_result_payload(self, record: ChatRunRecord) -> dict[str, Any]:
+        status_payload = self.status(record.run_id)
         failure = status_payload.get("failure_summary") or {}
+        failed_event = next(
+            (event for event in reversed(record.recorder.to_list()) if event.get("status") == "failed"),
+            {},
+        )
         return build_chat_error_payload(
             mode=record.options.mode,
             run_id=record.run_id,
             failure_stage=failure.get("failed_stage") or record.failure_stage or "unknown",
-            failure_actor=failure.get("failed_actor") or record.failure_actor or "ChatRunRegistry",
-            failed_action=failure.get("failed_action") or "execute_chat_run",
-            error_class=failure.get("error_class") or record.error_class or "ChatRunNotReady",
+            failure_actor=(
+                failure.get("failed_actor")
+                or record.failure_actor
+                or failed_event.get("actor_name")
+                or "ChatRunRegistry"
+            ),
+            failed_action=failure.get("failed_action") or failed_event.get("action") or "execute_chat_run",
+            error_class=(
+                failure.get("error_class")
+                or record.error_class
+                or failed_event.get("error_class")
+                or "ChatRunNotReady"
+            ),
             error_message=failure.get("safe_error_message")
             or record.safe_error_message
             or "chat run is not complete",
@@ -142,7 +191,10 @@ class ChatRunRegistry:
         try:
             payload = run_chat_console_query(record.options, trace_recorder=record.recorder)
             with self._lock:
+                record.status = "finalizing"
                 record.result = payload
+                record.result_ready = True
+                record.result_saved_at = _timestamp()
                 record.status = "succeeded"
                 record.finished_at_perf = perf_counter()
         except Exception as exc:  # pragma: no cover - defensive safety path
@@ -169,11 +221,17 @@ class ChatRunRegistry:
                 safe_error_message=safe_message,
             )
             with self._lock:
-                record.status = "failed"
                 record.error_class = exc.__class__.__name__
                 record.safe_error_message = safe_message
                 record.failure_stage = failure_stage
                 record.failure_actor = failure_actor
+                record.status = "finalizing"
+            failure_payload = self._failure_result_payload(record)
+            with self._lock:
+                record.result = failure_payload
+                record.result_ready = True
+                record.result_saved_at = _timestamp()
+                record.status = "failed"
                 record.finished_at_perf = perf_counter()
 
     def _get(self, run_id: str) -> ChatRunRecord:
@@ -187,6 +245,14 @@ class ChatRunRegistry:
     def _elapsed_ms(record: ChatRunRecord) -> int:
         end = record.finished_at_perf if record.finished_at_perf is not None else perf_counter()
         return max(0, int((end - record.started_at_perf) * 1000))
+
+    @staticmethod
+    def _public_status(record: ChatRunRecord) -> str:
+        if record.status == "succeeded" and not record.result_ready:
+            return "finalizing"
+        if record.status == "failed" and not record.result_ready:
+            return "finalizing"
+        return record.status
 
 
 MAJOR_TOOL_NAMES = {
@@ -332,3 +398,72 @@ def _safe_run_error_message(*, failure_stage: str | None, failure_actor: str | N
     if failure_stage == "answer_validation" and failure_actor == "DeepSeek Leader":
         return "leader answer validation failed; try retrieval-only or reduce answer generation scope"
     return "chat run failed; review safe trace status"
+
+
+def _not_ready_payload(
+    record: ChatRunRecord,
+    *,
+    status: str,
+    error_class: str,
+    message: str,
+) -> dict[str, Any]:
+    status_payload = record_status_payload(
+        record,
+        status=status,
+        message=message,
+    )
+    payload = build_chat_error_payload(
+        mode=record.options.mode,
+        run_id=record.run_id,
+        failure_stage="unknown",
+        failure_actor="ChatRunRegistry",
+        failed_action="wait_for_result_handoff",
+        error_class=error_class,
+        error_message=message,
+        trace_events=record.recorder.to_list(),
+        current_status=status_payload,
+        show_answer=record.options.show_answer,
+        show_snippets=record.options.show_snippets,
+        show_photo_thumbnails=record.options.show_photo_thumbnails,
+        show_full_text=record.options.show_full_text,
+        show_raw_model_output=record.options.show_raw_model_output,
+    )
+    payload["status"] = status
+    payload["result_ready"] = False
+    payload["result_available"] = False
+    payload["result_saved_at"] = None
+    payload["terminal"] = False
+    payload["failure_stage"] = None
+    payload["failure_actor"] = None
+    payload["current_status"]["status"] = status
+    payload["current_status"]["failure_stage"] = None
+    payload["current_status"]["failure_actor"] = None
+    payload["current_status"]["failure_summary"] = None
+    payload["current_status"]["result_ready"] = False
+    payload["current_status"]["result_available"] = False
+    payload["current_status"]["terminal"] = False
+    payload["warnings"] = [message]
+    return payload
+
+
+def record_status_payload(record: ChatRunRecord, *, status: str, message: str) -> dict[str, Any]:
+    payload = build_current_status(
+        run_id=record.run_id,
+        status=status,
+        events=record.recorder.to_list(),
+        elapsed_ms=ChatRunRegistry._elapsed_ms(record),
+        warnings=(message,),
+    )
+    payload["mode"] = record.options.mode
+    payload["result_ready"] = False
+    payload["result_available"] = bool(record.result is not None)
+    payload["result_saved_at"] = record.result_saved_at
+    payload["terminal"] = False
+    payload["failure_summary"] = None
+    payload["failure_stage"] = None
+    payload["failure_actor"] = None
+    return payload
+
+
+def _timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")

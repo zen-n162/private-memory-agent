@@ -15,8 +15,8 @@ from private_memory_agent.tracing import (
 
 CHAT_CONSOLE_MODES = {"retrieval-only", "fake-model", "real-model"}
 CHAT_RESPONSE_MODES = {*CHAT_CONSOLE_MODES, "unknown"}
-CHAT_API_RESPONSE_SCHEMA_VERSION = "2026-05-26.9h8b"
-CHAT_UI_RESPONSE_SCHEMA_VERSION = "2026-05-26.9h8b"
+CHAT_API_RESPONSE_SCHEMA_VERSION = "2026-05-26.9h9c"
+CHAT_UI_RESPONSE_SCHEMA_VERSION = "2026-05-26.9h9c"
 REQUIRED_CHAT_RESPONSE_KEYS = (
     "ok",
     "mode",
@@ -103,6 +103,7 @@ def build_chat_error_payload(
         elapsed_ms=elapsed_ms,
         warnings=tuple(_unique_strings((*warnings, safe_message))),
     )
+    status_payload["status"] = "failed"
     status_payload["mode"] = safe_mode
     status_payload["failure_stage"] = safe_stage
     status_payload["failure_actor"] = failure_actor

@@ -556,6 +556,7 @@
             <tr><td>9-H8</td><td>fallback で復旧した中間失敗を final failure と区別し、Current Status は最終結果に合わせて Done/Failed を表示。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-H8b</td><td>成功レスポンスに古い failed status が混入しても、trace から再集計して final outcome invariant を維持。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-H9b</td><td>UI の async polling で start/status を status 専用、result を最終描画専用に分離。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>9-H9c</td><td>async run に result_ready/finalizing を追加し、succeeded は result 保存後だけ返す。</td><td class="status">基本実装済み</td></tr>
           </tbody>
         </table>
       </section>
@@ -928,6 +929,14 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           実行中は前回の final panel を 0 件表示で上書きしません。
           また、source が 1 つも選択されていない場合は API を呼ばずに UI 側で止めます。
         </p>
+        <p>
+          9-H9c では backend 側の result handoff を atomic にしました。
+          run status は <code>result_ready</code>、<code>result_available</code>、
+          <code>result_saved_at</code>、<code>terminal</code> を返し、
+          final result を保存してからだけ <code>status=succeeded</code> を返します。
+          もし内部的に完了と result 保存の間にずれが出た場合は <code>finalizing</code> として表示し、
+          UI は <code>result_ready=true</code> になるまで Current Status だけを更新します。
+        </p>
       </section>
 
       <section id="limitations">
@@ -945,6 +954,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
       <section id="history">
         <h2>更新履歴</h2>
         <ul>
+          <li>2026-05-26: async run に result_ready/finalizing を追加し、succeeded と result 保存を atomic に接続。</li>
           <li>2026-05-26: UI async polling を修正し、start/status を最終結果として描画せず result handoff を retry。</li>
           <li>2026-05-26: 成功レスポンスの final outcome invariant を強化し、stale failed status を trace 再集計で補正。</li>
           <li>2026-05-26: fallback で復旧した中間失敗を final failure と分離し、成功 run の Current Status を Done に修正。</li>
