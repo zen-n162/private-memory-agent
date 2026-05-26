@@ -788,6 +788,135 @@ def test_chat_console_dining_query_exposes_event_intent_diagnostics(
     assert "料理 レストラン" not in serialized
 
 
+def test_open_ended_ramen_query_uses_all_available_memory_and_extracts_dates(tmp_path):
+    db_path = tmp_path / "temporal.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        photo_id = _insert_photo(
+            storage,
+            taken_at="2025-01-12T19:00:00",
+            annotation_text="ラーメン 丼 スープ 箸",
+            path="/private/ramen-photo-secret.jpg",
+        )
+        line_id = _insert_line(
+            storage,
+            sent_at="2025-02-03T18:15:00",
+            text="PRIVATE LINE ラーメン 食べに行った",
+        )
+    finally:
+        storage.close()
+
+    parsed = parse_temporal_event_query("ラーメンを食べに行っているのはいつ？", today=date(2026, 5, 26))
+    assert parsed is not None
+    assert parsed.query_type == "temporal_event_search"
+    assert parsed.date_range.status == "unspecified"
+    assert parsed.date_range.scope_strategy == "all_available_memory"
+
+    result = answer_temporal_event_query(
+        "ラーメンを食べに行っているのはいつ？",
+        db_path=db_path,
+        today=date(2026, 5, 26),
+    )
+    assert result is not None
+    payload = result.to_dict(show_answer=True)
+    serialized = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["query"]["date_range_status"] == "unspecified"
+    assert payload["query"]["date_scope_strategy"] == "all_available_memory"
+    assert payload["diagnostics"]["open_ended_temporal_query"] is True
+    assert payload["diagnostics"]["date_scope_strategy"] == "all_available_memory"
+    assert payload["diagnostics"]["inferred_search_range_start"] == "2025-01-12"
+    assert payload["diagnostics"]["inferred_search_range_end"] == "2025-02-04"
+    assert payload["diagnostics"]["event_type"] == "dining_out"
+    assert payload["diagnostics"]["event_subtype"] == "ramen"
+    assert payload["diagnostics"]["chunks_scanned"] >= 1
+    assert payload["diagnostics"]["dated_evidence_count"] >= 1
+    assert payload["diagnostics"]["undated_evidence_count"] == 0
+    dates = {item["date"]: item for item in payload["candidate_dates"]}
+    assert "2025-01-12" in dates
+    assert "2025-02-03" in dates
+    assert payload["diagnostics"]["candidate_date_count"] >= 2
+    assert f"media_items:{photo_id}" in payload["answer"]["evidence_references"]
+    assert f"line_messages:{line_id}" in dates["2025-02-03"]["support_evidence_ids"]
+    assert "/private/ramen-photo-secret.jpg" not in serialized
+    assert "PRIVATE LINE" not in serialized
+
+
+def test_open_ended_event_query_with_only_undated_evidence_returns_structured_unknown(tmp_path):
+    db_path = tmp_path / "temporal.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        _insert_photo(
+            storage,
+            taken_at=None,
+            annotation_text="ラーメン 丼 スープ",
+            path="/private/undated-ramen-secret.jpg",
+        )
+    finally:
+        storage.close()
+
+    result = answer_temporal_event_query(
+        "ラーメンを食べに行っているのはいつ？",
+        db_path=db_path,
+        today=date(2026, 5, 26),
+    )
+    assert result is not None
+    payload = result.to_dict(show_answer=True)
+    serialized = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["answer"]["answer_succeeded"] is True
+    assert payload["answer"]["answer_state"] == "unknown"
+    assert payload["answer"]["error_class"] is None
+    assert payload["candidate_dates"] == []
+    assert payload["diagnostics"]["open_ended_temporal_query"] is True
+    assert payload["diagnostics"]["undated_evidence_count"] == 1
+    assert payload["diagnostics"]["dated_evidence_count"] == 0
+    assert payload["diagnostics"]["candidate_date_count"] == 0
+    assert any("日時メタデータ" in unknown for unknown in payload["answer"]["unknowns"])
+    assert "/private/undated-ramen-secret.jpg" not in serialized
+    assert "ラーメン 丼" not in serialized
+
+
+def test_chat_console_open_ended_ramen_query_does_not_return_model_runtime_error(
+    temp_config_factory,
+    tmp_path,
+):
+    db_path = tmp_path / "temporal.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        _insert_photo(
+            storage,
+            taken_at="2025-03-04T12:00:00",
+            annotation_text="ラーメン 丼 スープ",
+            path="/private/ui-open-ramen-secret.jpg",
+        )
+    finally:
+        storage.close()
+
+    payload = run_chat_console_query(
+        ChatConsoleOptions(
+            config_dir=temp_config_factory(),
+            db_path=db_path,
+            question="ラーメンを食べに行っているのはいつ？",
+            mode="real-model",
+            leader_plan=False,
+            show_answer=True,
+        ),
+    )
+    serialized = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["mode"] == "real-model"
+    assert payload["answer_succeeded"] is True
+    assert payload["answer_synthesis_succeeded"] is True
+    assert payload["error_class"] is None
+    assert payload["answer_error_class"] is None
+    assert payload["candidate_date_count"] >= 1
+    assert payload["trace"]["temporal_diagnostics"]["open_ended_temporal_query"] is True
+    assert payload["trace"]["temporal_diagnostics"]["event_subtype"] == "ramen"
+    assert "/private/ui-open-ramen-secret.jpg" not in serialized
+    assert "ラーメン 丼" not in serialized
+
+
 def test_chat_console_real_model_temporal_answer_failure_preserves_candidates(
     monkeypatch,
     temp_config_factory,

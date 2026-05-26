@@ -141,6 +141,7 @@ def _event_intent_prompt(question: str, date_range: TemporalDateRange) -> str:
             "required_shape": {
                 "query_type": "temporal_event_search",
                 "event_type": "open_vocabulary_string",
+                "event_subtype": "optional open vocabulary subtype",
                 "event_description": "short English or Japanese description",
                 "visual_signals": ["short terms to search in photo annotations"],
                 "textual_signals": ["short terms to search in LINE/notes"],
@@ -169,6 +170,8 @@ class TemporalDateRange:
     timezone: str | None = "local"
     confidence: float = 1.0
     parse_warnings: tuple[str, ...] = ()
+    status: str = "explicit"
+    scope_strategy: str = "explicit_range"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -181,6 +184,8 @@ class TemporalDateRange:
             "end_exclusive": True,
             "confidence": round(self.confidence, 3),
             "parse_warnings": list(self.parse_warnings),
+            "status": self.status,
+            "scope_strategy": self.scope_strategy,
         }
 
 
@@ -199,6 +204,9 @@ class TemporalEventQuery:
             "query_type": self.query_type,
             "date_range": self.date_range.to_dict(),
             "date_range_source": self.date_range.source,
+            "date_range_status": self.date_range.status,
+            "date_scope_strategy": self.date_range.scope_strategy,
+            "open_ended_temporal_query": self.date_range.status == "unspecified",
             "parsed_temporal_expression": self.date_range.expression or self.date_range.label,
             "timezone": self.date_range.timezone,
             "event_type": self.event_type,
@@ -215,6 +223,7 @@ class EventIntentPlan:
     date_range: TemporalDateRange
     event_type: str
     event_description: str
+    event_subtype: str | None = None
     visual_signals: tuple[str, ...] = ()
     textual_signals: tuple[str, ...] = ()
     source_priorities: tuple[str, ...] = SUPPORTED_TEMPORAL_SOURCES
@@ -242,6 +251,7 @@ class EventIntentPlan:
             "query_type": self.query_type,
             "date_range": self.date_range.to_dict(),
             "event_type": self.event_type,
+            "event_subtype": self.event_subtype,
             "event_description": self.event_description if show_plan else _public_event_description(self),
             "visual_signal_count": len(self.visual_signals),
             "textual_signal_count": len(self.textual_signals),
@@ -273,6 +283,7 @@ class EventIntentPlan:
             query_type=str(payload.get("query_type") or "temporal_event_search"),
             date_range=date_range,
             event_type=event_type or "unknown_event",
+            event_subtype=_safe_identifier(str(payload.get("event_subtype") or "")) or None,
             event_description=str(payload.get("event_description") or event_type or "unknown event"),
             visual_signals=_as_string_tuple(payload.get("visual_signals")),
             textual_signals=_as_string_tuple(payload.get("textual_signals")),
@@ -296,6 +307,43 @@ class DeterministicEventIntentPlanner:
 
     def plan(self, question: str, date_range: TemporalDateRange) -> EventIntentPlan:
         normalized = normalize_text(question)
+        if _text_has_any_term(normalized, ("ラーメン", "らーめん", "ramen", "中華そば", "つけ麺", "家系")):
+            return _event_plan(
+                date_range,
+                event_type="dining_out",
+                event_subtype="ramen",
+                description="ramen dining-out event",
+                visual=(
+                    "ラーメン",
+                    "らーめん",
+                    "中華そば",
+                    "つけ麺",
+                    "麺",
+                    "丼",
+                    "どんぶり",
+                    "スープ",
+                    "箸",
+                    "ラーメン屋",
+                    "ramen",
+                    "noodle",
+                    "bowl",
+                    "soup",
+                    "chopsticks",
+                ),
+                textual=(
+                    "ラーメン",
+                    "らーめん",
+                    "中華そば",
+                    "つけ麺",
+                    "家系",
+                    "麺",
+                    "食べ",
+                    "行った",
+                    "店",
+                    "予約",
+                ),
+                repair=("ラーメン 店", "つけ麺 食べ", "中華そば 行った", "ramen noodle"),
+            )
         if _text_has_any_term(
             normalized,
             (
@@ -317,6 +365,7 @@ class DeterministicEventIntentPlanner:
             return _event_plan(
                 date_range,
                 event_type="dining_out",
+                event_subtype=None,
                 description="meal or dining-out event",
                 visual=(
                     "料理",
@@ -355,6 +404,7 @@ class DeterministicEventIntentPlanner:
             return _event_plan(
                 date_range,
                 event_type="travel",
+                event_subtype=None,
                 description="travel or sightseeing event",
                 visual=("旅行", "観光", "ホテル", "空港", "駅", "新幹線", "travel", "hotel"),
                 textual=("旅行", "観光", "ホテル", "空港", "新幹線", "到着", "出発"),
@@ -364,6 +414,7 @@ class DeterministicEventIntentPlanner:
             return _event_plan(
                 date_range,
                 event_type="shopping",
+                event_subtype=None,
                 description="shopping event",
                 visual=("店", "店舗", "買い物", "ショッピング", "モール", "shop", "store"),
                 textual=("買い物", "店", "店舗", "ショッピング", "集合"),
@@ -373,6 +424,7 @@ class DeterministicEventIntentPlanner:
             return _event_plan(
                 date_range,
                 event_type="meeting",
+                event_subtype=None,
                 description="meeting or meetup event",
                 visual=("会場", "テーブル", "カフェ", "meeting", "venue"),
                 textual=("会う", "会った", "面談", "打ち合わせ", "集合", "到着"),
@@ -382,6 +434,7 @@ class DeterministicEventIntentPlanner:
             return _event_plan(
                 date_range,
                 event_type="research",
+                event_subtype=None,
                 description="research-related event",
                 visual=("研究", "実験", "発表", "資料", "スライド", "poster"),
                 textual=("研究", "実験", "発表", "論文", "準備", "打ち合わせ"),
@@ -390,6 +443,7 @@ class DeterministicEventIntentPlanner:
         return _event_plan(
             date_range,
             event_type="outing",
+            event_subtype=None,
             description="generic outing event",
             visual=OUTING_TERMS,
             textual=TEMPORAL_FALLBACK_TERMS,
@@ -586,11 +640,24 @@ def parse_temporal_event_query(
         return None
     current = today or date.today()
     date_range = _parse_date_range(cleaned, today=current)
-    if date_range is None:
-        return None
     normalized = normalize_text(cleaned)
     if not any(term in normalized for term in OUTING_INTENT_TERMS):
         return None
+    if date_range is None:
+        if not _is_open_ended_when_question(normalized):
+            return None
+        date_range = TemporalDateRange(
+            current,
+            current + timedelta(days=1),
+            "期間未指定",
+            source="fallback",
+            expression=None,
+            timezone="local",
+            confidence=0.25,
+            parse_warnings=("date_range_unspecified",),
+            status="unspecified",
+            scope_strategy="all_available_memory",
+        )
     return TemporalEventQuery(
         query_type="temporal_event_search",
         date_range=date_range,
@@ -623,6 +690,11 @@ def answer_temporal_event_query(
     parsed = parse_temporal_event_query(question, today=today)
     if parsed is None:
         return None
+    db = Path(db_path).expanduser()
+    scope_diagnostics = _date_scope_diagnostics(parsed.date_range)
+    if parsed.date_range.status == "unspecified" and db.exists():
+        inferred_range, scope_diagnostics = _infer_open_ended_date_scope(db, parsed.date_range)
+        parsed = replace(parsed, date_range=inferred_range)
     if trace_recorder is not None:
         trace_recorder.event(
             actor_type="tool",
@@ -638,6 +710,8 @@ def answer_temporal_event_query(
             metadata={
                 "parsed_temporal_expression": parsed.date_range.expression,
                 "date_range_source": parsed.date_range.source,
+                "date_range_status": parsed.date_range.status,
+                "date_scope_strategy": parsed.date_range.scope_strategy,
                 "date_range_confidence": parsed.date_range.confidence,
             },
         )
@@ -649,7 +723,6 @@ def answer_temporal_event_query(
         trace_recorder=trace_recorder,
     )
     parsed = replace(parsed, event_type=event_plan.event_type)
-    db = Path(db_path).expanduser()
     if not db.exists():
         parsed_range = parsed.date_range.to_dict()
         answer = TemporalAnswer(
@@ -673,6 +746,10 @@ def answer_temporal_event_query(
                 "parsed_date_range_start": parsed_range["start"],
                 "parsed_date_range_end": parsed_range["end"],
                 "date_range_source": parsed_range["source"],
+                "date_range_status": parsed_range["status"],
+                "date_scope_strategy": parsed_range["scope_strategy"],
+                "open_ended_temporal_query": parsed_range["status"] == "unspecified",
+                **scope_diagnostics,
                 "date_range_confidence": parsed_range["confidence"],
                 "date_range_parse_warnings": parsed_range["parse_warnings"],
                 "parsed_temporal_expression": parsed_range["expression"],
@@ -681,6 +758,7 @@ def answer_temporal_event_query(
                 "event_intent_plan_created": True,
                 "event_intent_fallback_used": event_plan.fallback_used,
                 "event_type": event_plan.event_type,
+                "event_subtype": event_plan.event_subtype,
             },
             warnings=("SQLite DB does not exist",),
         )
@@ -697,6 +775,7 @@ def answer_temporal_event_query(
     per_chunk_candidate_limit = max(1, int(candidates_per_long_range_chunk))
     active_fallback_terms = _active_event_terms(event_plan, fallback_terms=fallback_terms)
     day_support_terms = active_fallback_terms if event_plan.event_type != "outing" else None
+    undated_evidence_count = _undated_event_evidence_count(db, event_plan=event_plan)
 
     photo_diagnostics = photo_date_range_diagnostics(
         db,
@@ -851,7 +930,12 @@ def answer_temporal_event_query(
         used_clusters,
         event_type=event_plan.event_type,
     )
-    answer = _build_temporal_answer(parsed, used_clusters, candidate_clusters)
+    answer = _build_temporal_answer(
+        parsed,
+        used_clusters,
+        candidate_clusters,
+        undated_evidence_count=undated_evidence_count,
+    )
     if trace_recorder is not None:
         trace_recorder.event(
             actor_type="validator",
@@ -943,6 +1027,10 @@ def answer_temporal_event_query(
         "parsed_date_range_start": parsed_range["start"],
         "parsed_date_range_end": parsed_range["end"],
         "date_range_source": parsed_range["source"],
+        "date_range_status": parsed_range["status"],
+        "date_scope_strategy": parsed_range["scope_strategy"],
+        "open_ended_temporal_query": parsed_range["status"] == "unspecified",
+        **scope_diagnostics,
         "date_range_confidence": parsed_range["confidence"],
         "date_range_parse_warnings": parsed_range["parse_warnings"],
         "parsed_temporal_expression": parsed_range["expression"],
@@ -951,12 +1039,14 @@ def answer_temporal_event_query(
         "event_intent_plan_created": True,
         "event_intent_fallback_used": event_plan.fallback_used,
         "event_type": event_plan.event_type,
+        "event_subtype": event_plan.event_subtype,
         "event_description": _public_event_description(event_plan),
         "visual_signal_count": len(event_plan.visual_signals),
         "textual_signal_count": len(event_plan.textual_signals),
         "source_priorities": list(event_plan.source_priorities),
         "source_constraints": list(event_plan.source_constraints),
         "candidate_date_count": len(candidate_clusters),
+        "final_candidate_dates": [item.date for item in candidate_clusters],
         "event_score_by_date": {item.date: round(item.event_score or item.confidence, 3) for item in candidate_clusters},
         "matched_visual_signal_counts_by_date": {
             item.date: len(item.matched_visual_signals) for item in candidate_clusters
@@ -980,6 +1070,7 @@ def answer_temporal_event_query(
         "date_range_days": range_days,
         "chunking_enabled": chunking_enabled,
         "chunk_count": len(chunks),
+        "chunks_scanned": len(chunks),
         "chunk_size": "month" if chunking_enabled else "none",
         "chunks": chunk_reports,
         "candidates_before_pruning": len(candidates_before_pruning),
@@ -987,6 +1078,9 @@ def answer_temporal_event_query(
         "top_candidate_dates": candidate_limit,
         "top_evidence_per_date": evidence_limit,
         "evidence_sent_count": len(evidence),
+        "evidence_count": len(evidence) + undated_evidence_count,
+        "dated_evidence_count": sum(1 for item in evidence if item.occurred_at),
+        "undated_evidence_count": undated_evidence_count,
         "pruning_reason": pruning_reason,
         "photo_candidates_examined": len(photos),
         "candidate_day_count": len(candidate_clusters),
@@ -1011,6 +1105,10 @@ def answer_temporal_event_query(
         )
     if photos and not photo_used_clusters and not fallback_clusters:
         warnings.append("photo candidates were found, but outing evidence was weak")
+    if not candidate_clusters and undated_evidence_count:
+        warnings.append(
+            "event-related evidence was found, but usable date metadata was missing"
+        )
     if not photos and not fallback_clusters:
         warnings.append("no photos were found in the parsed date range")
     if not photos and fallback_clusters:
@@ -1341,9 +1439,23 @@ def _build_temporal_answer(
     query: TemporalEventQuery,
     used_clusters: tuple[DailyEventCluster, ...],
     candidate_clusters: tuple[DailyEventCluster, ...],
+    *,
+    undated_evidence_count: int = 0,
 ) -> TemporalAnswer:
     event_label = _event_label(query.event_type)
     if not used_clusters:
+        if not candidate_clusters and undated_evidence_count:
+            unknowns = (
+                "関連する証拠候補は見つかりましたが、日時メタデータが不足しています。",
+                "候補日として使うには写真の taken_at や LINE/ノートの timestamp が必要です。",
+            )
+        elif candidate_clusters:
+            unknowns = (
+                "写真候補はあっても、外出と判断できる注釈や同日サポートが弱い可能性があります。",
+                "写真だけでは外出目的は断定できません。",
+            )
+        else:
+            unknowns = (f"対象期間に写真、LINE、ノートの{event_label}候補が見つかりませんでした。",)
         return TemporalAnswer(
             answer_succeeded=True,
             conclusion=(
@@ -1353,12 +1465,7 @@ def _build_temporal_answer(
             dates=(),
             evidence_references=(),
             used_sources=(),
-            unknowns=(
-                "写真候補はあっても、外出と判断できる注釈や同日サポートが弱い可能性があります。",
-                "写真だけでは外出目的は断定できません。",
-            )
-            if candidate_clusters
-            else (f"対象期間に写真、LINE、ノートの{event_label}候補が見つかりませんでした。",),
+            unknowns=unknowns,
         )
     display_dates = tuple(sorted(used_clusters, key=lambda item: item.date))
     date_text = "、".join(_format_japanese_month_day(item.date) for item in display_dates)
@@ -1411,6 +1518,8 @@ def _event_label(event_type: str) -> str:
 
 
 def _public_event_description(event_plan: EventIntentPlan) -> str:
+    if event_plan.event_type == "dining_out" and event_plan.event_subtype == "ramen":
+        return "ramen dining-out event"
     descriptions = {
         "dining_out": "meal or dining-out event",
         "travel": "travel or sightseeing event",
@@ -1459,6 +1568,16 @@ def _build_temporal_evidence(
         if cluster.matched_textual_signals
         for evidence_id in cluster.support_evidence_ids
     }
+    occurred_at_by_id = {
+        evidence_id: cluster.date
+        for cluster in candidate_clusters
+        for evidence_id in (
+            *cluster.top_evidence_ids,
+            *cluster.candidate_evidence_ids,
+            *cluster.support_evidence_ids,
+            *cluster.rejected_evidence_ids,
+        )
+    }
     ordered_ids = _unique_ids(tuple((*used_ids, *candidate_ids, *rejected_ids)))
     evidence: list[TemporalEvidenceItem] = []
     for evidence_id in ordered_ids:
@@ -1480,7 +1599,7 @@ def _build_temporal_evidence(
                     if event_text_specific and is_used
                     else _reason_category(photo, role)
                 ),
-                occurred_at=photo.taken_at if photo is not None else None,
+                occurred_at=photo.taken_at if photo is not None else occurred_at_by_id.get(evidence_id),
             ),
         )
     return tuple(evidence)
@@ -1798,6 +1917,7 @@ def _event_plan(
     date_range: TemporalDateRange,
     *,
     event_type: str,
+    event_subtype: str | None,
     description: str,
     visual: tuple[str, ...],
     textual: tuple[str, ...],
@@ -1807,6 +1927,7 @@ def _event_plan(
         query_type="temporal_event_search",
         date_range=date_range,
         event_type=event_type,
+        event_subtype=event_subtype,
         event_description=description,
         visual_signals=visual,
         textual_signals=textual,
@@ -1867,6 +1988,8 @@ def _temporal_date_chunks(
                     timezone=date_range.timezone,
                     confidence=date_range.confidence,
                     parse_warnings=date_range.parse_warnings,
+                    status=date_range.status,
+                    scope_strategy=date_range.scope_strategy,
                 ),
             )
         cursor = next_month
@@ -2094,6 +2217,171 @@ def _line_note_support_counts_by_month(
                 if month in result["notes"]:
                     result["notes"][month] += 1
         return result
+    finally:
+        connection.close()
+
+
+def _is_open_ended_when_question(normalized_text_value: str) -> bool:
+    return any(marker in normalized_text_value for marker in ("いつ", "何日", "どの日", "日を教"))
+
+
+def _date_scope_diagnostics(date_range: TemporalDateRange) -> dict[str, Any]:
+    return {
+        "date_range_status": date_range.status,
+        "date_scope_strategy": date_range.scope_strategy,
+        "inferred_search_range_start": (
+            date_range.start.isoformat() if date_range.status == "unspecified" else None
+        ),
+        "inferred_search_range_end": (
+            date_range.end.isoformat() if date_range.status == "unspecified" else None
+        ),
+        "date_scope_warning": (
+            "date range was not specified; all available local memory will be searched with caps"
+            if date_range.status == "unspecified"
+            else None
+        ),
+    }
+
+
+def _infer_open_ended_date_scope(
+    db_path: Path | str,
+    fallback_range: TemporalDateRange,
+) -> tuple[TemporalDateRange, dict[str, Any]]:
+    available = _available_memory_date_bounds(db_path)
+    if available is None:
+        inferred = fallback_range
+        diagnostics = _date_scope_diagnostics(inferred)
+        diagnostics["date_scope_warning"] = (
+            "date range was not specified and no dated local evidence coverage was available"
+        )
+        return inferred, diagnostics
+    start, end = available
+    inferred = TemporalDateRange(
+        start=start,
+        end=end,
+        label="利用可能な全期間",
+        source="fallback",
+        expression=f"{start.isoformat()}..{end.isoformat()}",
+        timezone=fallback_range.timezone,
+        confidence=0.65,
+        parse_warnings=(
+            *fallback_range.parse_warnings,
+            "date_range_inferred_from_available_memory",
+        ),
+        status="unspecified",
+        scope_strategy="all_available_memory",
+    )
+    diagnostics = _date_scope_diagnostics(inferred)
+    diagnostics["date_scope_warning"] = (
+        "対象期間が指定されていないため、利用可能な全期間から検索しました。"
+    )
+    return inferred, diagnostics
+
+
+def _available_memory_date_bounds(db_path: Path | str) -> tuple[date, date] | None:
+    connection = _connect(db_path)
+    try:
+        values: list[str] = []
+        if _table_exists(connection, "media_items"):
+            row = connection.execute(
+                """
+                SELECT MIN(taken_at) AS min_value, MAX(taken_at) AS max_value
+                FROM media_items
+                WHERE is_excluded = 0
+                  AND taken_at IS NOT NULL
+                  AND taken_at != ''
+                """,
+            ).fetchone()
+            values.extend(_row_min_max_values(row))
+        if _table_exists(connection, "line_messages"):
+            row = connection.execute(
+                """
+                SELECT MIN(sent_at) AS min_value, MAX(sent_at) AS max_value
+                FROM line_messages
+                WHERE is_excluded = 0
+                  AND sent_at IS NOT NULL
+                  AND sent_at != ''
+                """,
+            ).fetchone()
+            values.extend(_row_min_max_values(row))
+        if _table_exists(connection, "notes"):
+            row = connection.execute(
+                """
+                SELECT MIN(COALESCE(updated_at_source, created_at_source, updated_at)) AS min_value,
+                       MAX(COALESCE(updated_at_source, created_at_source, updated_at)) AS max_value
+                FROM notes
+                WHERE is_excluded = 0
+                  AND COALESCE(updated_at_source, created_at_source, updated_at) IS NOT NULL
+                  AND COALESCE(updated_at_source, created_at_source, updated_at) != ''
+                """,
+            ).fetchone()
+            values.extend(_row_min_max_values(row))
+        parsed_dates = tuple(_parse_date_part(value) for value in values)
+        parsed_dates = tuple(value for value in parsed_dates if value is not None)
+        if not parsed_dates:
+            return None
+        start = min(parsed_dates)
+        end = max(parsed_dates) + timedelta(days=1)
+        if end <= start:
+            end = start + timedelta(days=1)
+        return start, end
+    finally:
+        connection.close()
+
+
+def _row_min_max_values(row: sqlite3.Row | None) -> list[str]:
+    if row is None:
+        return []
+    return [str(value) for value in (row["min_value"], row["max_value"]) if value]
+
+
+def _parse_date_part(value: str) -> date | None:
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+
+
+def _undated_event_evidence_count(
+    db_path: Path | str,
+    *,
+    event_plan: EventIntentPlan,
+) -> int:
+    terms = _unique_normalized_terms((*event_plan.visual_signals, *event_plan.textual_signals))
+    if not terms:
+        return 0
+    count = 0
+    connection = _connect(db_path)
+    try:
+        if _table_exists(connection, "media_items") and _table_exists(connection, "media_annotations"):
+            rows = connection.execute(
+                """
+                SELECT COALESCE(a.value_text, '') || ' ' || COALESCE(a.data_json, '') AS searchable_text
+                FROM media_items m
+                JOIN media_annotations a ON a.media_item_id = m.id
+                WHERE m.is_excluded = 0
+                  AND a.is_excluded = 0
+                  AND a.annotation_type = 'vision'
+                  AND (m.taken_at IS NULL OR m.taken_at = '')
+                LIMIT 5000
+                """,
+            ).fetchall()
+            count += sum(1 for row in rows if _text_has_any_term(row["searchable_text"], terms))
+        if _table_exists(connection, "notes"):
+            rows = connection.execute(
+                """
+                SELECT COALESCE(normalized_text, title, '') || ' ' || COALESCE(body_text, '') AS searchable_text
+                FROM notes
+                WHERE is_excluded = 0
+                  AND (
+                    COALESCE(updated_at_source, created_at_source, updated_at) IS NULL
+                    OR COALESCE(updated_at_source, created_at_source, updated_at) = ''
+                  )
+                LIMIT 5000
+                """,
+            ).fetchall()
+            count += sum(1 for row in rows if _text_has_any_term(row["searchable_text"], terms))
+        return count
     finally:
         connection.close()
 

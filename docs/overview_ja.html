@@ -557,6 +557,7 @@
             <tr><td>9-H8b</td><td>成功レスポンスに古い failed status が混入しても、trace から再集計して final outcome invariant を維持。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-H9b</td><td>UI の async polling で start/status を status 専用、result を最終描画専用に分離。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-H9c</td><td>async run に result_ready/finalizing を追加し、succeeded は result 保存後だけ返す。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>9-I</td><td>日付範囲なしの「いつ」質問を all-available-memory scope で chunk し、event subtype と dated evidence から候補日を抽出。</td><td class="status">基本実装済み</td></tr>
           </tbody>
         </table>
       </section>
@@ -850,6 +851,16 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           raw evidence 本文は既定で表示しません。
         </p>
         <p>
+          9-I では <code>ラーメンを食べに行っているのはいつ？</code> のように期間指定がない
+          temporal event query も扱えるようにしました。parser は
+          <code>date_range_status=unspecified</code> として受け取り、
+          local DB の写真 <code>taken_at</code>、LINE timestamp、ノート更新日時の coverage から
+          <code>date_scope_strategy=all_available_memory</code> の検索範囲を推定します。
+          EventIntentPlan には <code>event_subtype</code> も含められ、ramen などの subtype signal を使って
+          写真注釈、LINE、ノートを月単位に chunk search します。日時のある evidence から candidate date を作り、
+          関連 evidence があっても日時がない場合は <code>undated_evidence_count</code> を出して structured unknown を返します。
+        </p>
+        <p>
           9-H では local chat UI に <strong>Agent Runtime Trace</strong> を追加しました。
           DeepSeek Leader が live call されたか、決定的 fallback が使われたか、日付 parser、
           photo date search、LINE/ノート検索、cached Qwen3-VL photo annotation、semantic retrieval、
@@ -954,6 +965,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
       <section id="history">
         <h2>更新履歴</h2>
         <ul>
+          <li>2026-05-26: 期間指定なしの temporal event query を all-available-memory scope で扱い、ramen などの event subtype と dated evidence から候補日を抽出。</li>
           <li>2026-05-26: async run に result_ready/finalizing を追加し、succeeded と result 保存を atomic に接続。</li>
           <li>2026-05-26: UI async polling を修正し、start/status を最終結果として描画せず result handoff を retry。</li>
           <li>2026-05-26: 成功レスポンスの final outcome invariant を強化し、stale failed status を trace 再集計で補正。</li>

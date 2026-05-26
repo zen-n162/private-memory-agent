@@ -818,6 +818,15 @@ UI behavior. If a real-model request fails, inspect the browser Network
 response for `failure_stage`, `failure_actor`, and `current_status` before
 debugging the retrieval path.
 
+Open-ended temporal event questions from Phase 9-I are handled in the evidence
+builder before real-model answer synthesis. If the user asks
+`ラーメンを食べに行っているのはいつ？` without a date range, the system infers a
+local all-available-memory date scope, chunks the search, and extracts
+candidate dates from dated evidence. If only undated evidence exists, the API
+returns a structured unknown with `undated_evidence_count`; it should not call
+DeepSeek with an invalid empty candidate payload or surface `ModelRuntimeError`
+for that condition.
+
 Phase 9-H8 distinguishes final failures from recovered intermediate failures.
 If a Leader planning call fails but deterministic fallback succeeds and the
 final answer succeeds, the chat response clears `failure_stage`, sets

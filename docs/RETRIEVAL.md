@@ -640,6 +640,19 @@ they match the event-specific plan. UI/API diagnostics expose `event_type`,
 `visual_signal_count`, `textual_signal_count`, `source_priorities`,
 `event_score_by_date`, and matched signal counts without printing raw evidence.
 
+Phase 9-I extends this path to open-ended "when" questions without an explicit
+date range. A question such as `ラーメンを食べに行っているのはいつ？` is still
+classified as `temporal_event_search`. The parser reports
+`date_range_status=unspecified`, and the evidence builder chooses
+`date_scope_strategy=all_available_memory` in the local developer console. The
+actual inferred search scope comes from privacy-safe local coverage: min/max
+`media_items.taken_at`, LINE `sent_at`, and note created/updated timestamps.
+The range is chunked by month when broad, candidate days are pruned, and the
+EventIntentPlan may include an `event_subtype` such as `ramen`. Candidate dates
+are extracted only from dated evidence. If event-related evidence exists but
+lacks usable timestamps, PMA returns a structured unknown with
+`undated_evidence_count` instead of surfacing a generic `ModelRuntimeError`.
+
 Phase 9-H6 makes the chat API explicit about two stages:
 
 - Evidence builder: query understanding, parsed date range, temporal
@@ -672,6 +685,9 @@ pma query "2025年10月から12月で出かけたのはいつ？" \
   --config configs/paths.local.yaml \
   --temporal-diagnostics
 pma query "2025年12月でご飯を食べに行っているのはいつ？" \
+  --config configs/paths.local.yaml \
+  --temporal-diagnostics
+pma query "ラーメンを食べに行っているのはいつ？" \
   --config configs/paths.local.yaml \
   --temporal-diagnostics
 ```

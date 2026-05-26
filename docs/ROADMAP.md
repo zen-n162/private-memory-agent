@@ -119,6 +119,14 @@ This document outlines the development roadmap for private-memory-agent.
   and use event-specific visual/textual signals, event scores, matched signal
   counts, and privacy-safe UI diagnostics. Generic outing evidence is weaker
   when it does not match the inferred event intent.
+- Phase 9-I adds open-ended temporal event planning:
+  questions such as `ラーメンを食べに行っているのはいつ？` now enter the temporal
+  event workflow even without an explicit date range. PMA marks
+  `date_range_status=unspecified`, infers an all-available-memory search scope
+  from local dated coverage, chunks the range, plans event subtypes such as
+  `ramen`, and extracts candidate dates from dated photo/LINE/note evidence.
+  If only undated evidence exists, the answer is a structured unknown instead
+  of a model runtime failure.
 - Phase 9-H adds an Agent Runtime Trace for the local console:
   `/api/chat/query` now returns ordered `trace_events`, `model_usage_summary`,
   `tool_usage_summary`, and `fallback_summary`. `/ui` shows a timeline of
