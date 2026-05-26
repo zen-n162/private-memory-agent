@@ -108,6 +108,8 @@ class TimestampBackfillReport:
     method: str
     fallback: str
     min_confidence: str
+    commit_interval: int
+    commit_count: int
     error_classes: dict[str, int] = field(default_factory=dict)
     examples: tuple[dict[str, Any], ...] = ()
 
@@ -127,6 +129,8 @@ class TimestampBackfillReport:
             "method": self.method,
             "fallback": self.fallback,
             "min_confidence": self.min_confidence,
+            "commit_interval": self.commit_interval,
+            "commit_count": self.commit_count,
             "error_classes": dict(self.error_classes),
         }
         if show_errors:
@@ -233,11 +237,14 @@ def backfill_media_timestamps(
     min_confidence: TimestampConfidence = "high",
     only_missing: bool = True,
     show_errors: bool = False,
+    commit_interval: int = 100,
 ) -> TimestampBackfillReport:
     """Backfill `media_items.taken_at` from local files without modifying sources."""
 
     if source != "photos":
         raise ValueError("only source=photos is supported for media timestamp backfill")
+    if commit_interval <= 0:
+        raise ValueError("commit_interval must be positive")
     storage = initialize_database(db_path)
     try:
         rows = _select_backfill_rows(storage.connection, only_missing=only_missing, limit=limit)
@@ -249,6 +256,8 @@ def backfill_media_timestamps(
         unsupported = 0
         parse_errors = 0
         mtime_count = 0
+        commit_count = 0
+        updates_since_commit = 0
         error_classes: dict[str, int] = {}
         examples: list[dict[str, Any]] = []
         for row in rows:
@@ -307,10 +316,20 @@ def backfill_media_timestamps(
             if dry_run:
                 dry_run_updates += 1
                 continue
-            _update_media_timestamp(storage.connection, media_item_id=int(row["id"]), extraction=extraction)
-            updated += 1
-        if not dry_run:
+            row_updates = _update_media_timestamp(
+                storage.connection,
+                media_item_id=int(row["id"]),
+                extraction=extraction,
+            )
+            updated += row_updates
+            updates_since_commit += row_updates
+            if updates_since_commit >= commit_interval:
+                storage.connection.commit()
+                commit_count += 1
+                updates_since_commit = 0
+        if not dry_run and updates_since_commit > 0:
             storage.connection.commit()
+            commit_count += 1
         return TimestampBackfillReport(
             total_selected_count=len(rows),
             processed_count=processed,
@@ -325,6 +344,8 @@ def backfill_media_timestamps(
             method=method,
             fallback=fallback,
             min_confidence=min_confidence,
+            commit_interval=commit_interval,
+            commit_count=commit_count,
             error_classes=error_classes,
             examples=tuple(examples),
         )
@@ -463,8 +484,8 @@ def _select_backfill_rows(connection: Any, *, only_missing: bool, limit: int | N
     return list(connection.execute(sql, params).fetchall())
 
 
-def _update_media_timestamp(connection: Any, *, media_item_id: int, extraction: TimestampExtraction) -> None:
-    connection.execute(
+def _update_media_timestamp(connection: Any, *, media_item_id: int, extraction: TimestampExtraction) -> int:
+    cursor = connection.execute(
         """
         UPDATE media_items
         SET taken_at = ?,
@@ -487,6 +508,7 @@ def _update_media_timestamp(connection: Any, *, media_item_id: int, extraction: 
             media_item_id,
         ),
     )
+    return int(cursor.rowcount or 0)
 
 
 def _extract_with_exiftool(path: Path) -> TimestampExtraction:

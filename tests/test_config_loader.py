@@ -166,6 +166,26 @@ def test_local_paths_config_overlays_raw_sources_without_requiring_real_paths(
     assert all(source.enabled for source in config.paths.raw_sources.values())
 
 
+def test_local_paths_config_exposes_storage_sqlite_path(
+    monkeypatch,
+    temp_config_factory,
+    tmp_path,
+):
+    sqlite_path = tmp_path / "custom" / "metadata.sqlite3"
+    local_yaml = "\n".join(
+        [
+            "storage:",
+            f"  sqlite_path: {sqlite_path}",
+        ],
+    )
+    config_dir = temp_config_factory(local_paths_yaml=local_yaml)
+    monkeypatch.delenv("PMA_PATHS_CONFIG", raising=False)
+
+    config = load_config(paths_config=config_dir / "paths.local.yaml")
+
+    assert config.paths.sqlite_path == sqlite_path
+
+
 def test_config_show_dict_redacts_raw_source_paths(temp_config_factory, tmp_path):
     photos_root = tmp_path / "fake-photos"
     photos_root.mkdir()

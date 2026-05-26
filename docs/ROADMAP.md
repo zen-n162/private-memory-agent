@@ -364,19 +364,24 @@ pma media timestamps backfill --config configs/paths.local.yaml \
   --method auto
 ```
 
-Backfill is dry-run by default. After backing up the local SQLite DB and
-reviewing count-only diagnostics, use `--apply` to update SQLite metadata:
+Backfill is dry-run by default. Timestamp audit/backfill resolve the DB from
+`storage.sqlite_path` in `configs/paths.local.yaml` unless `--db` is explicit.
+After backing up the local SQLite DB and reviewing count-only diagnostics, use
+`--apply` to update SQLite metadata:
 
 ```bash
 pma media timestamps backfill --config configs/paths.local.yaml \
   --limit 100 \
   --method auto \
   --only-missing \
-  --apply
+  --apply \
+  --commit-interval 100
 ```
 
 `--write` remains an alias, but `--apply` is the preferred command. Source files
-remain read-only. `exiftool` is preferred when available; Pillow is the
+remain read-only. Apply mode commits periodically with `--commit-interval`, so
+long runs expose committed `taken_at` progress instead of holding all writes
+until process exit. `exiftool` is preferred when available; Pillow is the
 lightweight fallback for image EXIF. `--fallback file-mtime` is low-confidence
 and should be used only when capture metadata is unavailable and modification
 time is acceptable for the use case.

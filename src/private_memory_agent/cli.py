@@ -169,8 +169,8 @@ def build_parser() -> argparse.ArgumentParser:
     media_timestamps_audit_parser.add_argument(
         "--db",
         type=Path,
-        default=DEFAULT_E2E_DB_PATH,
-        help="SQLite database path to inspect.",
+        default=None,
+        help="SQLite database path to inspect. Defaults to storage.sqlite_path from config.",
     )
     media_timestamps_audit_parser.add_argument(
         "--method",
@@ -213,8 +213,8 @@ def build_parser() -> argparse.ArgumentParser:
     media_timestamps_backfill_parser.add_argument(
         "--db",
         type=Path,
-        default=DEFAULT_E2E_DB_PATH,
-        help="SQLite database path to update.",
+        default=None,
+        help="SQLite database path to update. Defaults to storage.sqlite_path from config.",
     )
     dry_run_group = media_timestamps_backfill_parser.add_mutually_exclusive_group()
     dry_run_group.add_argument(
@@ -268,6 +268,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("high", "medium", "low"),
         default="high",
         help="Minimum timestamp confidence to accept.",
+    )
+    media_timestamps_backfill_parser.add_argument(
+        "--commit-interval",
+        type=int,
+        default=100,
+        help="Commit after this many SQLite metadata updates in apply mode.",
     )
     media_timestamps_backfill_parser.add_argument(
         "--only-missing",
@@ -1726,12 +1732,13 @@ def _stats_command(args: argparse.Namespace) -> int:
 
 
 def _media_timestamps_audit_command(args: argparse.Namespace) -> int:
-    load_config(config_dir=args.config_dir, paths_config=args.config)
+    config = load_config(config_dir=args.config_dir, paths_config=args.config)
     if args.extract_limit is not None and args.extract_limit < 0:
         print("Timestamp audit failed: --extract-limit must be 0 or positive.")
         return 2
+    db_path = _resolve_configured_db_path(args.db, config)
     report = audit_media_timestamps(
-        args.db,
+        db_path,
         method=args.method,
         fallback=args.fallback,
         month_histogram=args.month_histogram,
@@ -1745,12 +1752,16 @@ def _media_timestamps_audit_command(args: argparse.Namespace) -> int:
 
 
 def _media_timestamps_backfill_command(args: argparse.Namespace) -> int:
-    load_config(config_dir=args.config_dir, paths_config=args.config)
+    config = load_config(config_dir=args.config_dir, paths_config=args.config)
     if args.limit is not None and args.limit <= 0:
         print("Timestamp backfill failed: --limit must be positive.")
         return 2
+    if args.commit_interval <= 0:
+        print("Timestamp backfill failed: --commit-interval must be positive.")
+        return 2
+    db_path = _resolve_configured_db_path(args.db, config)
     report = backfill_media_timestamps(
-        args.db,
+        db_path,
         dry_run=args.dry_run,
         limit=args.limit,
         source=args.source,
@@ -1759,6 +1770,7 @@ def _media_timestamps_backfill_command(args: argparse.Namespace) -> int:
         min_confidence=args.min_confidence,
         only_missing=args.only_missing,
         show_errors=args.show_errors,
+        commit_interval=args.commit_interval,
     )
     if args.json:
         print(
@@ -1772,6 +1784,12 @@ def _media_timestamps_backfill_command(args: argparse.Namespace) -> int:
     else:
         print(format_timestamp_backfill(report, show_errors=args.show_errors))
     return 0
+
+
+def _resolve_configured_db_path(explicit_db: Path | None, config) -> Path:
+    if explicit_db is not None:
+        return Path(explicit_db).expanduser()
+    return Path(config.paths.sqlite_path).expanduser()
 
 
 def _db_schema_command(args: argparse.Namespace) -> int:

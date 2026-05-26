@@ -138,7 +138,7 @@ def test_backfill_writes_timestamp_and_provenance(tmp_path):
     finally:
         storage.close()
 
-    report = backfill_media_timestamps(db_path, method="pillow", dry_run=False)
+    report = backfill_media_timestamps(db_path, method="pillow", dry_run=False, commit_interval=1)
     storage = initialize_database(db_path)
     try:
         row = storage.media_items.get(media_id)
@@ -148,6 +148,7 @@ def test_backfill_writes_timestamp_and_provenance(tmp_path):
     assert report.updated_count == 1
     assert report.dry_run_update_count == 0
     assert report.dry_run is False
+    assert report.commit_count == 1
     assert row["taken_at"] == "2025-12-03T10:11:12"
     assert row["taken_at_source"] == "exif_datetime_original"
     assert row["taken_at_confidence"] == "high"
@@ -302,6 +303,8 @@ def test_timestamp_cli_backfill_apply_writes_and_commits_without_modifying_sourc
             "pillow",
             "--only-missing",
             "--apply",
+            "--commit-interval",
+            "1",
         ],
     )
     output = capsys.readouterr().out
@@ -320,10 +323,165 @@ def test_timestamp_cli_backfill_apply_writes_and_commits_without_modifying_sourc
     assert "dry_run=False" in output
     assert "updated_count=1" in output
     assert "dry_run_update_count=0" in output
+    assert "commit_count=1" in output
     assert before_stat.st_mtime_ns == after_stat.st_mtime_ns
     assert before_stat.st_size == after_stat.st_size
     assert str(tmp_path) not in output
     assert "apply-secret" not in output
+
+
+def test_timestamp_cli_backfill_uses_configured_storage_db_for_dry_run_and_apply(
+    capsys,
+    temp_config_factory,
+    tmp_path,
+):
+    configured_db_path = tmp_path / "configured" / "configured.sqlite3"
+    unrelated_default_db = tmp_path / "default.sqlite3"
+    image_path = tmp_path / "configured-secret.jpg"
+    _write_jpeg(image_path, exif_datetime="2025:12:03 10:11:12")
+    storage = initialize_database(configured_db_path)
+    try:
+        media_id = _insert_media(storage, image_path)
+    finally:
+        storage.close()
+    initialize_database(unrelated_default_db).close()
+    config_dir = temp_config_factory(
+        local_paths_yaml="\n".join(
+            [
+                "storage:",
+                f"  sqlite_path: {configured_db_path}",
+            ],
+        ),
+    )
+
+    dry_run_exit = main(
+        [
+            "media",
+            "timestamps",
+            "backfill",
+            "--config-dir",
+            str(config_dir),
+            "--config",
+            str(config_dir / "paths.local.yaml"),
+            "--limit",
+            "1",
+            "--method",
+            "pillow",
+        ],
+    )
+    dry_run_output = capsys.readouterr().out
+    storage = initialize_database(configured_db_path)
+    try:
+        row_after_dry_run = storage.media_items.get(media_id)
+    finally:
+        storage.close()
+
+    apply_exit = main(
+        [
+            "media",
+            "timestamps",
+            "backfill",
+            "--config-dir",
+            str(config_dir),
+            "--config",
+            str(config_dir / "paths.local.yaml"),
+            "--limit",
+            "1",
+            "--method",
+            "pillow",
+            "--apply",
+            "--commit-interval",
+            "1",
+        ],
+    )
+    apply_output = capsys.readouterr().out
+    storage = initialize_database(configured_db_path)
+    try:
+        row_after_apply = storage.media_items.get(media_id)
+    finally:
+        storage.close()
+    unrelated_storage = initialize_database(unrelated_default_db)
+    try:
+        unrelated_count = len(unrelated_storage.media_items.list(include_excluded=True))
+    finally:
+        unrelated_storage.close()
+
+    assert dry_run_exit == 0
+    assert "dry_run_update_count=1" in dry_run_output
+    assert row_after_dry_run["taken_at"] is None
+    assert apply_exit == 0
+    assert "updated_count=1" in apply_output
+    assert "commit_count=1" in apply_output
+    assert row_after_apply["taken_at"] == "2025-12-03T10:11:12"
+    assert row_after_apply["taken_at_source"] == "exif_datetime_original"
+    assert row_after_apply["taken_at_confidence"] == "high"
+    assert unrelated_count == 0
+    assert str(tmp_path) not in dry_run_output
+    assert str(tmp_path) not in apply_output
+    assert "configured-secret" not in dry_run_output
+    assert "configured-secret" not in apply_output
+
+
+def test_timestamp_cli_backfill_explicit_db_overrides_configured_storage_db(
+    capsys,
+    temp_config_factory,
+    tmp_path,
+):
+    configured_db_path = tmp_path / "configured.sqlite3"
+    explicit_db_path = tmp_path / "explicit.sqlite3"
+    image_path = tmp_path / "explicit-secret.jpg"
+    _write_jpeg(image_path, exif_datetime="2025:12:03 10:11:12")
+    initialize_database(configured_db_path).close()
+    storage = initialize_database(explicit_db_path)
+    try:
+        media_id = _insert_media(storage, image_path)
+    finally:
+        storage.close()
+    config_dir = temp_config_factory(
+        local_paths_yaml="\n".join(
+            [
+                "storage:",
+                f"  sqlite_path: {configured_db_path}",
+            ],
+        ),
+    )
+
+    exit_code = main(
+        [
+            "media",
+            "timestamps",
+            "backfill",
+            "--config-dir",
+            str(config_dir),
+            "--config",
+            str(config_dir / "paths.local.yaml"),
+            "--db",
+            str(explicit_db_path),
+            "--limit",
+            "1",
+            "--method",
+            "pillow",
+            "--apply",
+        ],
+    )
+    output = capsys.readouterr().out
+    storage = initialize_database(explicit_db_path)
+    try:
+        explicit_row = storage.media_items.get(media_id)
+    finally:
+        storage.close()
+    configured_storage = initialize_database(configured_db_path)
+    try:
+        configured_count = len(configured_storage.media_items.list(include_excluded=True))
+    finally:
+        configured_storage.close()
+
+    assert exit_code == 0
+    assert explicit_row["taken_at"] == "2025-12-03T10:11:12"
+    assert configured_count == 0
+    assert "updated_count=1" in output
+    assert str(tmp_path) not in output
+    assert "explicit-secret" not in output
 
 
 def test_timestamp_cli_backfill_apply_respects_only_missing(
@@ -368,3 +526,26 @@ def test_timestamp_cli_backfill_apply_respects_only_missing(
     assert row["taken_at"] == "2024-01-01T00:00:00"
     assert "updated_count=0" in output
     assert "total_selected_count=0" in output
+
+
+def test_timestamp_cli_rejects_invalid_commit_interval(capsys, temp_config_factory, tmp_path):
+    db_path = tmp_path / "timestamps.sqlite3"
+    initialize_database(db_path).close()
+
+    exit_code = main(
+        [
+            "media",
+            "timestamps",
+            "backfill",
+            "--config-dir",
+            str(temp_config_factory()),
+            "--db",
+            str(db_path),
+            "--commit-interval",
+            "0",
+        ],
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 2
+    assert "--commit-interval must be positive" in output

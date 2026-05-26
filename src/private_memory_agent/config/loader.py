@@ -74,6 +74,7 @@ class PathSettings:
 
     model_root: Path = DEFAULT_MODEL_ROOT
     app_data_dir: Path = Path("data/local")
+    sqlite_path: Path = Path("data/local/private_memory_agent.sqlite3")
     input_roots: dict[str, Path | None] = field(default_factory=dict)
     raw_sources: dict[str, RawSourceSettings] = field(default_factory=dict)
 
@@ -123,6 +124,7 @@ class ConfigBundle:
             "paths": {
                 "model_root": str(self.paths.model_root),
                 "app_data_dir": str(self.paths.app_data_dir),
+                "sqlite_path": str(self.paths.sqlite_path),
                 "input_roots": {
                     name: None if value is None else "<configured>"
                     for name, value in self.paths.input_roots.items()
@@ -193,6 +195,7 @@ def load_config(
         os.environ.get("PMA_APP_DATA_DIR") or paths_raw.get("app_data_dir") or "data/local",
         base_dir=resolved_config_dir.parent if "PMA_APP_DATA_DIR" not in os.environ else None,
     )
+    sqlite_path = _storage_sqlite_path(paths_raw, app_data_dir=app_data_dir, base_dir=resolved_config_dir.parent)
     input_roots = _input_roots(paths_raw.get("input_roots", {}), base_dir=resolved_config_dir.parent)
     raw_sources = _raw_sources(
         paths_raw.get("raw_sources", {}),
@@ -212,6 +215,7 @@ def load_config(
         paths=PathSettings(
             model_root=model_root,
             app_data_dir=app_data_dir,
+            sqlite_path=sqlite_path,
             input_roots=input_roots,
             raw_sources=raw_sources,
         ),
@@ -343,6 +347,18 @@ def _input_roots(raw_value: object, *, base_dir: Path | None) -> dict[str, Path 
     for name, value in raw_value.items():
         roots[str(name)] = None if value is None else _path_setting(value, base_dir=base_dir)
     return roots
+
+
+def _storage_sqlite_path(
+    paths_raw: dict[str, Any],
+    *,
+    app_data_dir: Path,
+    base_dir: Path | None,
+) -> Path:
+    storage_raw = paths_raw.get("storage")
+    if isinstance(storage_raw, dict) and storage_raw.get("sqlite_path") is not None:
+        return _path_setting(storage_raw["sqlite_path"], base_dir=base_dir)
+    return app_data_dir / "private_memory_agent.sqlite3"
 
 
 def _raw_sources(raw_value: object, *, base_dir: Path | None) -> dict[str, RawSourceSettings]:
