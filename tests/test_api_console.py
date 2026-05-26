@@ -516,6 +516,24 @@ def test_recovered_leader_failure_with_fallback_is_not_final_failure():
             "evidence_display": {"candidate_dates": [{"date": "2025-12-05"}]},
             "trace": {"runtime_event_count": 3, "plan": {}},
             "trace_events": trace_events,
+            "failure_stage": "answer_generation",
+            "failure_actor": "DeepSeek Leader",
+            "error_class": "ModelRuntimeError",
+            "error_message": "model endpoint request timed out",
+            "current_status": {
+                "run_id": "recovered-run",
+                "status": "failed",
+                "failure_stage": "answer_generation",
+                "failure_actor": "DeepSeek Leader",
+                "failure_summary": {"summary_status": "failed"},
+            },
+            "model_usage_summary": {"DeepSeek Leader": {"status": "failed"}},
+            "fallback_summary": {
+                "fallback_used": True,
+                "fallback_count": 1,
+                "stages": ["event_intent_planning"],
+                "actors": ["DeterministicEventIntentPlanner"],
+            },
             "privacy": {},
             "warnings": [],
         },
@@ -531,13 +549,59 @@ def test_recovered_leader_failure_with_fallback_is_not_final_failure():
     assert payload["error_class"] is None
     assert payload["current_status"]["status"] == "succeeded"
     assert payload["current_status"]["failure_summary"] is None
+    assert payload["current_status"]["display_message"] == "回答を生成しました。"
+    assert payload["current_status"]["completion_summary"]["candidate_date_count"] == 1
+    assert payload["current_status"]["completion_summary"]["evidence_reference_count"] == 1
+    assert payload["current_status"]["completion_summary"]["recovered_failure_count"] == 1
     assert payload["recovered_failure_count"] == 1
     assert payload["recovered_failures"][0]["actor"] == "DeepSeek Leader"
     assert payload["recovered_failures"][0]["fallback_actor"] == "DeterministicEventIntentPlanner"
+    assert payload["fallback_summary"]["recovered_failure_count"] == 1
     assert payload["model_usage_summary"]["DeepSeek Leader"]["status"] == "partially_failed_recovered"
     assert payload["model_usage_summary"]["DeepSeek Leader"]["recovered"] == 1
+    assert "event intent planning に失敗しました" in serialized
     assert "復旧しました" in serialized
     assert "PRIVATE" not in serialized
+
+
+def test_failed_leader_planning_without_fallback_remains_failed():
+    payload = ensure_chat_response_contract(
+        {
+            "ok": False,
+            "mode": "real-model",
+            "answer": {
+                "answer_succeeded": False,
+                "answer_state": "not_generated",
+                "evidence_references": [],
+                "used_sources": [],
+            },
+            "evidence": [],
+            "trace": {"runtime_event_count": 1, "plan": {}},
+            "trace_events": [
+                {
+                    "run_id": "planning-failed-run",
+                    "actor_type": "leader_model",
+                    "actor_name": "DeepSeek Leader",
+                    "stage": "event_intent_planning",
+                    "action": "create_event_intent_plan",
+                    "status": "failed",
+                    "invocation_type": "live_call",
+                    "error_class": "ModelRuntimeError",
+                    "safe_error_message": "event intent planning failed",
+                    "metadata": {},
+                },
+            ],
+            "privacy": {},
+            "warnings": [],
+        },
+        run_id="planning-failed-run",
+    )
+
+    assert payload["ok"] is False
+    assert payload["current_status"]["status"] == "failed"
+    assert payload["failure_stage"] == "query_understanding"
+    assert payload["failure_actor"] == "DeepSeek Leader"
+    assert payload["recovered_failure_count"] == 0
 
 
 def test_unrecovered_answer_generation_failure_remains_final_failure():

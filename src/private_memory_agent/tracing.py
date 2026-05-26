@@ -381,7 +381,11 @@ def summarize_recovered_failures(
     for index, event in enumerate(event_list):
         if event.get("status") != "failed":
             continue
-        fallback = _next_fallback_event(event_list, start=index + 1)
+        fallback = _next_fallback_event(
+            event_list,
+            start=index + 1,
+            stage=str(event.get("stage") or ""),
+        )
         if fallback is None:
             continue
         recovered.append(
@@ -531,8 +535,15 @@ def _next_step_hint(event: dict[str, Any] | None, *, safe_status: str) -> str | 
     return NEXT_STEP_HINTS.get(str(event.get("stage") or ""))
 
 
-def _next_fallback_event(events: list[dict[str, Any]], *, start: int) -> dict[str, Any] | None:
+def _next_fallback_event(
+    events: list[dict[str, Any]],
+    *,
+    start: int,
+    stage: str,
+) -> dict[str, Any] | None:
     for event in events[start:]:
+        if stage and str(event.get("stage") or "") != stage:
+            continue
         metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
         if event.get("status") == "fallback_used" or metadata.get("fallback_used"):
             return event

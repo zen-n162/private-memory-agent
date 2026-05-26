@@ -15,8 +15,8 @@ from private_memory_agent.tracing import (
 
 CHAT_CONSOLE_MODES = {"retrieval-only", "fake-model", "real-model"}
 CHAT_RESPONSE_MODES = {*CHAT_CONSOLE_MODES, "unknown"}
-CHAT_API_RESPONSE_SCHEMA_VERSION = "2026-05-26.9h8"
-CHAT_UI_RESPONSE_SCHEMA_VERSION = "2026-05-26.9h8"
+CHAT_API_RESPONSE_SCHEMA_VERSION = "2026-05-26.9h8b"
+CHAT_UI_RESPONSE_SCHEMA_VERSION = "2026-05-26.9h8b"
 REQUIRED_CHAT_RESPONSE_KEYS = (
     "ok",
     "mode",
@@ -222,14 +222,14 @@ def ensure_chat_response_contract(
     payload["recovered_failure_count"] = recovered_summary["recovered_failure_count"]
     payload["recovered_failures"] = recovered_summary["recovered_failures"]
     payload["trace_summary"] = _trace_summary(trace, trace_events)
-    payload["model_usage_summary"] = payload.get("model_usage_summary") or summarize_model_usage(trace_events)
-    payload["tool_usage_summary"] = payload.get("tool_usage_summary") or summarize_tool_usage(trace_events)
-    payload["fallback_summary"] = payload.get("fallback_summary") or summarize_fallbacks(trace_events)
+    payload["model_usage_summary"] = summarize_model_usage(trace_events)
+    payload["tool_usage_summary"] = summarize_tool_usage(trace_events)
+    payload["fallback_summary"] = summarize_fallbacks(trace_events)
     payload["privacy"] = {**privacy_defaults(), **privacy}
     payload["warnings"] = _unique_strings(
         (*list(payload.get("warnings") or []), *_recovered_failure_warnings(recovered_summary)),
     )
-    if current_status is not None:
+    if current_status is not None and not final_succeeded:
         payload["current_status"] = current_status
     else:
         status = "failed" if payload.get("failure_stage") else "succeeded"
@@ -247,6 +247,11 @@ def ensure_chat_response_contract(
         payload["current_status"]["failure_stage"] = None
         payload["current_status"]["failure_actor"] = None
         payload["current_status"]["failure_summary"] = None
+        payload["current_status"]["display_message"] = "回答を生成しました。"
+        payload["current_status"]["completion_summary"] = _completion_summary(
+            payload,
+            timeline_available=bool(trace_events),
+        )
     if payload.get("failure_stage"):
         failed_action = failure.get("failed_action") or str(payload.get("failure_stage"))
         safe_actor = str(payload.get("failure_actor") or "ChatAPI")
@@ -265,6 +270,27 @@ def ensure_chat_response_contract(
             timeline_available=bool(trace_events),
         )
     return payload
+
+
+def _completion_summary(payload: dict[str, Any], *, timeline_available: bool) -> dict[str, Any]:
+    answer = payload.get("answer") if isinstance(payload.get("answer"), dict) else {}
+    return {
+        "summary_status": "done",
+        "answer_succeeded": bool(payload.get("answer_succeeded")),
+        "answer_state": payload.get("answer_state") or answer.get("answer_state") or "unknown",
+        "candidate_date_count": int(payload.get("candidate_date_count") or 0),
+        "evidence_reference_count": int(payload.get("evidence_reference_count") or 0),
+        "evidence_count": int(payload.get("evidence_count") or 0),
+        "used_sources": list(answer.get("used_sources") or []),
+        "warning_count": len(payload.get("warnings") or []),
+        "recovered_failure_count": int(payload.get("recovered_failure_count") or 0),
+        "recovered_failures": list(payload.get("recovered_failures") or []),
+        "major_models_used": [],
+        "major_tools_used": [],
+        "unused_models_tools": [],
+        "timeline_available": timeline_available,
+        "display_message": "回答を生成しました。" if payload.get("answer_succeeded") else "実行は完了しました。",
+    }
 
 
 def classify_chat_failure(
@@ -394,9 +420,9 @@ def _recovered_failure_warnings(recovered_summary: dict[str, Any]) -> list[str]:
     warnings: list[str] = []
     for item in recovered_summary.get("recovered_failures") or []:
         actor = str(item.get("actor") or "Agent")
-        stage = str(item.get("stage") or "unknown")
+        stage = _human_stage(str(item.get("stage") or "unknown"))
         fallback = str(item.get("fallback_actor") or "fallback")
-        warnings.append(f"{actor} の {stage} は失敗しましたが、{fallback} で復旧しました。")
+        warnings.append(f"{actor} の {stage} に失敗しましたが、{fallback} により復旧しました。")
     return warnings
 
 
@@ -420,6 +446,10 @@ def _default_trace(*, runtime_event_count: int = 0) -> dict[str, Any]:
         "final_relevance_score": None,
         "insufficient_evidence_reason": "execution stopped before agent runtime",
     }
+
+
+def _human_stage(stage: str) -> str:
+    return stage.replace("_", " ")
 
 
 def _trace_summary(trace: dict[str, Any], trace_events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -483,6 +513,8 @@ def _stage_from_failed_event(event: dict[str, Any]) -> str:
         return "answer_generation"
     if stage == "answer_validation" or action == "validate_answer_payload":
         return "answer_validation"
+    if stage == "event_intent_planning":
+        return "query_understanding"
     if stage in {"evidence_retrieval", "evidence_retrieval_repair"}:
         return "retrieval"
     if "retrieval_planning" in stage:

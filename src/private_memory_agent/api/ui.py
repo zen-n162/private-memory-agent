@@ -1360,9 +1360,9 @@ def agent_console_html() -> str:
       if (summary.recovered_failure_count) {
         const recovered = (summary.recovered_failures || [])[0] || {};
         const actor = recovered.actor || "Agent";
-        const stage = recovered.stage || "planning";
+        const stage = String(recovered.stage || "planning").replaceAll("_", " ");
         const fallback = recovered.fallback_actor || "deterministic fallback";
-        currentStatusBar.appendChild(el("div", `注意: ${actor} の ${stage} は失敗しましたが、${fallback}で復旧しました。`, "status-line"));
+        currentStatusBar.appendChild(el("div", `注意: ${actor} の ${stage} に失敗しましたが、${fallback} により復旧しました。`, "status-line"));
       }
       appendCompactUsageSection("Models", summary.major_models_used || []);
       appendCompactUsageSection("Tools", summary.major_tools_used || []);

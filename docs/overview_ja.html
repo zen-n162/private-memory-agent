@@ -554,6 +554,7 @@
             <tr><td>9-H5</td><td>real-model の timeout、answer validation、preflight failure も同じ response contract に統一。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-H6</td><td>evidence builder と answer synthesis を分離し、real-model 失敗時も候補日と evidence を保持。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-H8</td><td>fallback で復旧した中間失敗を final failure と区別し、Current Status は最終結果に合わせて Done/Failed を表示。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>9-H8b</td><td>成功レスポンスに古い failed status が混入しても、trace から再集計して final outcome invariant を維持。</td><td class="status">基本実装済み</td></tr>
           </tbody>
         </table>
       </section>
@@ -909,6 +910,15 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           warning、fallback summary、<code>partially_failed_recovered</code> の model status、
           そして Runtime Timeline に残すため、復旧の事実は追跡できますが成功 run を失敗表示しません。
         </p>
+        <p>
+          9-H8b ではこの不変条件をさらに強化しました。
+          古い failed <code>current_status</code> や部分的な summary が payload に残っていても、
+          normalize 時に trace events から model/tool/fallback summary を再集計し、
+          <code>ok=true</code> かつ <code>answer_succeeded=true</code> の場合は
+          <code>failure_stage</code> を空にして <code>current_status.status=succeeded</code> を維持します。
+          polling status schema にも <code>recovered_failure_count</code> と
+          <code>recovered_failures</code> を含めます。
+        </p>
       </section>
 
       <section id="limitations">
@@ -926,6 +936,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
       <section id="history">
         <h2>更新履歴</h2>
         <ul>
+          <li>2026-05-26: 成功レスポンスの final outcome invariant を強化し、stale failed status を trace 再集計で補正。</li>
           <li>2026-05-26: fallback で復旧した中間失敗を final failure と分離し、成功 run の Current Status を Done に修正。</li>
           <li>2026-05-26: evidence builder と answer synthesis を分離し、real-model 失敗時も candidate dates/evidence を保持。</li>
           <li>2026-05-26: real-model mode の response contract を harden し、schema/version diagnostics を system status に追加。</li>

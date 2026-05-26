@@ -168,6 +168,10 @@ This document outlines the development roadmap for private-memory-agent.
   the intermediate issue through `recovered_failure_count`,
   `recovered_failures`, warnings, fallback summary, and model usage status
   `partially_failed_recovered`.
+- Phase 9-H8b hardens those invariants for direct API responses and polling
+  payloads: summaries are recomputed from trace events, stale failed
+  `current_status` payloads are replaced when the final answer succeeded, and
+  `recovered_failure_count` is included in the run status schema.
 
 ## 実データE2E smokeの実行手順
 

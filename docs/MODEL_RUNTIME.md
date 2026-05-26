@@ -827,6 +827,12 @@ and model usage status `partially_failed_recovered`. The Runtime Timeline still
 shows the failed Leader step, but the Current Status Bar shows Done because the
 run recovered.
 
+Phase 9-H8b enforces the same invariant even when an older failed
+`current_status` or partial summary is already present in the payload. During
+normalization, model/tool/fallback summaries are recomputed from trace events,
+successful final answers replace stale failed status payloads, and polling run
+status responses include `recovered_failure_count` and `recovered_failures`.
+
 `GET /api/system/status` returns DB/index counts and configured endpoint
 metadata without model prompts. `POST /api/chat/query` uses the existing E2E
 retrieval/answer path directly rather than shelling out to the CLI.
