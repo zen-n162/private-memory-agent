@@ -640,6 +640,22 @@ they match the event-specific plan. UI/API diagnostics expose `event_type`,
 `visual_signal_count`, `textual_signal_count`, `source_priorities`,
 `event_score_by_date`, and matched signal counts without printing raw evidence.
 
+Phase 9-H6 makes the chat API explicit about two stages:
+
+- Evidence builder: query understanding, parsed date range, temporal
+  diagnostics, candidate dates, evidence metadata, source coverage, warnings,
+  and trace events.
+- Answer synthesizer: no-op in retrieval-only, fake local answer in fake-model,
+  or DeepSeek Leader answer in real-model.
+
+The response includes `evidence_builder_succeeded`,
+`answer_synthesis_succeeded`, `candidate_date_count`, `evidence_count`,
+`evidence_reference_count`, `answer_error_class`, and `answer_error_message`.
+If real-model answer generation fails after evidence was retrieved, candidate
+dates and evidence cards remain visible. Debug temporal questions by first
+running retrieval-only to confirm candidate dates, then real-model to inspect
+only the answer-generation layer.
+
 CLI smoke:
 
 ```bash

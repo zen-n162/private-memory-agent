@@ -152,6 +152,14 @@ This document outlines the development roadmap for private-memory-agent.
   trace events, privacy defaults, and safe suggestions. `/api/system/status`
   exposes app and response schema versions so a restarted server can be checked
   from the browser Network panel.
+- Phase 9-H6 separates evidence building from answer synthesis in the chat
+  contract:
+  retrieval-only, fake-model, and real-model responses now expose
+  `evidence_builder_succeeded`, `answer_synthesis_succeeded`,
+  `candidate_date_count`, `evidence_count`, and answer error fields. If
+  DeepSeek answer generation fails after temporal candidates or evidence were
+  retrieved, the UI keeps candidate-date cards, evidence metadata, diagnostics,
+  and trace events instead of collapsing to an empty answer-only failure.
 
 ## 実データE2E smokeの実行手順
 

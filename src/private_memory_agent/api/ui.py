@@ -628,6 +628,13 @@ def agent_console_html() -> str:
       "mode",
       "answer_state",
       "answer_succeeded",
+      "evidence_builder_succeeded",
+      "answer_synthesis_succeeded",
+      "candidate_date_count",
+      "evidence_reference_count",
+      "evidence_count",
+      "answer_error_class",
+      "answer_error_message",
       "error_class",
       "error_message",
       "failure_stage",
@@ -740,7 +747,11 @@ def agent_console_html() -> str:
       row.appendChild(pill(`mode=${payload.mode}`));
       answerPanel.appendChild(row);
       if (!answer.answer_succeeded) {
-        answerPanel.appendChild(el("div", "Answer generation did not succeed. Check retrieval status, model endpoint status, and warnings.", "status-line error"));
+        if (payload.evidence_builder_succeeded && !payload.answer_synthesis_succeeded) {
+          answerPanel.appendChild(el("div", "候補日は取得できましたが、DeepSeekによる最終回答生成で失敗しました。", "status-line error"));
+        } else {
+          answerPanel.appendChild(el("div", "Answer generation did not succeed. Check retrieval status, model endpoint status, and warnings.", "status-line error"));
+        }
       } else if (answer.answer_hidden) {
         answerPanel.appendChild(el("div", "Answer was generated but hidden because Show answer is off.", "status-line"));
         answerPanel.appendChild(el("div", "Enable Show answer and run again to display the answer.", "status-line"));
@@ -753,10 +764,13 @@ def agent_console_html() -> str:
       }
       renderKv(answerPanel, {
         used_sources: (answer.used_sources || []).join(", ") || "none",
-        evidence_reference_count: (answer.evidence_references || []).length,
-        candidate_date_count: (display.candidate_dates || []).length,
+        evidence_builder_succeeded: Boolean(payload.evidence_builder_succeeded),
+        answer_synthesis_succeeded: Boolean(payload.answer_synthesis_succeeded),
+        evidence_reference_count: payload.evidence_reference_count ?? (answer.evidence_references || []).length,
+        evidence_count: payload.evidence_count ?? (payload.evidence || []).length,
+        candidate_date_count: payload.candidate_date_count ?? (display.candidate_dates || []).length,
         unknowns_count: (answer.unknowns || []).length,
-        error_class: answer.error_class || "none"
+        error_class: payload.answer_error_class || answer.error_class || "none"
       });
       renderEvidenceReferenceGroups(answerPanel, display.evidence_reference_groups || {});
       if ((answer.unknowns || []).length) {

@@ -5,8 +5,14 @@ from private_memory_agent.api.console import ChatConsoleOptions, run_chat_consol
 from private_memory_agent.cli import main
 from private_memory_agent.storage import initialize_database
 from private_memory_agent.temporal import (
+    DailyEventCluster,
     DeterministicEventIntentPlanner,
     EventIntentPlan,
+    TemporalAnswer,
+    TemporalDateRange,
+    TemporalEventQuery,
+    TemporalEventResult,
+    TemporalEvidenceItem,
     answer_temporal_event_query,
     cluster_photo_candidates_by_day,
     parse_temporal_event_query,
@@ -780,3 +786,115 @@ def test_chat_console_dining_query_exposes_event_intent_diagnostics(
     assert payload["model_usage_summary"]["Qwen3-VL"]["cached_artifacts"] >= 1
     assert "/private/ui-dining-secret.jpg" not in serialized
     assert "料理 レストラン" not in serialized
+
+
+def test_chat_console_real_model_temporal_answer_failure_preserves_candidates(
+    monkeypatch,
+    temp_config_factory,
+    tmp_path,
+):
+    date_range = TemporalDateRange(
+        start=date(2025, 12, 1),
+        end=date(2026, 1, 1),
+        label="2025-12",
+        expression="2025年12月",
+    )
+    query = TemporalEventQuery(
+        query_type="temporal_event_search",
+        date_range=date_range,
+        event_type="dining_out",
+        preferred_sources=("photos", "line", "notes"),
+        primary_tool="photo_date_range_search",
+    )
+    cluster = DailyEventCluster(
+        date="2025-12-05",
+        photo_count=2,
+        annotated_photo_count=2,
+        outing_score=0.8,
+        confidence=0.72,
+        top_evidence_ids=("media_items:1",),
+        candidate_evidence_ids=("media_items:1", "line_messages:1"),
+        rejected_evidence_ids=(),
+        line_support_count=1,
+        notes_support_count=0,
+        support_evidence_ids=("line_messages:1",),
+        reason="synthetic dining support",
+        event_score=0.75,
+        matched_visual_signals=("料理",),
+        matched_textual_signals=("ご飯",),
+    )
+    result = TemporalEventResult(
+        ok=False,
+        query=query,
+        answer=TemporalAnswer(
+            answer_succeeded=False,
+            conclusion="",
+            confidence=0.0,
+            dates=(),
+            evidence_references=(),
+            used_sources=(),
+            unknowns=("synthetic model failure",),
+        ),
+        evidence=(
+            TemporalEvidenceItem(
+                evidence_id="media_items:1",
+                source_type="photos",
+                should_use=True,
+                evidence_role="candidate",
+                specificity="specific",
+                relevance_score=0.75,
+                reason_category="temporal_event_specific_photo_match",
+                occurred_at="2025-12-05T19:00:00",
+            ),
+            TemporalEvidenceItem(
+                evidence_id="line_messages:1",
+                source_type="line",
+                should_use=True,
+                evidence_role="candidate",
+                specificity="specific",
+                relevance_score=0.65,
+                reason_category="same_day_line_support",
+                occurred_at="2025-12-05T18:30:00",
+            ),
+        ),
+        candidate_dates=(cluster,),
+        diagnostics={
+            "candidate_date_count": 1,
+            "event_type": "dining_out",
+            "parsed_date_range_start": "2025-12-01",
+            "parsed_date_range_end": "2026-01-01",
+        },
+        warnings=("synthetic answer generation failed",),
+    )
+
+    def fake_answer_temporal_event_query(*args, **kwargs):
+        return result
+
+    monkeypatch.setattr(
+        "private_memory_agent.api.console.answer_temporal_event_query",
+        fake_answer_temporal_event_query,
+    )
+
+    payload = run_chat_console_query(
+        ChatConsoleOptions(
+            config_dir=temp_config_factory(),
+            db_path=tmp_path / "temporal.sqlite3",
+            question="2025年12月でご飯を食べに行っているのはいつ？",
+            mode="real-model",
+            leader_plan=False,
+        ),
+    )
+    serialized = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["mode"] == "real-model"
+    assert payload["evidence_builder_succeeded"] is True
+    assert payload["answer_synthesis_succeeded"] is False
+    assert payload["answer_succeeded"] is False
+    assert payload["failure_stage"] == "answer_generation"
+    assert payload["failure_actor"] == "DeepSeek Leader"
+    assert payload["candidate_date_count"] == 1
+    assert payload["evidence_count"] == 2
+    assert payload["evidence_display"]["candidate_dates"]
+    assert payload["temporal_event"]["candidate_dates"]
+    assert payload["trace_events"]
+    assert "PRIVATE" not in serialized

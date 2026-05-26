@@ -207,8 +207,9 @@ LOW_LEVEL_TOOL_NAMES = {"AnswerValidator", "PrivacyGuard", "UIResponseRenderer"}
 def _completion_summary(result: dict[str, Any], *, events: list[dict[str, Any]]) -> dict[str, Any]:
     answer = result.get("answer") or {}
     temporal = result.get("temporal_event") or {}
-    candidate_dates = temporal.get("candidate_dates") or []
+    candidate_dates = temporal.get("candidate_dates") or result.get("candidate_dates") or []
     evidence_refs = answer.get("evidence_references") or []
+    evidence_reference_count = int(result.get("evidence_reference_count") or len(evidence_refs))
     warnings = result.get("warnings") or []
     model_summary = result.get("model_usage_summary") or {}
     tool_summary = result.get("tool_usage_summary") or {}
@@ -218,8 +219,11 @@ def _completion_summary(result: dict[str, Any], *, events: list[dict[str, Any]])
         "summary_status": "done",
         "answer_succeeded": bool(answer.get("answer_succeeded")),
         "answer_state": answer.get("answer_state") or "unknown",
-        "candidate_date_count": len(candidate_dates),
-        "evidence_reference_count": len(evidence_refs),
+        "candidate_date_count": int(result.get("candidate_date_count") or len(candidate_dates)),
+        "evidence_reference_count": evidence_reference_count,
+        "evidence_count": int(result.get("evidence_count") or len(result.get("evidence") or [])),
+        "evidence_builder_succeeded": bool(result.get("evidence_builder_succeeded")),
+        "answer_synthesis_succeeded": bool(result.get("answer_synthesis_succeeded")),
         "used_sources": list(answer.get("used_sources") or []),
         "warning_count": len(warnings),
         "major_models_used": used_models,

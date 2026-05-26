@@ -21,6 +21,13 @@ REQUIRED_CHAT_RESPONSE_KEYS = (
     "mode",
     "answer_succeeded",
     "answer_state",
+    "evidence_builder_succeeded",
+    "answer_synthesis_succeeded",
+    "candidate_date_count",
+    "evidence_reference_count",
+    "evidence_count",
+    "answer_error_class",
+    "answer_error_message",
     "error_class",
     "error_message",
     "failure_stage",
@@ -126,6 +133,13 @@ def build_chat_error_payload(
         "mode": safe_mode,
         "answer_state": "not_generated",
         "answer_succeeded": False,
+        "evidence_builder_succeeded": False,
+        "answer_synthesis_succeeded": False,
+        "candidate_date_count": 0,
+        "evidence_reference_count": 0,
+        "evidence_count": 0,
+        "answer_error_class": error_class,
+        "answer_error_message": safe_message,
         "error_class": error_class,
         "error_message": safe_message,
         "failure_stage": safe_stage,
@@ -181,11 +195,18 @@ def ensure_chat_response_contract(
     payload["mode"] = safe_mode
     payload["answer_state"] = answer.get("answer_state") or "not_generated"
     payload["answer_succeeded"] = bool(answer.get("answer_succeeded"))
+    payload["candidate_dates"] = _candidate_dates(payload)
+    payload["candidate_date_count"] = len(payload["candidate_dates"])
+    payload["evidence_count"] = len(payload.get("evidence") or [])
+    payload["evidence_reference_count"] = len(answer.get("evidence_references") or [])
+    payload["evidence_builder_succeeded"] = _evidence_builder_succeeded(payload)
+    payload["answer_synthesis_succeeded"] = bool(answer.get("answer_succeeded"))
+    payload["answer_error_class"] = error_class
+    payload["answer_error_message"] = error_message
     payload["error_class"] = error_class
     payload["error_message"] = error_message
     payload["failure_stage"] = _failure_stage(failure_stage) if failure_stage else None
     payload["failure_actor"] = failure_actor
-    payload["candidate_dates"] = _candidate_dates(payload)
     payload["trace_summary"] = _trace_summary(trace, trace_events)
     payload["privacy"] = {**privacy_defaults(), **privacy}
     payload["warnings"] = list(payload.get("warnings") or [])
@@ -309,6 +330,20 @@ def _candidate_dates(payload: dict[str, Any]) -> list[dict[str, Any]]:
     temporal = payload.get("temporal_event") if isinstance(payload.get("temporal_event"), dict) else {}
     candidates = display.get("candidate_dates") or temporal.get("candidate_dates") or []
     return list(candidates) if isinstance(candidates, list) else []
+
+
+def _evidence_builder_succeeded(payload: dict[str, Any]) -> bool:
+    if payload.get("evidence_builder_succeeded") is not None:
+        return bool(payload.get("evidence_builder_succeeded"))
+    if payload.get("candidate_date_count", 0):
+        return True
+    if payload.get("evidence_count", 0):
+        return True
+    trace = payload.get("trace") if isinstance(payload.get("trace"), dict) else {}
+    if trace.get("temporal_event") and trace.get("temporal_diagnostics"):
+        return True
+    answer = payload.get("answer") if isinstance(payload.get("answer"), dict) else {}
+    return bool(answer.get("evidence_references"))
 
 
 def _default_trace(*, runtime_event_count: int = 0) -> dict[str, Any]:

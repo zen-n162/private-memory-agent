@@ -552,6 +552,7 @@
             <tr><td>9-H3</td><td>完了後の Current Status Bar を Done/Failed の要約表示にし、詳細 trace は別パネルへ分離。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-H4</td><td>Chat UI/API contract を固定し、request validation / preflight / agent failure を区別して表示。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-H5</td><td>real-model の timeout、answer validation、preflight failure も同じ response contract に統一。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>9-H6</td><td>evidence builder と answer synthesis を分離し、real-model 失敗時も候補日と evidence を保持。</td><td class="status">基本実装済み</td></tr>
           </tbody>
         </table>
       </section>
@@ -889,6 +890,15 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           browser を hard refresh してから Network response の <code>failure_stage</code> と
           <code>current_status</code> を確認できます。
         </p>
+        <p>
+          9-H6 では chat response を evidence builder と answer synthesis の 2 段階として扱います。
+          <code>evidence_builder_succeeded</code>、<code>answer_synthesis_succeeded</code>、
+          <code>candidate_date_count</code>、<code>evidence_count</code>、
+          <code>answer_error_class</code> を返し、DeepSeek の最終回答生成が失敗しても、
+          取得済みの候補日 card、evidence metadata、temporal diagnostics、trace events は保持します。
+          UI では「候補日は取得できましたが、DeepSeekによる最終回答生成で失敗しました。」として表示し、
+          retrieval-only と real-model のどちらの段階で問題があるかを切り分けやすくします。
+        </p>
       </section>
 
       <section id="limitations">
@@ -906,6 +916,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
       <section id="history">
         <h2>更新履歴</h2>
         <ul>
+          <li>2026-05-26: evidence builder と answer synthesis を分離し、real-model 失敗時も candidate dates/evidence を保持。</li>
           <li>2026-05-26: real-model mode の response contract を harden し、schema/version diagnostics を system status に追加。</li>
           <li>2026-05-26: Chat UI/API contract を固定し、実行前 validation / preflight failure と agent failure を区別。</li>
           <li>2026-05-26: 完了後の Current Status Bar を concise summary にし、未使用 model/tool と低レベル step を既定非表示化。</li>

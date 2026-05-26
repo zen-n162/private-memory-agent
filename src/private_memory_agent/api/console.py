@@ -416,7 +416,11 @@ def _maybe_temporal_console_payload(
     evidence = [item.to_dict() for item in result.evidence]
     warnings = _unique_strings((*result.warnings, *privacy["warnings"]))
     should_use_count = len(result.answer.evidence_references)
-    return {
+    failure_metadata = _temporal_failure_metadata(result, options=options)
+    if failure_metadata:
+        answer["error_class"] = failure_metadata["error_class"]
+        answer["error_message"] = failure_metadata["error_message"]
+    payload = {
         "ok": result.ok,
         "mode": options.mode,
         "answer": answer,
@@ -474,6 +478,16 @@ def _maybe_temporal_console_payload(
         "privacy": privacy,
         "warnings": list(warnings),
     }
+    if failure_metadata:
+        payload.update(
+            {
+                "failure_stage": failure_metadata["failure_stage"],
+                "failure_actor": failure_metadata["failure_actor"],
+                "error_class": failure_metadata["error_class"],
+                "error_message": failure_metadata["error_message"],
+            },
+        )
+    return payload
 
 
 def _temporal_event_planner(
@@ -1131,6 +1145,17 @@ def _console_failure_metadata(
             "error_message": result.error_message or "leader answer generation failed",
         }
     return None
+
+
+def _temporal_failure_metadata(result: Any, *, options: ChatConsoleOptions) -> dict[str, str] | None:
+    if options.mode != "real-model" or result.answer.answer_succeeded:
+        return None
+    return {
+        "failure_stage": "answer_generation",
+        "failure_actor": "DeepSeek Leader",
+        "error_class": "ModelRuntimeError",
+        "error_message": "leader answer generation failed; retrieved temporal evidence was preserved",
+    }
 
 
 def _empty_result() -> E2ESmokeQueryResult:

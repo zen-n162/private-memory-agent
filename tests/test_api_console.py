@@ -114,6 +114,7 @@ def test_agent_console_html_is_self_contained_and_points_to_chat_api():
     assert "Invalid API response: missing field" in html
     assert "リクエスト形式の問題で実行前に失敗しました。" in html
     assert "Agent trace was not created because execution stopped before agent runtime." in html
+    assert "候補日は取得できましたが、DeepSeekによる最終回答生成で失敗しました。" in html
     assert "mode=undefined" not in html
     assert "Agent の unknown" not in html
     assert "詳細ログを表示" in html
@@ -163,6 +164,10 @@ def test_chat_console_default_response_shows_answer_but_not_raw_evidence(
     assert payload["request_id"] == payload["run_id"]
     assert payload["mode"] == "fake-model"
     assert payload["answer_succeeded"] is True
+    assert payload["evidence_builder_succeeded"] is True
+    assert payload["answer_synthesis_succeeded"] is True
+    assert payload["evidence_count"] > 0
+    assert payload["evidence_reference_count"] > 0
     assert payload["answer_state"] == "visible"
     assert payload["failure_stage"] is None
     assert payload["current_status"]["status"] == "succeeded"
@@ -199,6 +204,9 @@ def test_chat_console_retrieval_only_has_complete_contract(temp_config_factory, 
     serialized = json.dumps(payload, ensure_ascii=False)
 
     _assert_complete_chat_contract(payload, mode="retrieval-only")
+    assert payload["evidence_builder_succeeded"] is True
+    assert payload["answer_synthesis_succeeded"] is False
+    assert payload["evidence_count"] > 0
     assert payload["answer_succeeded"] is False
     assert payload["answer_state"] == "not_generated"
     assert payload["failure_stage"] is None
@@ -293,6 +301,10 @@ def test_chat_console_real_model_runtime_error_has_complete_contract(
 
     _assert_complete_chat_contract(payload, mode="real-model")
     assert payload["ok"] is False
+    assert payload["evidence_builder_succeeded"] is True
+    assert payload["answer_synthesis_succeeded"] is False
+    assert payload["evidence_count"] > 0
+    assert payload["evidence_reference_count"] == 0
     assert payload["answer_succeeded"] is False
     assert payload["answer_state"] == "not_generated"
     assert payload["failure_stage"] == "answer_generation"
@@ -342,6 +354,9 @@ def test_chat_console_real_model_answer_validation_error_has_complete_contract(
 
     _assert_complete_chat_contract(payload, mode="real-model")
     assert payload["ok"] is False
+    assert payload["evidence_builder_succeeded"] is True
+    assert payload["answer_synthesis_succeeded"] is False
+    assert payload["evidence_count"] > 0
     assert payload["failure_stage"] == "answer_validation"
     assert payload["failure_actor"] == "DeepSeek Leader"
     assert payload["error_class"] == "AnswerValidationError"

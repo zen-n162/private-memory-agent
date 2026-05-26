@@ -101,6 +101,13 @@ class ChatQueryResponse(APIModel):
     mode: ChatConsoleResponseMode
     answer_state: str | None = None
     answer_succeeded: bool | None = None
+    evidence_builder_succeeded: bool | None = None
+    answer_synthesis_succeeded: bool | None = None
+    candidate_date_count: int = 0
+    evidence_reference_count: int = 0
+    evidence_count: int = 0
+    answer_error_class: str | None = None
+    answer_error_message: str | None = None
     error_class: str | None = None
     error_message: str | None = None
     failure_stage: str | None = None
