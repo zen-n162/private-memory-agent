@@ -113,6 +113,7 @@ class TimestampBackfillReport:
 
     def to_dict(self, *, show_errors: bool = False) -> dict[str, Any]:
         payload = {
+            "mode_message": timestamp_backfill_mode_message(self),
             "total_selected_count": self.total_selected_count,
             "processed_count": self.processed_count,
             "updated_count": self.updated_count,
@@ -389,9 +390,9 @@ def format_timestamp_audit(report: TimestampAuditReport) -> str:
 
 def format_timestamp_backfill(report: TimestampBackfillReport, *, show_errors: bool = False) -> str:
     payload = report.to_dict(show_errors=show_errors)
-    lines = ["Media timestamp backfill:"]
+    lines = ["Media timestamp backfill:", timestamp_backfill_mode_message(report)]
     for key, value in payload.items():
-        if key == "examples":
+        if key in {"examples", "mode_message"}:
             continue
         lines.append(f"{key}={value}")
     if show_errors and report.examples:
@@ -408,6 +409,14 @@ def format_timestamp_backfill(report: TimestampBackfillReport, *, show_errors: b
                 ),
             )
     return "\n".join(lines)
+
+
+def timestamp_backfill_mode_message(report: TimestampBackfillReport) -> str:
+    """Return a privacy-safe explanation of dry-run/apply behavior."""
+
+    if report.dry_run:
+        return "DRY RUN: no database rows were updated. Re-run with --apply to write timestamps."
+    return "APPLY MODE: database metadata was updated. Source files were not modified."
 
 
 def timestamp_coverage(db_path: Path | str) -> dict[str, Any]:

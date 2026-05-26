@@ -642,6 +642,22 @@ pma media timestamps backfill --config configs/paths.local.yaml \
   --method auto
 ```
 
+Backfill is dry-run by default. It reports `dry_run_update_count` and does not
+change the database unless `--apply` is explicit. After backing up the local DB
+and reviewing the dry-run counts, write SQLite timestamp metadata with:
+
+```bash
+pma media timestamps backfill --config configs/paths.local.yaml \
+  --limit 100 \
+  --method auto \
+  --only-missing \
+  --apply
+```
+
+The apply mode updates SQLite metadata only; original source photos/videos stay
+read-only. Verify coverage afterward with `pma media timestamps audit` or a
+count query against `media_items.taken_at`.
+
 `exiftool` is preferred when installed because it can read JPEG, HEIC, MOV, MP4,
 and XMP metadata. Without `exiftool`, PMA falls back to Pillow for supported
 image EXIF. Stored timestamp provenance includes `taken_at_source`,

@@ -146,6 +146,8 @@ def test_backfill_writes_timestamp_and_provenance(tmp_path):
         storage.close()
 
     assert report.updated_count == 1
+    assert report.dry_run_update_count == 0
+    assert report.dry_run is False
     assert row["taken_at"] == "2025-12-03T10:11:12"
     assert row["taken_at_source"] == "exif_datetime_original"
     assert row["taken_at_confidence"] == "high"
@@ -221,6 +223,148 @@ def test_timestamp_cli_backfill_output_is_privacy_safe(capsys, temp_config_facto
     output = capsys.readouterr().out
 
     assert exit_code == 0
+    assert "DRY RUN: no database rows were updated. Re-run with --apply to write timestamps." in output
     assert "dry_run_update_count=1" in output
     assert str(tmp_path) not in output
     assert "secret-name" not in output
+
+
+def test_timestamp_cli_backfill_defaults_to_dry_run_and_explains_apply(
+    capsys,
+    temp_config_factory,
+    tmp_path,
+):
+    db_path = tmp_path / "timestamps.sqlite3"
+    image_path = tmp_path / "default-dry-run.jpg"
+    _write_jpeg(image_path, exif_datetime="2025:12:03 10:11:12")
+    storage = initialize_database(db_path)
+    try:
+        media_id = _insert_media(storage, image_path)
+    finally:
+        storage.close()
+
+    exit_code = main(
+        [
+            "media",
+            "timestamps",
+            "backfill",
+            "--config-dir",
+            str(temp_config_factory()),
+            "--db",
+            str(db_path),
+            "--limit",
+            "1",
+            "--method",
+            "pillow",
+        ],
+    )
+    output = capsys.readouterr().out
+    storage = initialize_database(db_path)
+    try:
+        row = storage.media_items.get(media_id)
+    finally:
+        storage.close()
+
+    assert exit_code == 0
+    assert row["taken_at"] is None
+    assert "dry_run=True" in output
+    assert "dry_run_update_count=1" in output
+    assert "Re-run with --apply" in output
+
+
+def test_timestamp_cli_backfill_apply_writes_and_commits_without_modifying_source(
+    capsys,
+    temp_config_factory,
+    tmp_path,
+):
+    db_path = tmp_path / "timestamps.sqlite3"
+    image_path = tmp_path / "apply-secret.jpg"
+    _write_jpeg(image_path, exif_datetime="2025:12:03 10:11:12")
+    before_stat = image_path.stat()
+    storage = initialize_database(db_path)
+    try:
+        media_id = _insert_media(storage, image_path)
+    finally:
+        storage.close()
+
+    exit_code = main(
+        [
+            "media",
+            "timestamps",
+            "backfill",
+            "--config-dir",
+            str(temp_config_factory()),
+            "--db",
+            str(db_path),
+            "--limit",
+            "1",
+            "--method",
+            "pillow",
+            "--only-missing",
+            "--apply",
+        ],
+    )
+    output = capsys.readouterr().out
+    after_stat = image_path.stat()
+    storage = initialize_database(db_path)
+    try:
+        row = storage.media_items.get(media_id)
+    finally:
+        storage.close()
+
+    assert exit_code == 0
+    assert row["taken_at"] == "2025-12-03T10:11:12"
+    assert row["taken_at_source"] == "exif_datetime_original"
+    assert row["metadata_updated_at"]
+    assert "APPLY MODE: database metadata was updated. Source files were not modified." in output
+    assert "dry_run=False" in output
+    assert "updated_count=1" in output
+    assert "dry_run_update_count=0" in output
+    assert before_stat.st_mtime_ns == after_stat.st_mtime_ns
+    assert before_stat.st_size == after_stat.st_size
+    assert str(tmp_path) not in output
+    assert "apply-secret" not in output
+
+
+def test_timestamp_cli_backfill_apply_respects_only_missing(
+    capsys,
+    temp_config_factory,
+    tmp_path,
+):
+    db_path = tmp_path / "timestamps.sqlite3"
+    image_path = tmp_path / "existing.jpg"
+    _write_jpeg(image_path, exif_datetime="2025:12:03 10:11:12")
+    storage = initialize_database(db_path)
+    try:
+        media_id = _insert_media(storage, image_path, taken_at="2024-01-01T00:00:00")
+    finally:
+        storage.close()
+
+    exit_code = main(
+        [
+            "media",
+            "timestamps",
+            "backfill",
+            "--config-dir",
+            str(temp_config_factory()),
+            "--db",
+            str(db_path),
+            "--limit",
+            "1",
+            "--method",
+            "pillow",
+            "--only-missing",
+            "--apply",
+        ],
+    )
+    output = capsys.readouterr().out
+    storage = initialize_database(db_path)
+    try:
+        row = storage.media_items.get(media_id)
+    finally:
+        storage.close()
+
+    assert exit_code == 0
+    assert row["taken_at"] == "2024-01-01T00:00:00"
+    assert "updated_count=0" in output
+    assert "total_selected_count=0" in output

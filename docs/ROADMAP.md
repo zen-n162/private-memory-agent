@@ -364,10 +364,21 @@ pma media timestamps backfill --config configs/paths.local.yaml \
   --method auto
 ```
 
-Backfill is dry-run by default. Use `--write` only after reviewing count-only
-diagnostics. `exiftool` is preferred when available; Pillow is the lightweight
-fallback for image EXIF. `--fallback file-mtime` is low-confidence and should be
-used only when capture metadata is unavailable and modification time is
-acceptable for the use case.
+Backfill is dry-run by default. After backing up the local SQLite DB and
+reviewing count-only diagnostics, use `--apply` to update SQLite metadata:
+
+```bash
+pma media timestamps backfill --config configs/paths.local.yaml \
+  --limit 100 \
+  --method auto \
+  --only-missing \
+  --apply
+```
+
+`--write` remains an alias, but `--apply` is the preferred command. Source files
+remain read-only. `exiftool` is preferred when available; Pillow is the
+lightweight fallback for image EXIF. `--fallback file-mtime` is low-confidence
+and should be used only when capture metadata is unavailable and modification
+time is acceptable for the use case.
 Audit extraction probing is sampled by default for large libraries. Use
 `--extract-limit 0` only for an intentional deep all-file audit.

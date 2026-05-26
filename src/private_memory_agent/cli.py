@@ -222,13 +222,22 @@ def build_parser() -> argparse.ArgumentParser:
         dest="dry_run",
         action="store_true",
         default=True,
-        help="Preview updates without writing. This is the default.",
+        help=(
+            "Preview updates without writing SQLite metadata. This is the default; "
+            "re-run with --apply to commit timestamp updates."
+        ),
+    )
+    dry_run_group.add_argument(
+        "--apply",
+        dest="dry_run",
+        action="store_false",
+        help="Write backfilled timestamps to SQLite metadata. Source files are never modified.",
     )
     dry_run_group.add_argument(
         "--write",
         dest="dry_run",
         action="store_false",
-        help="Write backfilled timestamps to SQLite. Source files are still read-only.",
+        help="Alias for --apply. Writes SQLite metadata only; source files are never modified.",
     )
     media_timestamps_backfill_parser.add_argument(
         "--limit",

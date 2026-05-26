@@ -597,6 +597,7 @@ pma query "2025年12月で出かけたのはいつ？" --config configs/paths.lo
 pma media timestamps audit --config configs/paths.local.yaml
 pma media timestamps audit --config configs/paths.local.yaml --month-histogram
 pma media timestamps backfill --config configs/paths.local.yaml --dry-run --limit 20 --method auto
+pma media timestamps backfill --config configs/paths.local.yaml --limit 100 --method auto --only-missing --apply
 pma runtime plan lightweight_query
 pma eval run --summary
 python -m pip install -e ".[dev]"
@@ -768,7 +769,10 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           <code>--extract-limit 0</code> を明示した時だけ行います。
           <code>pma media timestamps backfill --dry-run --limit 20 --method auto</code> は
           source file を read-only のまま調べ、書き込み候補数だけを返します。
-          実書き込みは <code>--write</code> を明示した時だけです。
+          backfill は既定で dry-run です。ローカル SQLite DB を backup し、件数を確認した後に
+          <code>--apply</code> を明示した時だけ SQLite metadata に <code>taken_at</code> を書き込みます。
+          既存の <code>--write</code> は alias として残していますが、推奨は <code>--apply</code> です。
+          source photo/video file 自体は変更しません。
           <code>exiftool</code> があれば JPEG、HEIC、MOV、MP4、XMP を優先し、
           なければ Pillow で画像 EXIF を読みます。file mtime は低 confidence の fallback なので、
           <code>--fallback file-mtime</code> を明示した時だけ使います。
@@ -802,6 +806,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
       <section id="history">
         <h2>更新履歴</h2>
         <ul>
+          <li>2026-05-26: timestamp backfill の実書き込みを <code>--apply</code> で明示し、dry-run/apply message を追加。</li>
           <li>2026-05-26: temporal query の coverage 診断、近傍月 count、LINE/ノート fallback search を追加。</li>
           <li>2026-05-26: media timestamp audit/backfill を追加し、<code>taken_at</code> の source/confidence を保存できるように更新。</li>
           <li>2026-05-26: temporal event query を追加し、写真日時検索、外出 score、日別 cluster、候補/使用/弱い evidence の分離を実装。</li>
