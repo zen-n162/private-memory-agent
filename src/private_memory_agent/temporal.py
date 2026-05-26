@@ -126,6 +126,8 @@ class TemporalDateRange:
     source: str = "deterministic"
     expression: str | None = None
     timezone: str | None = "local"
+    confidence: float = 1.0
+    parse_warnings: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -136,6 +138,8 @@ class TemporalDateRange:
             "expression": self.expression or self.label,
             "timezone": self.timezone,
             "end_exclusive": True,
+            "confidence": round(self.confidence, 3),
+            "parse_warnings": list(self.parse_warnings),
         }
 
 
@@ -362,6 +366,8 @@ def answer_temporal_event_query(
                 "parsed_date_range_start": parsed_range["start"],
                 "parsed_date_range_end": parsed_range["end"],
                 "date_range_source": parsed_range["source"],
+                "date_range_confidence": parsed_range["confidence"],
+                "date_range_parse_warnings": parsed_range["parse_warnings"],
                 "parsed_temporal_expression": parsed_range["expression"],
                 "timezone": parsed_range["timezone"],
             },
@@ -395,11 +401,12 @@ def answer_temporal_event_query(
     pre_prune_photo_used_clusters = tuple(
         item for item in ranked_clusters if item.confidence >= outing_threshold
     )
+    active_fallback_terms = fallback_terms or TEMPORAL_FALLBACK_TERMS
     fallback = _line_note_support_for_range(
         db,
         start=parsed.date_range.start,
         end=parsed.date_range.end,
-        terms=fallback_terms or TEMPORAL_FALLBACK_TERMS,
+        terms=active_fallback_terms,
         limit=20,
     )
     fallback_clusters = (
@@ -423,6 +430,36 @@ def answer_temporal_event_query(
     answer = _build_temporal_answer(parsed, used_clusters, candidate_clusters)
     coverage = timestamp_coverage(db)
     parsed_range = parsed.date_range.to_dict()
+    months_covered = _month_keys_for_range(parsed.date_range)
+    photo_count_by_month = _photo_count_by_month(
+        db,
+        start=parsed.date_range.start,
+        end=parsed.date_range.end,
+        months=months_covered,
+    )
+    candidate_date_count_by_month = _cluster_count_by_month(candidates_before_pruning, months_covered)
+    final_candidate_date_count_by_month = _cluster_count_by_month(candidate_clusters, months_covered)
+    support_counts_by_month = _line_note_support_counts_by_month(
+        db,
+        start=parsed.date_range.start,
+        end=parsed.date_range.end,
+        terms=active_fallback_terms,
+        months=months_covered,
+    )
+    line_support_count_by_month = support_counts_by_month["line"]
+    notes_support_count_by_month = support_counts_by_month["notes"]
+    final_candidate_months = tuple(
+        month for month, count in final_candidate_date_count_by_month.items() if count > 0
+    )
+    pruned_months = tuple(
+        month
+        for month in months_covered
+        if candidate_date_count_by_month.get(month, 0) > 0
+        and final_candidate_date_count_by_month.get(month, 0) == 0
+    )
+    final_missing_months = tuple(
+        month for month in months_covered if final_candidate_date_count_by_month.get(month, 0) == 0
+    )
     pruning_reason = _pruning_reason(
         before=len(candidates_before_pruning),
         after=len(candidate_clusters),
@@ -442,8 +479,19 @@ def answer_temporal_event_query(
         "parsed_date_range_start": parsed_range["start"],
         "parsed_date_range_end": parsed_range["end"],
         "date_range_source": parsed_range["source"],
+        "date_range_confidence": parsed_range["confidence"],
+        "date_range_parse_warnings": parsed_range["parse_warnings"],
         "parsed_temporal_expression": parsed_range["expression"],
         "timezone": parsed_range["timezone"],
+        "months_covered": list(months_covered),
+        "photo_count_by_month": photo_count_by_month,
+        "candidate_date_count_by_month": candidate_date_count_by_month,
+        "final_candidate_date_count_by_month": final_candidate_date_count_by_month,
+        "line_support_count_by_month": line_support_count_by_month,
+        "notes_support_count_by_month": notes_support_count_by_month,
+        "pruned_months": list(pruned_months),
+        "final_candidate_months": list(final_candidate_months),
+        "top_candidate_date_limit": candidate_limit,
         "date_range_days": range_days,
         "chunking_enabled": chunking_enabled,
         "chunk_count": len(chunks),
@@ -470,6 +518,12 @@ def answer_temporal_event_query(
     warnings: list[str] = []
     if chunking_enabled:
         warnings.append("broad temporal range was chunked and candidate dates were pruned")
+    if len(months_covered) > 1 and len(final_candidate_months) == 1 and final_missing_months:
+        warnings.append(
+            "Final candidates only cover "
+            f"{final_candidate_months[0]} although parsed range includes "
+            f"{', '.join(final_missing_months)}."
+        )
     if photos and not photo_used_clusters and not fallback_clusters:
         warnings.append("photo candidates were found, but outing evidence was weak")
     if not photos and not fallback_clusters:
@@ -1031,6 +1085,8 @@ def _temporal_date_chunks(
                     source=date_range.source,
                     expression=f"{date_range.expression or date_range.label}:{label}",
                     timezone=date_range.timezone,
+                    confidence=date_range.confidence,
+                    parse_warnings=date_range.parse_warnings,
                 ),
             )
         cursor = next_month
@@ -1139,7 +1195,125 @@ def _pruning_reason(
     return "not_pruned"
 
 
+def _month_keys_for_range(date_range: TemporalDateRange) -> tuple[str, ...]:
+    keys: list[str] = []
+    cursor = _month_start(date_range.start)
+    while cursor < date_range.end:
+        keys.append(cursor.strftime("%Y-%m"))
+        cursor = _add_months(cursor, 1)
+    return tuple(keys)
+
+
+def _photo_count_by_month(
+    db_path: Path | str,
+    *,
+    start: date,
+    end: date,
+    months: tuple[str, ...],
+) -> dict[str, int]:
+    counts = {month: 0 for month in months}
+    connection = _connect(db_path)
+    try:
+        if not _table_exists(connection, "media_items"):
+            return counts
+        rows = connection.execute(
+            """
+            SELECT substr(taken_at, 1, 7) AS month, COUNT(*) AS count
+            FROM media_items
+            WHERE is_excluded = 0
+              AND media_type IN ('image', 'video')
+              AND taken_at >= ?
+              AND taken_at < ?
+            GROUP BY substr(taken_at, 1, 7)
+            """,
+            (start.isoformat(), end.isoformat()),
+        ).fetchall()
+        for row in rows:
+            month = str(row["month"] or "")
+            if month in counts:
+                counts[month] = int(row["count"] or 0)
+        return counts
+    finally:
+        connection.close()
+
+
+def _cluster_count_by_month(
+    clusters: tuple[DailyEventCluster, ...],
+    months: tuple[str, ...],
+) -> dict[str, int]:
+    counts = {month: 0 for month in months}
+    for cluster in clusters:
+        month = cluster.date[:7]
+        if month in counts:
+            counts[month] += 1
+    return counts
+
+
+def _line_note_support_counts_by_month(
+    db_path: Path | str,
+    *,
+    start: date,
+    end: date,
+    terms: tuple[str, ...],
+    months: tuple[str, ...],
+) -> dict[str, dict[str, int]]:
+    normalized_terms = tuple(normalize_text(term) for term in terms if normalize_text(term))
+    result = {
+        "line": {month: 0 for month in months},
+        "notes": {month: 0 for month in months},
+    }
+    connection = _connect(db_path)
+    try:
+        start_text = start.isoformat()
+        end_text = end.isoformat()
+        if _table_exists(connection, "line_messages"):
+            rows = connection.execute(
+                """
+                SELECT sent_at, COALESCE(normalized_text, body_text, '') AS searchable_text
+                FROM line_messages
+                WHERE is_excluded = 0
+                  AND sent_at >= ?
+                  AND sent_at < ?
+                ORDER BY sent_at
+                LIMIT 50000
+                """,
+                (start_text, end_text),
+            ).fetchall()
+            for row in rows:
+                if not _text_has_any_term(row["searchable_text"], normalized_terms):
+                    continue
+                month = _date_part(str(row["sent_at"]))[:7]
+                if month in result["line"]:
+                    result["line"][month] += 1
+        if _table_exists(connection, "notes"):
+            rows = connection.execute(
+                """
+                SELECT COALESCE(updated_at_source, created_at_source, updated_at) AS occurred_at,
+                       COALESCE(normalized_text, title, '') || ' ' || COALESCE(body_text, '') AS searchable_text
+                FROM notes
+                WHERE is_excluded = 0
+                  AND COALESCE(updated_at_source, created_at_source, updated_at) >= ?
+                  AND COALESCE(updated_at_source, created_at_source, updated_at) < ?
+                ORDER BY COALESCE(updated_at_source, created_at_source, updated_at)
+                LIMIT 50000
+                """,
+                (start_text, end_text),
+            ).fetchall()
+            for row in rows:
+                if not _text_has_any_term(row["searchable_text"], normalized_terms):
+                    continue
+                month = _date_part(str(row["occurred_at"]))[:7]
+                if month in result["notes"]:
+                    result["notes"][month] += 1
+        return result
+    finally:
+        connection.close()
+
+
 def _parse_date_range(text: str, *, today: date) -> TemporalDateRange | None:
+    month_range = _parse_japanese_month_range(text)
+    if month_range is not None:
+        return month_range
     year_season = re.search(r"(?P<year>\d{4})\s*年\s*(?P<season>春|夏|秋|冬)", text)
     if year_season:
         return _season_range(
@@ -1192,6 +1366,94 @@ def _parse_date_range(text: str, *, today: date) -> TemporalDateRange | None:
             expression=_clean_expression(year_only.group(0)),
         )
     return None
+
+
+def _parse_japanese_month_range(text: str) -> TemporalDateRange | None:
+    separator = r"(?:から|〜|~|－|-|以降)"
+    with_start_year = re.search(
+        rf"(?P<start_year>\d{{4}})\s*年\s*"
+        rf"(?P<start_month>\d{{1,2}})\s*月\s*"
+        rf"{separator}\s*"
+        rf"(?:(?P<end_year>\d{{4}})\s*年\s*)?"
+        rf"(?P<end_month>\d{{1,2}})\s*月?(?:\s*まで)?",
+        text,
+    )
+    if with_start_year:
+        return _build_month_range_from_match(
+            expression=_clean_expression(with_start_year.group(0)),
+            start_year=int(with_start_year.group("start_year")),
+            start_month=int(with_start_year.group("start_month")),
+            end_month=int(with_start_year.group("end_month")),
+            end_year=(
+                int(with_start_year.group("end_year"))
+                if with_start_year.group("end_year")
+                else None
+            ),
+        )
+
+    without_start_year = re.search(
+        rf"(?P<start_month>\d{{1,2}})\s*月\s*"
+        rf"{separator}\s*"
+        rf"(?:(?P<end_year>\d{{4}})\s*年\s*)?"
+        rf"(?P<end_month>\d{{1,2}})\s*月?(?:\s*まで)?",
+        text,
+    )
+    if without_start_year:
+        years = {int(value) for value in re.findall(r"(\d{4})\s*年", text)}
+        end_year = (
+            int(without_start_year.group("end_year"))
+            if without_start_year.group("end_year")
+            else None
+        )
+        if end_year is not None:
+            years.add(end_year)
+        if len(years) != 1:
+            return None
+        return _build_month_range_from_match(
+            expression=_clean_expression(without_start_year.group(0)),
+            start_year=next(iter(years)),
+            start_month=int(without_start_year.group("start_month")),
+            end_month=int(without_start_year.group("end_month")),
+            end_year=end_year,
+            parse_warnings=("start_year_inferred_from_query_context",),
+            confidence=0.85,
+        )
+    return None
+
+
+def _build_month_range_from_match(
+    *,
+    expression: str,
+    start_year: int,
+    start_month: int,
+    end_month: int,
+    end_year: int | None = None,
+    parse_warnings: tuple[str, ...] = (),
+    confidence: float = 0.98,
+) -> TemporalDateRange | None:
+    if start_month < 1 or start_month > 12 or end_month < 1 or end_month > 12:
+        return None
+    resolved_end_year = end_year if end_year is not None else start_year
+    warnings = list(parse_warnings)
+    if end_year is None and end_month < start_month:
+        resolved_end_year = start_year + 1
+        warnings.append("end_year_inferred_as_next_year")
+    start = date(start_year, start_month, 1)
+    end = _add_months(date(resolved_end_year, end_month, 1), 1)
+    if end <= start:
+        return None
+    if start_year == resolved_end_year:
+        label = f"{start_year}年{start_month}月から{end_month}月"
+    else:
+        label = f"{start_year}年{start_month}月から{resolved_end_year}年{end_month}月"
+    return TemporalDateRange(
+        start=start,
+        end=end,
+        label=label,
+        expression=expression or label,
+        confidence=confidence,
+        parse_warnings=tuple(dict.fromkeys(warnings)),
+    )
 
 
 def _season_range(year: int, season: str, *, expression: str | None = None) -> TemporalDateRange | None:

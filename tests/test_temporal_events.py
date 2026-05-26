@@ -108,6 +108,32 @@ def test_temporal_parser_understands_japanese_month_and_relative_dates():
     assert full_year.date_range.start.isoformat() == "2025-01-01"
     assert full_year.date_range.end.isoformat() == "2026-01-01"
 
+    month_range = parse_temporal_event_query(
+        "2025年10月から12月で出かけたのはいつ？",
+        today=date(2026, 5, 26),
+    )
+    assert month_range is not None
+    assert month_range.date_range.start.isoformat() == "2025-10-01"
+    assert month_range.date_range.end.isoformat() == "2026-01-01"
+    assert month_range.date_range.confidence == 0.98
+    assert month_range.to_dict()["date_range"]["parse_warnings"] == []
+
+    tilde_range = parse_temporal_event_query(
+        "2025年10月〜12月で外出した日は？",
+        today=date(2026, 5, 26),
+    )
+    assert tilde_range is not None
+    assert tilde_range.date_range.start.isoformat() == "2025-10-01"
+    assert tilde_range.date_range.end.isoformat() == "2026-01-01"
+
+    explicit_end_year = parse_temporal_event_query(
+        "2025年10月から2025年12月までで出かけたのはいつ？",
+        today=date(2026, 5, 26),
+    )
+    assert explicit_end_year is not None
+    assert explicit_end_year.date_range.start.isoformat() == "2025-10-01"
+    assert explicit_end_year.date_range.end.isoformat() == "2026-01-01"
+
 
 def test_photo_date_range_search_returns_safe_metadata_only(tmp_path):
     db_path = tmp_path / "temporal.sqlite3"
@@ -520,3 +546,98 @@ def test_chat_console_broad_temporal_query_returns_candidates_without_model_erro
     assert payload["evidence_display"]["candidate_dates"]
     assert "/private/broad-secret.jpg" not in serialized
     assert "駅とレストラン" not in serialized
+
+
+def test_temporal_month_range_diagnostics_show_coverage_and_pruning_warning(tmp_path):
+    db_path = tmp_path / "temporal.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        _insert_photo(
+            storage,
+            taken_at="2025-10-11T10:00:00",
+            annotation_text="駅とカフェで外出した写真",
+        )
+        _insert_photo(
+            storage,
+            taken_at="2025-11-12T10:00:00",
+            annotation_text="駅とカフェで外出した写真",
+        )
+        _insert_photo(
+            storage,
+            taken_at="2025-12-13T10:00:00",
+            annotation_text="駅とカフェで外出した写真",
+        )
+    finally:
+        storage.close()
+
+    result = answer_temporal_event_query(
+        "2025年10月から12月で出かけたのはいつ？",
+        db_path=db_path,
+        top_candidate_dates=1,
+        top_evidence_per_date=1,
+    )
+    assert result is not None
+    payload = result.to_dict(show_answer=True)
+
+    assert payload["diagnostics"]["parsed_date_range_start"] == "2025-10-01"
+    assert payload["diagnostics"]["parsed_date_range_end"] == "2026-01-01"
+    assert payload["diagnostics"]["date_range_confidence"] == 0.98
+    assert payload["diagnostics"]["date_range_parse_warnings"] == []
+    assert payload["diagnostics"]["months_covered"] == ["2025-10", "2025-11", "2025-12"]
+    assert payload["diagnostics"]["photo_count_by_month"] == {
+        "2025-10": 1,
+        "2025-11": 1,
+        "2025-12": 1,
+    }
+    assert payload["diagnostics"]["candidate_date_count_by_month"] == {
+        "2025-10": 1,
+        "2025-11": 1,
+        "2025-12": 1,
+    }
+    assert payload["diagnostics"]["final_candidate_date_count_by_month"] == {
+        "2025-10": 1,
+        "2025-11": 0,
+        "2025-12": 0,
+    }
+    assert payload["diagnostics"]["pruned_months"] == ["2025-11", "2025-12"]
+    assert payload["diagnostics"]["top_candidate_date_limit"] == 1
+    assert any("Final candidates only cover 2025-10" in warning for warning in payload["warnings"])
+
+
+def test_chat_console_month_range_response_exposes_safe_month_coverage(
+    temp_config_factory,
+    tmp_path,
+):
+    db_path = tmp_path / "temporal.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        _insert_photo(
+            storage,
+            taken_at="2025-10-11T10:00:00",
+            annotation_text="PRIVATE station cafe outing",
+            path="/private/month-range-secret.jpg",
+        )
+    finally:
+        storage.close()
+
+    payload = run_chat_console_query(
+        ChatConsoleOptions(
+            config_dir=temp_config_factory(),
+            db_path=db_path,
+            question="2025年10月から12月で出かけたのはいつ？",
+            mode="retrieval-only",
+            temporal_top_candidate_dates=1,
+        ),
+    )
+    serialized = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["trace"]["temporal_diagnostics"]["parsed_date_range_start"] == "2025-10-01"
+    assert payload["trace"]["temporal_diagnostics"]["parsed_date_range_end"] == "2026-01-01"
+    assert payload["trace"]["temporal_diagnostics"]["months_covered"] == [
+        "2025-10",
+        "2025-11",
+        "2025-12",
+    ]
+    assert payload["trace"]["temporal_diagnostics"]["photo_count_by_month"]["2025-10"] == 1
+    assert "/private/month-range-secret.jpg" not in serialized
+    assert "PRIVATE station cafe outing" not in serialized

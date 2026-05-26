@@ -110,6 +110,10 @@ This document outlines the development roadmap for private-memory-agent.
   ranges, split into monthly chunks when needed, ranked by candidate-day
   confidence, and reduced to compact top dates/evidence before answer display.
   UI/API diagnostics expose chunk counts, pruning counts, and evidence budgets.
+- Phase 9-F2 improves Japanese range parsing and temporal coverage diagnostics:
+  expressions such as `2025年10月から12月` and `2025年10月〜12月` now parse to
+  multi-month ranges, and diagnostics expose parsed range confidence, month
+  coverage, per-month photo/candidate/support counts, and pruned months.
 
 ## 実データE2E smokeの実行手順
 

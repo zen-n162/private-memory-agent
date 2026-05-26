@@ -545,6 +545,7 @@
             <tr><td>9-C0</td><td>写真・動画の capture timestamp を監査し、EXIF/XMP/video/filename から <code>taken_at</code> を安全に backfill。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-C</td><td>temporal query の parsed date range、写真 coverage、filter 診断、LINE/ノート fallback を安全に表示。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-F</td><td>広い temporal query を月単位に chunk し、candidate date と evidence を pruning して表示する。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>9-F2</td><td><code>2025年10月から12月</code> のような日本語月範囲と月別 coverage/pruning 診断。</td><td class="status">基本実装済み</td></tr>
           </tbody>
         </table>
       </section>
@@ -816,6 +817,17 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           <code>pruning_reason</code> を表示し、answer generation が失敗しても候補日と診断を確認しやすくします。
           この処理も path、GPS、EXIF、本文全文を表示しない privacy-safe な count/ID 中心の出力です。
         </p>
+        <p>
+          9-F2 では <code>2025年10月から12月</code>、<code>2025年10月〜12月</code>、
+          <code>2025年10月から2025年12月まで</code> のような日本語の月範囲を、
+          開始月を含み終了月の翌月を exclusive end とする範囲に変換します。
+          temporal diagnostics には <code>date_range_confidence</code>、
+          <code>date_range_parse_warnings</code>、<code>months_covered</code>、
+          <code>photo_count_by_month</code>、<code>candidate_date_count_by_month</code>、
+          <code>line_support_count_by_month</code>、<code>notes_support_count_by_month</code>、
+          <code>pruned_months</code> を表示します。複数月を解析したのに最終候補が 1 か月だけに偏った場合は、
+          parser が失敗したのか pruning の結果なのか分かるよう warning を出します。
+        </p>
       </section>
 
       <section id="limitations">
@@ -833,6 +845,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
       <section id="history">
         <h2>更新履歴</h2>
         <ul>
+          <li>2026-05-26: 日本語の月範囲 parsing と月別 temporal coverage/pruning 診断を追加。</li>
           <li>2026-05-26: 広い temporal query 向けに季節/年 parsing、月単位 chunking、candidate/evidence pruning 診断を追加。</li>
           <li>2026-05-26: local chat UI の evidence viewer を改善し、candidate date accordion、source tab、reason label、path-free thumbnail を追加。</li>
           <li>2026-05-26: timestamp backfill の実書き込みを <code>--apply</code> で明示し、dry-run/apply message を追加。</li>

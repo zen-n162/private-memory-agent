@@ -587,7 +587,8 @@ retrieval:
 
 1. Parse the date range deterministically for forms such as `2025年12月`,
    `2025/12`, `2025-12`, `2025年夏`, `2025年`, `去年12月`, `先月`,
-   and `去年の夏`.
+   `去年の夏`, and multi-month ranges like `2025年10月から12月`,
+   `2025年10月〜12月`, and `2025年10月から2025年12月まで`.
 2. Query `media_items` by capture timestamp in `taken_at` in that range.
 3. Score outing likelihood from safe metadata and local photo annotation text.
 4. Group candidates by day and add same-day LINE/notes support counts.
@@ -615,6 +616,15 @@ date. Diagnostics include `chunk_count`, `chunk_size`,
 `pruning_reason`. This keeps broad questions such as `2025年夏で出かけたのはいつ？`
 usable without sending an unbounded prompt.
 
+Phase 9-F2 adds parser and coverage diagnostics for Japanese date ranges. Every
+temporal result now reports `date_range_confidence`,
+`date_range_parse_warnings`, `months_covered`, `photo_count_by_month`,
+`candidate_date_count_by_month`, `line_support_count_by_month`,
+`notes_support_count_by_month`, and `pruned_months`. If a multi-month range was
+parsed but final top candidates only cover one month, PMA emits a warning such
+as "Final candidates only cover 2025-10 although parsed range includes
+2025-11, 2025-12." This distinguishes parser bugs from normal pruning.
+
 CLI smoke:
 
 ```bash
@@ -627,6 +637,9 @@ pma query "2025年夏で出かけたのはいつ？" \
   --temporal-diagnostics \
   --temporal-top-candidate-dates 10 \
   --temporal-top-evidence-per-date 5
+pma query "2025年10月から12月で出かけたのはいつ？" \
+  --config configs/paths.local.yaml \
+  --temporal-diagnostics
 ```
 
 Default output includes dates, counts, confidence, reason categories, and

@@ -518,9 +518,15 @@ def agent_console_html() -> str:
       dl.className = "kv";
       Object.entries(values).forEach(([key, val]) => {
         dl.appendChild(el("dt", key));
-        dl.appendChild(el("dd", val === null || val === undefined ? "n/a" : String(val)));
+        dl.appendChild(el("dd", formatKvValue(val)));
       });
       target.appendChild(dl);
+    }
+    function formatKvValue(val) {
+      if (val === null || val === undefined) return "n/a";
+      if (Array.isArray(val)) return val.length ? val.join(", ") : "none";
+      if (typeof val === "object") return JSON.stringify(val);
+      return String(val);
     }
     function renderAnswer(payload) {
       clear(answerPanel);
@@ -810,14 +816,20 @@ def agent_console_html() -> str:
         parsed_date_range_start: diagnostics.parsed_date_range_start,
         parsed_date_range_end: diagnostics.parsed_date_range_end,
         date_range_source: diagnostics.date_range_source,
+        date_range_confidence: diagnostics.date_range_confidence,
+        date_range_parse_warnings: diagnostics.date_range_parse_warnings || [],
         parsed_temporal_expression: diagnostics.parsed_temporal_expression,
         timezone: diagnostics.timezone || "n/a",
+        months_covered: diagnostics.months_covered || [],
         date_range_days: diagnostics.date_range_days,
         chunking_enabled: diagnostics.chunking_enabled,
         chunk_count: diagnostics.chunk_count,
         chunk_size: diagnostics.chunk_size,
         candidates_before_pruning: diagnostics.candidates_before_pruning,
         candidates_after_pruning: diagnostics.candidates_after_pruning,
+        pruned_months: diagnostics.pruned_months || [],
+        final_candidate_months: diagnostics.final_candidate_months || [],
+        top_candidate_date_limit: diagnostics.top_candidate_date_limit,
         top_candidate_dates: diagnostics.top_candidate_dates,
         top_evidence_per_date: diagnostics.top_evidence_per_date,
         evidence_sent_count: diagnostics.evidence_sent_count,
@@ -840,6 +852,16 @@ def agent_console_html() -> str:
       if (diagnostics.nearby_month_counts) {
         tracePanel.appendChild(el("h3", "Nearby Month Counts"));
         renderKv(tracePanel, diagnostics.nearby_month_counts);
+      }
+      if (diagnostics.months_covered) {
+        tracePanel.appendChild(el("h3", "Month Coverage"));
+        renderKv(tracePanel, {
+          photo_count_by_month: diagnostics.photo_count_by_month || {},
+          candidate_date_count_by_month: diagnostics.candidate_date_count_by_month || {},
+          final_candidate_date_count_by_month: diagnostics.final_candidate_date_count_by_month || {},
+          line_support_count_by_month: diagnostics.line_support_count_by_month || {},
+          notes_support_count_by_month: diagnostics.notes_support_count_by_month || {}
+        });
       }
       if (diagnostics.chunks && diagnostics.chunks.length) {
         tracePanel.appendChild(el("h3", "Temporal Chunks"));
