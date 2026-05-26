@@ -818,6 +818,15 @@ UI behavior. If a real-model request fails, inspect the browser Network
 response for `failure_stage`, `failure_actor`, and `current_status` before
 debugging the retrieval path.
 
+Phase 9-H8 distinguishes final failures from recovered intermediate failures.
+If a Leader planning call fails but deterministic fallback succeeds and the
+final answer succeeds, the chat response clears `failure_stage`, sets
+`current_status.status=succeeded`, and reports the recovered issue through
+`recovered_failure_count`, `recovered_failures`, warnings, `fallback_summary`,
+and model usage status `partially_failed_recovered`. The Runtime Timeline still
+shows the failed Leader step, but the Current Status Bar shows Done because the
+run recovered.
+
 `GET /api/system/status` returns DB/index counts and configured endpoint
 metadata without model prompts. `POST /api/chat/query` uses the existing E2E
 retrieval/answer path directly rather than shelling out to the CLI.

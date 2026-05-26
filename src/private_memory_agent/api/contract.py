@@ -9,13 +9,14 @@ from private_memory_agent.tracing import (
     build_current_status,
     summarize_fallbacks,
     summarize_model_usage,
+    summarize_recovered_failures,
     summarize_tool_usage,
 )
 
 CHAT_CONSOLE_MODES = {"retrieval-only", "fake-model", "real-model"}
 CHAT_RESPONSE_MODES = {*CHAT_CONSOLE_MODES, "unknown"}
-CHAT_API_RESPONSE_SCHEMA_VERSION = "2026-05-26.9h5"
-CHAT_UI_RESPONSE_SCHEMA_VERSION = "2026-05-26.9h5"
+CHAT_API_RESPONSE_SCHEMA_VERSION = "2026-05-26.9h8"
+CHAT_UI_RESPONSE_SCHEMA_VERSION = "2026-05-26.9h8"
 REQUIRED_CHAT_RESPONSE_KEYS = (
     "ok",
     "mode",
@@ -32,6 +33,8 @@ REQUIRED_CHAT_RESPONSE_KEYS = (
     "error_message",
     "failure_stage",
     "failure_actor",
+    "recovered_failure_count",
+    "recovered_failures",
     "current_status",
     "trace_events",
     "trace_summary",
@@ -144,6 +147,8 @@ def build_chat_error_payload(
         "error_message": safe_message,
         "failure_stage": safe_stage,
         "failure_actor": failure_actor,
+        "recovered_failure_count": 0,
+        "recovered_failures": [],
         "current_status": status_payload,
         "answer": answer,
         "evidence": [],
@@ -178,6 +183,7 @@ def ensure_chat_response_contract(
     trace = payload.get("trace") if isinstance(payload.get("trace"), dict) else _default_trace()
     privacy = payload.get("privacy") if isinstance(payload.get("privacy"), dict) else privacy_defaults()
     safe_mode = _response_mode(mode or payload.get("mode"))
+    recovered_summary = summarize_recovered_failures(trace_events)
     failure = classify_chat_failure(
         payload,
         mode=safe_mode,
@@ -201,15 +207,28 @@ def ensure_chat_response_contract(
     payload["evidence_reference_count"] = len(answer.get("evidence_references") or [])
     payload["evidence_builder_succeeded"] = _evidence_builder_succeeded(payload)
     payload["answer_synthesis_succeeded"] = bool(answer.get("answer_succeeded"))
+    final_succeeded = _final_outcome_succeeded(payload, mode=safe_mode)
+    if final_succeeded:
+        failure_stage = None
+        failure_actor = None
+        error_class = None
+        error_message = None
     payload["answer_error_class"] = error_class
     payload["answer_error_message"] = error_message
     payload["error_class"] = error_class
     payload["error_message"] = error_message
     payload["failure_stage"] = _failure_stage(failure_stage) if failure_stage else None
     payload["failure_actor"] = failure_actor
+    payload["recovered_failure_count"] = recovered_summary["recovered_failure_count"]
+    payload["recovered_failures"] = recovered_summary["recovered_failures"]
     payload["trace_summary"] = _trace_summary(trace, trace_events)
+    payload["model_usage_summary"] = payload.get("model_usage_summary") or summarize_model_usage(trace_events)
+    payload["tool_usage_summary"] = payload.get("tool_usage_summary") or summarize_tool_usage(trace_events)
+    payload["fallback_summary"] = payload.get("fallback_summary") or summarize_fallbacks(trace_events)
     payload["privacy"] = {**privacy_defaults(), **privacy}
-    payload["warnings"] = list(payload.get("warnings") or [])
+    payload["warnings"] = _unique_strings(
+        (*list(payload.get("warnings") or []), *_recovered_failure_warnings(recovered_summary)),
+    )
     if current_status is not None:
         payload["current_status"] = current_status
     else:
@@ -220,6 +239,14 @@ def ensure_chat_response_contract(
             events=trace_events,
             warnings=tuple(payload["warnings"]),
         )
+    payload["current_status"]["mode"] = safe_mode
+    payload["current_status"]["recovered_failure_count"] = recovered_summary["recovered_failure_count"]
+    payload["current_status"]["recovered_failures"] = recovered_summary["recovered_failures"]
+    if final_succeeded:
+        payload["current_status"]["status"] = "succeeded"
+        payload["current_status"]["failure_stage"] = None
+        payload["current_status"]["failure_actor"] = None
+        payload["current_status"]["failure_summary"] = None
     if payload.get("failure_stage"):
         failed_action = failure.get("failed_action") or str(payload.get("failure_stage"))
         safe_actor = str(payload.get("failure_actor") or "ChatAPI")
@@ -253,8 +280,14 @@ def classify_chat_failure(
     safe_payload = payload or {}
     answer = safe_payload.get("answer") if isinstance(safe_payload.get("answer"), dict) else {}
     events = list(trace_events if trace_events is not None else safe_payload.get("trace_events") or [])
-    failed = next((event for event in reversed(events) if event.get("status") == "failed"), {})
     safe_mode = _response_mode(mode or safe_payload.get("mode"))
+    if _final_outcome_succeeded(safe_payload, mode=safe_mode):
+        return {
+            "failure_stage": None,
+            "failure_actor": None,
+            "failed_action": None,
+        }
+    failed = next((event for event in reversed(events) if event.get("status") == "failed"), {})
     safe_error_class = (
         error_class
         or answer.get("error_class")
@@ -344,6 +377,27 @@ def _evidence_builder_succeeded(payload: dict[str, Any]) -> bool:
         return True
     answer = payload.get("answer") if isinstance(payload.get("answer"), dict) else {}
     return bool(answer.get("evidence_references"))
+
+
+def _final_outcome_succeeded(payload: dict[str, Any], *, mode: str) -> bool:
+    if payload.get("ok") is not True:
+        return False
+    answer = payload.get("answer") if isinstance(payload.get("answer"), dict) else {}
+    if bool(answer.get("answer_succeeded")):
+        return True
+    if bool(payload.get("answer_synthesis_succeeded")):
+        return True
+    return mode == "retrieval-only" and not (answer.get("error_class") or payload.get("error_class"))
+
+
+def _recovered_failure_warnings(recovered_summary: dict[str, Any]) -> list[str]:
+    warnings: list[str] = []
+    for item in recovered_summary.get("recovered_failures") or []:
+        actor = str(item.get("actor") or "Agent")
+        stage = str(item.get("stage") or "unknown")
+        fallback = str(item.get("fallback_actor") or "fallback")
+        warnings.append(f"{actor} の {stage} は失敗しましたが、{fallback} で復旧しました。")
+    return warnings
 
 
 def _default_trace(*, runtime_event_count: int = 0) -> dict[str, Any]:

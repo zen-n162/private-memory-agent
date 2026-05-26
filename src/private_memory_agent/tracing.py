@@ -285,6 +285,11 @@ def summarize_model_usage(events: list[dict[str, Any]] | tuple[dict[str, Any], .
     """Summarize model events without private payloads."""
 
     summary: dict[str, dict[str, Any]] = {}
+    recovered_by_actor: dict[str, int] = {}
+    for item in summarize_recovered_failures(events)["recovered_failures"]:
+        actor = str(item.get("actor") or "")
+        if actor:
+            recovered_by_actor[actor] = recovered_by_actor.get(actor, 0) + 1
     for event in events:
         actor_type = str(event.get("actor_type") or "")
         if actor_type not in {"leader_model", "specialist_model", "embedding_model", "reranker"}:
@@ -299,6 +304,7 @@ def summarize_model_usage(events: list[dict[str, Any]] | tuple[dict[str, Any], .
                 "cached_artifacts": 0,
                 "not_used": 0,
                 "failed": 0,
+                "recovered": 0,
                 "model_ids": [],
                 "artifact_types": [],
                 "stages": [],
@@ -315,6 +321,7 @@ def summarize_model_usage(events: list[dict[str, Any]] | tuple[dict[str, Any], .
             item["not_used"] += 1
         if event.get("status") == "failed":
             item["failed"] += 1
+            item["recovered"] = recovered_by_actor.get(name, 0)
         _append_unique(item["model_ids"], event.get("model_id") or event.get("artifact_model_id"))
         _append_unique(item["artifact_types"], event.get("artifact_type"))
         _append_unique(item["stages"], event.get("stage"))
@@ -356,6 +363,42 @@ def summarize_fallbacks(events: list[dict[str, Any]] | tuple[dict[str, Any], ...
         "fallback_count": len(fallback_events),
         "stages": [str(event.get("stage")) for event in fallback_events],
         "actors": [str(event.get("actor_name")) for event in fallback_events],
+        "recovered_failure_count": summarize_recovered_failures(events)["recovered_failure_count"],
+    }
+
+
+def summarize_recovered_failures(
+    events: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+) -> dict[str, Any]:
+    """Return failed trace events that were followed by an explicit fallback.
+
+    This deliberately treats recovered failures as trace metadata only. Final
+    run success/failure is decided by the top-level answer/result contract.
+    """
+
+    event_list = list(events)
+    recovered: list[dict[str, Any]] = []
+    for index, event in enumerate(event_list):
+        if event.get("status") != "failed":
+            continue
+        fallback = _next_fallback_event(event_list, start=index + 1)
+        if fallback is None:
+            continue
+        recovered.append(
+            {
+                "actor": str(event.get("actor_name") or "unknown"),
+                "stage": str(event.get("stage") or "unknown"),
+                "action": str(event.get("action") or "unknown"),
+                "error_class": event.get("error_class"),
+                "fallback_actor": str(fallback.get("actor_name") or "unknown"),
+                "fallback_stage": str(fallback.get("stage") or "unknown"),
+                "fallback_action": str(fallback.get("action") or "unknown"),
+                "recovered": True,
+            },
+        )
+    return {
+        "recovered_failure_count": len(recovered),
+        "recovered_failures": recovered,
     }
 
 
@@ -373,7 +416,15 @@ def build_current_status(
     event_list = list(events)
     running = [event for event in event_list if event.get("status") == "running"]
     failed = [event for event in event_list if event.get("status") == "failed"]
-    current = running[-1] if running else (failed[-1] if failed else (event_list[-1] if event_list else None))
+    current = (
+        running[-1]
+        if running
+        else (
+            failed[-1]
+            if safe_status == "failed" and failed
+            else (event_list[-1] if event_list else None)
+        )
+    )
     if failed and safe_status not in {"failed", "succeeded"}:
         safe_status = "failed"
     completed = [
@@ -391,6 +442,7 @@ def build_current_status(
         for event in completed[-3:]
     ]
     next_step_hint = _next_step_hint(current, safe_status=safe_status)
+    recovered_summary = summarize_recovered_failures(event_list)
     return {
         "run_id": run_id,
         "status": safe_status,
@@ -402,6 +454,8 @@ def build_current_status(
         "model_usage_summary": summarize_model_usage(event_list),
         "tool_usage_summary": summarize_tool_usage(event_list),
         "fallback_summary": summarize_fallbacks(event_list),
+        "recovered_failure_count": recovered_summary["recovered_failure_count"],
+        "recovered_failures": recovered_summary["recovered_failures"],
     }
 
 
@@ -426,7 +480,11 @@ def trace_display_message(event: dict[str, Any] | None) -> str:
 
 def _summary_status(item: dict[str, Any]) -> str:
     if item.get("failed"):
-        return "failed"
+        if item.get("recovered"):
+            if int(item.get("recovered") or 0) >= int(item.get("failed") or 0):
+                return "partially_failed_recovered"
+            return "failed_unrecovered"
+        return "failed_unrecovered"
     if item.get("live_calls") or item.get("fake_calls") or item.get("cached_artifacts"):
         return "used"
     if item.get("not_used"):
@@ -471,6 +529,14 @@ def _next_step_hint(event: dict[str, Any] | None, *, safe_status: str) -> str | 
     if event is None:
         return "Run を押すとローカル検索を開始します。"
     return NEXT_STEP_HINTS.get(str(event.get("stage") or ""))
+
+
+def _next_fallback_event(events: list[dict[str, Any]], *, start: int) -> dict[str, Any] | None:
+    for event in events[start:]:
+        metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+        if event.get("status") == "fallback_used" or metadata.get("fallback_used"):
+            return event
+    return None
 
 
 def _append_unique(values: list[Any], value: Any) -> None:

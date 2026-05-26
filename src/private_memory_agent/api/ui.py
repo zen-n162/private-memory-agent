@@ -639,6 +639,8 @@ def agent_console_html() -> str:
       "error_message",
       "failure_stage",
       "failure_actor",
+      "recovered_failure_count",
+      "recovered_failures",
       "current_status",
       "trace_events",
       "trace_summary",
@@ -1273,6 +1275,39 @@ def agent_console_html() -> str:
       }
       renderLiveStatus(statusPayload);
     }
+    function reconcileStatusWithResponse(payload, statusPayload) {
+      const status = statusPayload || payload?.current_status || {};
+      const normalized = {...status};
+      if (payload?.ok === true && payload?.answer_succeeded === true && normalized.status === "failed") {
+        normalized.status = "succeeded";
+        normalized.failure_stage = null;
+        normalized.failure_actor = null;
+        normalized.failure_summary = null;
+        normalized.warnings = [...(normalized.warnings || []), "Status mismatch detected."];
+        normalized.completion_summary = normalized.completion_summary || buildCompletionSummaryFromResponse(payload);
+      }
+      return normalized;
+    }
+    function buildCompletionSummaryFromResponse(payload) {
+      const answer = payload?.answer || {};
+      return {
+        summary_status: "done",
+        answer_succeeded: Boolean(payload?.answer_succeeded),
+        answer_state: payload?.answer_state || answer.answer_state || "unknown",
+        candidate_date_count: payload?.candidate_date_count || 0,
+        evidence_reference_count: payload?.evidence_reference_count || 0,
+        evidence_count: payload?.evidence_count || 0,
+        used_sources: answer.used_sources || [],
+        warning_count: (payload?.warnings || []).length,
+        recovered_failure_count: payload?.recovered_failure_count || 0,
+        recovered_failures: payload?.recovered_failures || [],
+        major_models_used: [],
+        major_tools_used: [],
+        unused_models_tools: [],
+        timeline_available: Boolean((payload?.trace_events || []).length),
+        display_message: answer.answer_succeeded ? "回答を生成しました" : "実行は完了しました"
+      };
+    }
     function renderLiveStatus(statusPayload) {
       const head = document.createElement("div");
       head.className = "current-status-head";
@@ -1322,6 +1357,13 @@ def agent_console_html() -> str:
       metrics.appendChild(pill(`Evidence ${summary.evidence_reference_count || 0}件`));
       metrics.appendChild(pill(`sources=${(summary.used_sources || []).join(", ") || "none"}`));
       currentStatusBar.appendChild(metrics);
+      if (summary.recovered_failure_count) {
+        const recovered = (summary.recovered_failures || [])[0] || {};
+        const actor = recovered.actor || "Agent";
+        const stage = recovered.stage || "planning";
+        const fallback = recovered.fallback_actor || "deterministic fallback";
+        currentStatusBar.appendChild(el("div", `注意: ${actor} の ${stage} は失敗しましたが、${fallback}で復旧しました。`, "status-line"));
+      }
       appendCompactUsageSection("Models", summary.major_models_used || []);
       appendCompactUsageSection("Tools", summary.major_tools_used || []);
       if ((summary.unused_models_tools || []).length) {
@@ -1481,7 +1523,7 @@ def agent_console_html() -> str:
         renderPrivacy(result);
         statusNode.textContent = result.ok ? "Done" : "Done; review warnings";
         statusNode.className = result.ok ? "status-line ok" : "status-line";
-        if (finalStatus) renderCurrentStatus(finalStatus);
+        renderCurrentStatus(reconcileStatusWithResponse(result, finalStatus || result.current_status));
       } catch (error) {
         const payload = error?.payload || null;
         statusNode.className = "status-line error";

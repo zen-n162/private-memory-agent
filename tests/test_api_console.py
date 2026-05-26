@@ -84,6 +84,12 @@ def _assert_complete_chat_contract(payload, *, mode):
     assert isinstance(payload["current_status"], dict)
     assert isinstance(payload["candidate_dates"], list)
     assert isinstance(payload["evidence"], list)
+    if payload["ok"] is True:
+        assert payload["failure_stage"] is None
+        assert payload["current_status"]["status"] == "succeeded"
+        assert payload["current_status"].get("failure_summary") is None
+    if payload["answer_succeeded"] is True:
+        assert payload["failure_stage"] != "answer_generation"
 
 
 def test_agent_console_html_is_self_contained_and_points_to_chat_api():
@@ -115,6 +121,8 @@ def test_agent_console_html_is_self_contained_and_points_to_chat_api():
     assert "リクエスト形式の問題で実行前に失敗しました。" in html
     assert "Agent trace was not created because execution stopped before agent runtime." in html
     assert "候補日は取得できましたが、DeepSeekによる最終回答生成で失敗しました。" in html
+    assert "Status mismatch detected." in html
+    assert "recovered_failure_count" in html
     assert "mode=undefined" not in html
     assert "Agent の unknown" not in html
     assert "詳細ログを表示" in html
@@ -456,6 +464,123 @@ def test_chat_contract_fills_missing_success_metadata():
     assert payload["candidate_dates"] == []
     assert payload["current_status"]["status"] == "succeeded"
     assert payload["trace_summary"]["runtime_event_count"] == 0
+
+
+def test_recovered_leader_failure_with_fallback_is_not_final_failure():
+    trace_events = [
+        {
+            "run_id": "recovered-run",
+            "actor_type": "leader_model",
+            "actor_name": "DeepSeek Leader",
+            "stage": "event_intent_planning",
+            "action": "create_event_intent_plan",
+            "status": "failed",
+            "invocation_type": "live_call",
+            "error_class": "ModelRuntimeError",
+            "safe_error_message": "event intent planning failed; deterministic fallback will be used",
+            "metadata": {},
+        },
+        {
+            "run_id": "recovered-run",
+            "actor_type": "tool",
+            "actor_name": "DeterministicEventIntentPlanner",
+            "stage": "event_intent_planning",
+            "action": "create_event_intent_plan",
+            "status": "fallback_used",
+            "invocation_type": "not_used",
+            "metadata": {"fallback_used": True},
+        },
+        {
+            "run_id": "recovered-run",
+            "actor_type": "tool",
+            "actor_name": "TemporalAnswerSynthesizer",
+            "stage": "answer_synthesis",
+            "action": "build_temporal_answer",
+            "status": "succeeded",
+            "metadata": {},
+        },
+    ]
+    payload = ensure_chat_response_contract(
+        {
+            "ok": True,
+            "mode": "real-model",
+            "answer": {
+                "answer_succeeded": True,
+                "answer_state": "visible",
+                "conclusion": "synthetic answer",
+                "confidence": 0.7,
+                "evidence_references": ["media_items:1"],
+                "used_sources": ["photos"],
+            },
+            "evidence": [{"evidence_id": "media_items:1", "source": "photos"}],
+            "evidence_display": {"candidate_dates": [{"date": "2025-12-05"}]},
+            "trace": {"runtime_event_count": 3, "plan": {}},
+            "trace_events": trace_events,
+            "privacy": {},
+            "warnings": [],
+        },
+        run_id="recovered-run",
+    )
+    serialized = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["ok"] is True
+    assert payload["answer_succeeded"] is True
+    assert payload["answer_synthesis_succeeded"] is True
+    assert payload["failure_stage"] is None
+    assert payload["failure_actor"] is None
+    assert payload["error_class"] is None
+    assert payload["current_status"]["status"] == "succeeded"
+    assert payload["current_status"]["failure_summary"] is None
+    assert payload["recovered_failure_count"] == 1
+    assert payload["recovered_failures"][0]["actor"] == "DeepSeek Leader"
+    assert payload["recovered_failures"][0]["fallback_actor"] == "DeterministicEventIntentPlanner"
+    assert payload["model_usage_summary"]["DeepSeek Leader"]["status"] == "partially_failed_recovered"
+    assert payload["model_usage_summary"]["DeepSeek Leader"]["recovered"] == 1
+    assert "復旧しました" in serialized
+    assert "PRIVATE" not in serialized
+
+
+def test_unrecovered_answer_generation_failure_remains_final_failure():
+    payload = ensure_chat_response_contract(
+        {
+            "ok": False,
+            "mode": "real-model",
+            "answer": {
+                "answer_succeeded": False,
+                "answer_state": "not_generated",
+                "evidence_references": [],
+                "used_sources": [],
+                "error_class": "ModelRuntimeError",
+                "error_message": "model endpoint request timed out",
+            },
+            "evidence": [{"evidence_id": "line_messages:1", "source": "line"}],
+            "trace": {"runtime_event_count": 1, "plan": {}},
+            "trace_events": [
+                {
+                    "run_id": "failed-run",
+                    "actor_type": "leader_model",
+                    "actor_name": "DeepSeek Leader",
+                    "stage": "answer_synthesis",
+                    "action": "generate_structured_answer",
+                    "status": "failed",
+                    "invocation_type": "live_call",
+                    "error_class": "ModelRuntimeError",
+                    "safe_error_message": "model endpoint request timed out",
+                    "metadata": {},
+                },
+            ],
+            "privacy": {},
+            "warnings": [],
+        },
+        run_id="failed-run",
+    )
+
+    assert payload["ok"] is False
+    assert payload["failure_stage"] == "answer_generation"
+    assert payload["failure_actor"] == "DeepSeek Leader"
+    assert payload["current_status"]["status"] == "failed"
+    assert payload["current_status"]["failure_summary"]["failed_stage"] == "answer_generation"
+    assert payload["recovered_failure_count"] == 0
 
 
 def test_chat_console_show_answer_displays_fake_answer_without_snippets(

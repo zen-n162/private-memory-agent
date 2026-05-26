@@ -112,6 +112,8 @@ class ChatQueryResponse(APIModel):
     error_message: str | None = None
     failure_stage: str | None = None
     failure_actor: str | None = None
+    recovered_failure_count: int = 0
+    recovered_failures: list[dict[str, Any]] = Field(default_factory=list)
     current_status: dict[str, Any] | None = None
     answer: dict[str, Any]
     evidence: list[dict[str, Any]]

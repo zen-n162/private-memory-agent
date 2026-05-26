@@ -226,6 +226,8 @@ def _completion_summary(result: dict[str, Any], *, events: list[dict[str, Any]])
         "answer_synthesis_succeeded": bool(result.get("answer_synthesis_succeeded")),
         "used_sources": list(answer.get("used_sources") or []),
         "warning_count": len(warnings),
+        "recovered_failure_count": int(result.get("recovered_failure_count") or 0),
+        "recovered_failures": list(result.get("recovered_failures") or []),
         "major_models_used": used_models,
         "major_tools_used": used_tools,
         "unused_models_tools": [*unused_models, *unused_tools],
@@ -302,6 +304,8 @@ def _tool_is_used(name: str, payload: dict[str, Any]) -> bool:
 
 
 def _model_usage_label(name: str, payload: dict[str, Any]) -> str:
+    if payload.get("status") == "partially_failed_recovered":
+        return f"{name}: fallback recovered"
     if payload.get("live_calls"):
         return f"{name}: live call used"
     if payload.get("fake_calls"):

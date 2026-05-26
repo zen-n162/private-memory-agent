@@ -160,6 +160,14 @@ This document outlines the development roadmap for private-memory-agent.
   DeepSeek answer generation fails after temporal candidates or evidence were
   retrieved, the UI keeps candidate-date cards, evidence metadata, diagnostics,
   and trace events instead of collapsing to an empty answer-only failure.
+- Phase 9-H8 fixes recovered-failure status aggregation:
+  final status now follows the final outcome, not any intermediate failed
+  trace event. If DeepSeek Leader event-intent planning fails but deterministic
+  fallback succeeds and the answer is generated, the response keeps
+  `ok=true`, clears `failure_stage`, shows Current Status as Done, and reports
+  the intermediate issue through `recovered_failure_count`,
+  `recovered_failures`, warnings, fallback summary, and model usage status
+  `partially_failed_recovered`.
 
 ## 実データE2E smokeの実行手順
 

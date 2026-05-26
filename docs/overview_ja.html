@@ -553,6 +553,7 @@
             <tr><td>9-H4</td><td>Chat UI/API contract を固定し、request validation / preflight / agent failure を区別して表示。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-H5</td><td>real-model の timeout、answer validation、preflight failure も同じ response contract に統一。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-H6</td><td>evidence builder と answer synthesis を分離し、real-model 失敗時も候補日と evidence を保持。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>9-H8</td><td>fallback で復旧した中間失敗を final failure と区別し、Current Status は最終結果に合わせて Done/Failed を表示。</td><td class="status">基本実装済み</td></tr>
           </tbody>
         </table>
       </section>
@@ -899,6 +900,15 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           UI では「候補日は取得できましたが、DeepSeekによる最終回答生成で失敗しました。」として表示し、
           retrieval-only と real-model のどちらの段階で問題があるかを切り分けやすくします。
         </p>
+        <p>
+          9-H8 では recovered failure を final failure から分離しました。
+          DeepSeek Leader の event intent planning が失敗しても deterministic fallback で復旧し、
+          最終回答が成功した場合は <code>failure_stage</code> を空にし、
+          <code>current_status.status=succeeded</code> として Done を表示します。
+          中間失敗は <code>recovered_failure_count</code>、<code>recovered_failures</code>、
+          warning、fallback summary、<code>partially_failed_recovered</code> の model status、
+          そして Runtime Timeline に残すため、復旧の事実は追跡できますが成功 run を失敗表示しません。
+        </p>
       </section>
 
       <section id="limitations">
@@ -916,6 +926,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
       <section id="history">
         <h2>更新履歴</h2>
         <ul>
+          <li>2026-05-26: fallback で復旧した中間失敗を final failure と分離し、成功 run の Current Status を Done に修正。</li>
           <li>2026-05-26: evidence builder と answer synthesis を分離し、real-model 失敗時も candidate dates/evidence を保持。</li>
           <li>2026-05-26: real-model mode の response contract を harden し、schema/version diagnostics を system status に追加。</li>
           <li>2026-05-26: Chat UI/API contract を固定し、実行前 validation / preflight failure と agent failure を区別。</li>
