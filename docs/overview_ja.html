@@ -541,6 +541,7 @@
             <tr><td>8-N</td><td>real local embedding alias、resume-safe embedding index、任意 reranker を semantic retrieval に接続。</td><td class="status">限定実装</td></tr>
             <tr><td>8-O</td><td>semantic retrieval 構成を usable evidence quality で比較し、device 診断も出す。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-A</td><td>localhost の evidence-first agent console。回答状態、証拠 ID、source coverage、relevance、plan、repair、privacy を安全に確認。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>9-B</td><td>時間範囲イベント質問を、写真日時、注釈、日別クラスタ、LINE/ノート同日サポートで扱う。</td><td class="status">基本実装済み</td></tr>
           </tbody>
         </table>
       </section>
@@ -589,6 +590,7 @@ pma index text
 pma search text "架空の検索語" --config configs/paths.local.yaml
 pma retrieve "架空の質問"
 pma query "架空の質問"
+pma query "2025年12月で出かけたのはいつ？" --config configs/paths.local.yaml
 pma runtime plan lightweight_query
 pma eval run --summary
 python -m pip install -e ".[dev]"
@@ -739,6 +741,18 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           <code>show_snippets</code> は引き続き明示操作で、snippet は truncated/redacted されますが
           private output として扱います。回答や snippet に private な内容が含まれる場合は公開チャットへ貼り付けません。
         </p>
+        <p>
+          9-B では <code>2025年12月で出かけたのはいつ？</code> のような temporal event query を、
+          通常のキーワード検索だけに頼らず扱います。明らかな年月表現、
+          <code>去年12月</code>、<code>先月</code>、<code>去年の夏</code> を日付範囲に変換し、
+          <code>media_items.taken_at</code> または modified time で写真候補を読みます。
+          写真注釈と安全な metadata から外出らしさを score し、日別に cluster して、
+          高そうな日には同日の LINE/ノート件数と evidence ID を補助情報として付けます。
+          UI では candidate date、confidence、photo/LINE/note の evidence ID を表示し、
+          used evidence、examined candidate、weak/rejected evidence を分けます。
+          <code>should_use=false</code> の候補は answer evidence として扱いません。
+          既定ではファイル名、フルパス、GPS、LINE 本文、ノート本文、OCR、写真 caption 全文は表示しません。
+        </p>
       </section>
 
       <section id="limitations">
@@ -756,6 +770,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
       <section id="history">
         <h2>更新履歴</h2>
         <ul>
+          <li>2026-05-26: temporal event query を追加し、写真日時検索、外出 score、日別 cluster、候補/使用/弱い evidence の分離を実装。</li>
           <li>2026-05-25: local chat UI の <code>show_answer</code> を既定 ON にし、hidden/unknown/failed/visible answer を区別。</li>
           <li>2026-05-25: localhost evidence-first agent console、<code>/api/chat/query</code>、<code>/api/system/status</code> を追加。</li>
           <li>2026-05-25: semantic retrieval 構成比較と embedding device 診断を追加。</li>

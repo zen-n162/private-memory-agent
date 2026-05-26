@@ -547,6 +547,47 @@ shows answer text by default so the console behaves like a chat interface.
 remains off by default; snippets are truncated/redacted and remain local-only
 debugging output.
 
+## Temporal Event Queries
+
+Phase 9-B adds a structured temporal event path for questions such as:
+
+```text
+2025年12月で出かけたのはいつ？
+去年の夏に外出した日は？
+写真から外出した日を教えて
+```
+
+When the question contains an obvious date range and outing/event intent, PMA
+uses a read-only metadata workflow before falling back to broad text/vector
+retrieval:
+
+1. Parse the date range deterministically for forms such as `2025年12月`,
+   `2025/12`, `2025-12`, `去年12月`, `先月`, and `去年の夏`.
+2. Query `media_items` by `taken_at` or `modified_at` in that range.
+3. Score outing likelihood from safe metadata and local photo annotation text.
+4. Group candidates by day and add same-day LINE/notes support counts.
+5. Return candidate dates with confidence and privacy-safe evidence IDs.
+
+The output separates evidence roles:
+
+- `used`: evidence that supports a candidate outing date.
+- `candidate`: examined evidence that may be relevant but was not used.
+- `rejected`: weak evidence, such as screenshot/document-like photos.
+
+Evidence with `should_use=false` is not counted as answer evidence. The UI shows
+used, candidate, and rejected evidence separately so weak photo candidates do
+not look like grounded answer support.
+
+CLI smoke:
+
+```bash
+pma query "2025年12月で出かけたのはいつ？" --config configs/paths.local.yaml
+```
+
+Default output includes dates, counts, confidence, reason categories, and
+evidence IDs only. It does not print filenames, full paths, GPS coordinates,
+raw LINE text, note bodies, OCR text, or full photo captions.
+
 ## Optional Integration Tests
 
 Real embedding model tests are skipped unless explicitly enabled:

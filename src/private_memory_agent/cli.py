@@ -100,6 +100,7 @@ from private_memory_agent.runtime import (
     run_json_smoke_test,
     run_vision_smoke_test,
 )
+from private_memory_agent.temporal import answer_temporal_event_query
 from private_memory_agent.timeline import build_events, list_events
 
 DEFAULT_VISION_ANNOTATION_TIMEOUT_SECONDS = 300.0
@@ -1851,6 +1852,21 @@ def _query_command(args: argparse.Namespace) -> int:
     try:
         config = load_config(config_dir=args.config_dir, paths_config=args.config)
         privacy_guard = _build_privacy_guard(config)
+        if not args.source or "photos" in args.source:
+            temporal_result = answer_temporal_event_query(args.question, db_path=args.db)
+            if temporal_result is not None:
+                print(
+                    json.dumps(
+                        {
+                            "query_flow": "temporal_event_search",
+                            **temporal_result.to_dict(show_answer=True),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                        sort_keys=True,
+                    ),
+                )
+                return 0
         leader_agent = _build_leader_agent(args)
         redact = not (args.show_private and config.app.log_private_data)
         result = run_query_flow(

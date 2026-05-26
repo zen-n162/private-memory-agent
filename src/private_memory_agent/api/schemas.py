@@ -93,6 +93,7 @@ class ChatQueryResponse(APIModel):
     mode: ChatConsoleMode
     answer: dict[str, Any]
     evidence: list[dict[str, Any]]
+    temporal_event: dict[str, Any] | None = None
     trace: dict[str, Any]
     privacy: dict[str, Any]
     warnings: list[str]

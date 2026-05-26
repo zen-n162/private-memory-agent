@@ -34,6 +34,7 @@ from private_memory_agent.runtime import (
     endpoint_from_model_spec,
     preflight_chat_endpoint,
 )
+from private_memory_agent.temporal import answer_temporal_event_query
 
 ConsoleMode = Literal["retrieval-only", "fake-model", "real-model"]
 ConsoleSource = Literal["photos", "line", "notes"]
@@ -92,6 +93,9 @@ def run_chat_console_query(options: ChatConsoleOptions) -> dict[str, Any]:
     """Run one privacy-safe console query."""
 
     _validate_options(options)
+    temporal_payload = _maybe_temporal_console_payload(options)
+    if temporal_payload is not None:
+        return temporal_payload
     config = load_config(config_dir=options.config_dir, paths_config=options.paths_config)
     plan, plan_metadata, plan_warning = _build_plan(options, config)
     query = _build_console_e2e_query(options, plan=plan, repair=False)
@@ -226,6 +230,73 @@ def _validate_options(options: ChatConsoleOptions) -> None:
         raise ValueError("max_tokens must be positive")
     if options.timeout_seconds is not None and options.timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
+
+
+def _maybe_temporal_console_payload(options: ChatConsoleOptions) -> dict[str, Any] | None:
+    if options.sources and "photos" not in options.sources:
+        return None
+    result = answer_temporal_event_query(
+        options.question,
+        db_path=options.db_path,
+        top_days=options.limit,
+    )
+    if result is None:
+        return None
+    privacy = _privacy_payload(options)
+    answer = result.answer.to_dict(show_answer=options.show_answer)
+    temporal_event = result.to_dict(show_answer=options.show_answer)
+    warnings = _unique_strings((*result.warnings, *privacy["warnings"]))
+    should_use_count = len(result.answer.evidence_references)
+    return {
+        "ok": result.ok,
+        "mode": options.mode,
+        "answer": answer,
+        "evidence": [item.to_dict() for item in result.evidence],
+        "temporal_event": temporal_event,
+        "trace": {
+            "query_type": result.query.query_type,
+            "temporal_event": True,
+            "plan_created": False,
+            "plan": {
+                "plan_created": False,
+                "main_entity_count": 0,
+                "specific_concept_count": 0,
+                "generic_concept_count": 0,
+                "retrieval_query_count": 0,
+            },
+            "source_coverage": {},
+            "evidence_source_counts": _evidence_source_counts(result.answer.evidence_references),
+            "semantic_candidate_count": 0,
+            "reranked_candidate_count": 0,
+            "retrieval_stage_counts": result.diagnostics,
+            "repair_attempted": False,
+            "repair_improved": False,
+            "retrieval_repair_count": 0,
+            "repair_reason": None,
+            "usable_evidence_succeeded": should_use_count > 0,
+            "usable_evidence_count": should_use_count,
+            "unusable_evidence_count": max(0, len(result.evidence) - should_use_count),
+            "should_use_evidence_count": should_use_count,
+            "average_plan_relevance_score": None,
+            "final_relevance_score": result.answer.confidence,
+            "relevance_policy": "strict" if options.strict_relevance else "soft",
+            "relevance_policy_passed": True if not options.strict_relevance else should_use_count > 0,
+            "minimum_relevance_score": options.minimum_relevance_score,
+            "plan_relevance_specificity_counts": {},
+            "insufficient_evidence_reason": _temporal_insufficient_reason(
+                result.diagnostics,
+                should_use_count=should_use_count,
+            ),
+            "json_extraction_succeeded": None,
+            "json_extraction_strategy": "not_applicable_temporal_event",
+            "json_retry_used": False,
+            "json_retry_succeeded": False,
+            "candidate_dates": [item.to_dict() for item in result.candidate_dates],
+            "warnings": list(result.warnings),
+        },
+        "privacy": privacy,
+        "warnings": list(warnings),
+    }
 
 
 def _build_plan(
@@ -562,6 +633,26 @@ def _source_from_evidence_id(evidence_id: str) -> str:
     if evidence_id.startswith("notes:"):
         return "notes"
     return "unknown"
+
+
+def _evidence_source_counts(evidence_ids: tuple[str, ...]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for evidence_id in evidence_ids:
+        source = _source_from_evidence_id(evidence_id)
+        counts[source] = counts.get(source, 0) + 1
+    return counts
+
+
+def _temporal_insufficient_reason(
+    diagnostics: dict[str, Any],
+    *,
+    should_use_count: int,
+) -> str | None:
+    if should_use_count > 0:
+        return None
+    if int(diagnostics.get("photo_candidates_examined") or 0) == 0:
+        return "no photos were found in the parsed date range"
+    return "candidate evidence was found, but outing likelihood was weak"
 
 
 def _model_status(config: ConfigBundle) -> list[dict[str, Any]]:

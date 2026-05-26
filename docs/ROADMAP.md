@@ -87,6 +87,11 @@ This document outlines the development roadmap for private-memory-agent.
   `/ui` now checks `show_answer` by default, while `show_snippets` remains off
   by default. Hidden, unknown, failed, and visible answers are displayed as
   distinct states.
+- Phase 9-B adds temporal multimodal event queries:
+  outing/date questions such as `2025年12月で出かけたのはいつ？` use deterministic
+  date parsing, read-only photo date-range search, outing likelihood scoring,
+  daily clustering, and same-day LINE/notes support counts. The UI separates
+  used evidence from examined candidates and weak/rejected evidence.
 
 ## 実データE2E smokeの実行手順
 
@@ -306,3 +311,21 @@ Evidence snippets remain hidden by default. Disable `show_answer` when you want
 a metadata-only run; enable `show_snippets` only when you need truncated local
 evidence snippets. Answer and snippet output may contain private
 evidence-derived content and should not be pasted into public chats.
+
+## Temporal Event Queries
+
+For outing/date questions, start with the safe CLI path:
+
+```bash
+pma query "2025年12月で出かけたのはいつ？" --config configs/paths.local.yaml
+```
+
+This path parses obvious date ranges, searches photo metadata by date, scores
+outing likelihood from annotation categories and safe metadata, clusters
+candidates by day, and optionally counts same-day LINE/notes support. It returns
+candidate dates and evidence IDs, not filenames, full paths, GPS, raw LINE text,
+note bodies, OCR text, or full captions.
+
+In the local UI, candidate dates appear in the answer panel. Evidence is grouped
+as used, examined candidate, or rejected/weak. Evidence with `should_use=false`
+is never marked as `used_by_answer=true`.

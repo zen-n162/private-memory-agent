@@ -395,6 +395,29 @@ def agent_console_html() -> str:
         answerPanel.appendChild(el("h3", "Unknowns"));
         answerPanel.appendChild(renderList(answer.unknowns));
       }
+      renderTemporalDates(payload);
+    }
+    function renderTemporalDates(payload) {
+      const temporal = payload.temporal_event || {};
+      const dates = temporal.candidate_dates || [];
+      if (!dates.length) return;
+      answerPanel.appendChild(el("h3", "Candidate Dates"));
+      dates.forEach((item) => {
+        const row = document.createElement("article");
+        row.className = "evidence-item";
+        const tags = document.createElement("div");
+        tags.className = "tag-row";
+        tags.appendChild(pill(item.date || "unknown", "strong"));
+        tags.appendChild(pill(`confidence=${item.confidence ?? "n/a"}`));
+        tags.appendChild(pill(`photos=${item.photo_count ?? 0}`));
+        tags.appendChild(pill(`annotated=${item.annotated_photo_count ?? 0}`));
+        tags.appendChild(pill(`line_support=${item.line_support_count ?? 0}`));
+        tags.appendChild(pill(`notes_support=${item.notes_support_count ?? 0}`));
+        row.appendChild(tags);
+        row.appendChild(el("div", `reason=${item.reason || "n/a"}`, "status-line"));
+        row.appendChild(el("div", `evidence=${(item.top_evidence_ids || []).join(", ") || "none"}`, "status-line"));
+        answerPanel.appendChild(row);
+      });
     }
     function renderEvidence(payload) {
       clear(evidencePanel);
@@ -403,13 +426,28 @@ def agent_console_html() -> str:
         evidencePanel.appendChild(el("div", "No evidence returned.", "status-line"));
         return;
       }
-      evidence.forEach((item) => {
+      const groups = [
+        ["used", "Used Evidence"],
+        ["candidate", "Examined Candidate Evidence"],
+        ["rejected", "Rejected / Weak Evidence"]
+      ];
+      groups.forEach(([role, label]) => {
+        const items = evidence.filter((item) => (item.evidence_role || (item.used_by_answer ? "used" : "candidate")) === role);
+        if (!items.length) return;
+        evidencePanel.appendChild(el("h3", label));
+        items.forEach((item) => renderEvidenceItem(item));
+      });
+      const ungrouped = evidence.filter((item) => !["used", "candidate", "rejected"].includes(item.evidence_role || ""));
+      ungrouped.forEach((item) => renderEvidenceItem(item));
+    }
+    function renderEvidenceItem(item) {
         const row = document.createElement("article");
         row.className = "evidence-item";
         const tags = document.createElement("div");
         tags.className = "tag-row";
         tags.appendChild(pill(item.evidence_id || "unknown", "strong"));
         tags.appendChild(pill(`source=${item.source_type || "unknown"}`));
+        tags.appendChild(pill(`role=${item.evidence_role || "candidate"}`));
         tags.appendChild(pill(`should_use=${item.should_use ?? "n/a"}`, item.should_use ? "strong" : "warn"));
         tags.appendChild(pill(`specificity=${item.specificity || "n/a"}`));
         tags.appendChild(pill(`relevance=${item.relevance_score ?? "n/a"}`));
@@ -418,7 +456,6 @@ def agent_console_html() -> str:
         row.appendChild(el("div", `reason=${item.reason_category || "n/a"}`, "status-line"));
         if (item.snippet) row.appendChild(el("div", item.snippet, "snippet"));
         evidencePanel.appendChild(row);
-      });
     }
     function renderTrace(payload) {
       clear(tracePanel);
