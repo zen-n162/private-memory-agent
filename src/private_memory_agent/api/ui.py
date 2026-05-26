@@ -476,6 +476,36 @@ def agent_console_html() -> str:
         insufficient_evidence_reason: trace.insufficient_evidence_reason || "none",
         json_extraction_strategy: trace.json_extraction_strategy || "none"
       });
+      renderTemporalDiagnostics(trace.temporal_diagnostics || null);
+    }
+    function renderTemporalDiagnostics(diagnostics) {
+      if (!diagnostics) return;
+      tracePanel.appendChild(el("h3", "Temporal Diagnostics"));
+      renderKv(tracePanel, {
+        parsed_date_range_start: diagnostics.parsed_date_range_start,
+        parsed_date_range_end: diagnostics.parsed_date_range_end,
+        date_range_source: diagnostics.date_range_source,
+        parsed_temporal_expression: diagnostics.parsed_temporal_expression,
+        timezone: diagnostics.timezone || "n/a",
+        date_range_query_column: diagnostics.date_range_query_column,
+        date_range_query_status: diagnostics.date_range_query_status,
+        media_items_with_taken_at_count: diagnostics.media_items_with_taken_at_count,
+        media_items_missing_taken_at_count: diagnostics.media_items_missing_taken_at_count,
+        photo_candidates_count: diagnostics.photo_candidates_count,
+        annotated_photo_candidates_count: diagnostics.annotated_photo_candidates_count,
+        unannotated_photo_candidates_count: diagnostics.unannotated_photo_candidates_count,
+        candidates_before_media_type_filter: diagnostics.candidates_before_media_type_filter,
+        candidates_after_media_type_filter: diagnostics.candidates_after_media_type_filter,
+        candidates_before_annotation_filter: diagnostics.candidates_before_annotation_filter,
+        candidates_after_annotation_filter: diagnostics.candidates_after_annotation_filter,
+        line_date_support_count: diagnostics.line_date_support_count,
+        notes_date_support_count: diagnostics.notes_date_support_count,
+        fallback_sources_used: (diagnostics.fallback_sources_used || []).join(", ") || "none"
+      });
+      if (diagnostics.nearby_month_counts) {
+        tracePanel.appendChild(el("h3", "Nearby Month Counts"));
+        renderKv(tracePanel, diagnostics.nearby_month_counts);
+      }
     }
     function renderPrivacy(payload) {
       clear(privacyPanel);

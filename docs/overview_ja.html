@@ -543,6 +543,7 @@
             <tr><td>9-A</td><td>localhost の evidence-first agent console。回答状態、証拠 ID、source coverage、relevance、plan、repair、privacy を安全に確認。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-B</td><td>時間範囲イベント質問を、写真日時、注釈、日別クラスタ、LINE/ノート同日サポートで扱う。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-C0</td><td>写真・動画の capture timestamp を監査し、EXIF/XMP/video/filename から <code>taken_at</code> を安全に backfill。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>9-C</td><td>temporal query の parsed date range、写真 coverage、filter 診断、LINE/ノート fallback を安全に表示。</td><td class="status">基本実装済み</td></tr>
           </tbody>
         </table>
       </section>
@@ -592,6 +593,7 @@ pma search text "架空の検索語" --config configs/paths.local.yaml
 pma retrieve "架空の質問"
 pma query "架空の質問"
 pma query "2025年12月で出かけたのはいつ？" --config configs/paths.local.yaml
+pma query "2025年12月で出かけたのはいつ？" --config configs/paths.local.yaml --temporal-diagnostics
 pma media timestamps audit --config configs/paths.local.yaml
 pma media timestamps audit --config configs/paths.local.yaml --month-histogram
 pma media timestamps backfill --config configs/paths.local.yaml --dry-run --limit 20 --method auto
@@ -749,7 +751,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           9-B では <code>2025年12月で出かけたのはいつ？</code> のような temporal event query を、
           通常のキーワード検索だけに頼らず扱います。明らかな年月表現、
           <code>去年12月</code>、<code>先月</code>、<code>去年の夏</code> を日付範囲に変換し、
-          <code>media_items.taken_at</code> または modified time で写真候補を読みます。
+          capture timestamp として保存された <code>media_items.taken_at</code> で写真候補を読みます。
           写真注釈と安全な metadata から外出らしさを score し、日別に cluster して、
           高そうな日には同日の LINE/ノート件数と evidence ID を補助情報として付けます。
           UI では candidate date、confidence、photo/LINE/note の evidence ID を表示し、
@@ -773,6 +775,16 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           DB には timestamp source、confidence、timezone 情報を保存し、既存の高 confidence timestamp は
           既定では上書きしません。
         </p>
+        <p>
+          9-C では temporal query が unknown になった時の診断を増やしました。
+          <code>pma query "2025年12月で出かけたのはいつ？" --temporal-diagnostics</code> は、
+          parsed date range、date range source、対象の時間表現、timezone、<code>taken_at</code> coverage、
+          写真候補数、annotation 済み/未済み数、media type filter 前後の件数、近傍月の写真件数を返します。
+          写真候補が無い、または弱い時は、同じ日付範囲の LINE/ノートから外出に関係しそうな語句を count-only で探し、
+          evidence ID と source count だけを返します。写真が無くても LINE/ノート候補がある場合は、
+          その日付を弱い fallback evidence として示し、写真で確認できていないことを明記します。
+          既定では LINE 本文、ノート本文、caption、OCR、ファイル名、フルパス、GPS、EXIF は表示しません。
+        </p>
       </section>
 
       <section id="limitations">
@@ -790,6 +802,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
       <section id="history">
         <h2>更新履歴</h2>
         <ul>
+          <li>2026-05-26: temporal query の coverage 診断、近傍月 count、LINE/ノート fallback search を追加。</li>
           <li>2026-05-26: media timestamp audit/backfill を追加し、<code>taken_at</code> の source/confidence を保存できるように更新。</li>
           <li>2026-05-26: temporal event query を追加し、写真日時検索、外出 score、日別 cluster、候補/使用/弱い evidence の分離を実装。</li>
           <li>2026-05-25: local chat UI の <code>show_answer</code> を既定 ON にし、hidden/unknown/failed/visible answer を区別。</li>

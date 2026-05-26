@@ -96,6 +96,10 @@ This document outlines the development roadmap for private-memory-agent.
   `pma media timestamps audit` reports `taken_at` coverage and extractability
   counts without paths, while `pma media timestamps backfill` can dry-run or
   explicitly write capture timestamps with source/confidence provenance.
+- Phase 9-C adds temporal coverage diagnostics and fallback search:
+  temporal query results now expose parsed date ranges, `taken_at` coverage,
+  photo filter-stage counts, nearby month counts, and safe LINE/notes fallback
+  counts/evidence IDs when photo candidates are missing or weak.
 
 ## 実データE2E smokeの実行手順
 
@@ -333,6 +337,20 @@ note bodies, OCR text, or full captions.
 In the local UI, candidate dates appear in the answer panel. Evidence is grouped
 as used, examined candidate, or rejected/weak. Evidence with `should_use=false`
 is never marked as `used_by_answer=true`.
+
+Use temporal diagnostics when a result is unknown:
+
+```bash
+pma query "2025年12月で出かけたのはいつ？" \
+  --config configs/paths.local.yaml \
+  --temporal-diagnostics
+```
+
+The output includes the parsed date range, query column, media timestamp
+coverage, photo candidate counts before and after filters, nearby month counts,
+and LINE/notes fallback support counts. This separates "no photos in that
+month" from "photo timestamps are missing" and from "photos existed but were
+filtered as weak/non-outing candidates."
 
 Temporal event queries require usable `media_items.taken_at` values. Check
 coverage before judging temporal quality:

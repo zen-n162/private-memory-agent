@@ -37,6 +37,8 @@ def test_agent_console_html_is_self_contained_and_points_to_chat_api():
     assert "show_snippets" in html
     assert 'id="show-answer" type="checkbox" checked' in html
     assert 'id="show-snippets" type="checkbox"> show_snippets' in html
+    assert "Temporal Diagnostics" in html
+    assert "parsed_date_range_start" in html
     assert "Answer was generated but hidden because Show answer is off." in html
     assert "Conclusion (unknown / insufficient evidence)" in html
     assert "https://" not in html

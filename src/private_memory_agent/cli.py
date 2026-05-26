@@ -855,6 +855,20 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Show answer and evidence only when config also enables private logging.",
     )
+    query_parser.add_argument(
+        "--temporal-diagnostics",
+        action="store_true",
+        help="Accepted for temporal event queries; output includes privacy-safe stage diagnostics.",
+    )
+    query_parser.add_argument(
+        "--temporal-fallback-term",
+        action="append",
+        default=[],
+        help=(
+            "Add an outing/event term for temporal LINE/notes fallback search. "
+            "Can be passed more than once."
+        ),
+    )
     query_parser.set_defaults(func=_query_command)
 
     events_parser = subparsers.add_parser("events", help="Build and inspect tentative events.")
@@ -2043,7 +2057,12 @@ def _query_command(args: argparse.Namespace) -> int:
         config = load_config(config_dir=args.config_dir, paths_config=args.config)
         privacy_guard = _build_privacy_guard(config)
         if not args.source or "photos" in args.source:
-            temporal_result = answer_temporal_event_query(args.question, db_path=args.db)
+            temporal_terms = tuple(args.temporal_fallback_term) if args.temporal_fallback_term else None
+            temporal_result = answer_temporal_event_query(
+                args.question,
+                db_path=args.db,
+                fallback_terms=temporal_terms or None,
+            )
             if temporal_result is not None:
                 print(
                     json.dumps(

@@ -85,6 +85,9 @@ def test_temporal_parser_understands_japanese_month_and_relative_dates():
     assert parsed.event_type == "outing"
     assert parsed.date_range.start.isoformat() == "2025-12-01"
     assert parsed.date_range.end.isoformat() == "2026-01-01"
+    assert parsed.date_range.source == "deterministic"
+    assert parsed.date_range.expression == "2025年12月"
+    assert parsed.to_dict()["parsed_temporal_expression"] == "2025年12月"
 
     last_year = parse_temporal_event_query("去年12月に外出した日は？", today=date(2026, 5, 26))
     assert last_year is not None
@@ -177,6 +180,7 @@ def test_temporal_answer_clusters_days_and_adds_line_note_support(tmp_path):
     serialized = json.dumps(payload, ensure_ascii=False)
 
     assert result.ok is True
+    assert payload["query"]["date_range_source"] == "deterministic"
     assert payload["answer"]["dates"][0]["date"] == "2025-12-03"
     assert f"media_items:{media_id}" in payload["answer"]["evidence_references"]
     assert f"line_messages:{line_id}" in payload["answer"]["evidence_references"]
@@ -189,6 +193,12 @@ def test_temporal_answer_clusters_days_and_adds_line_note_support(tmp_path):
     assert "RAW LINE SHOULD NOT LEAK" not in serialized
     assert "RAW NOTE SHOULD NOT LEAK" not in serialized
     assert "/private/hidden.jpg" not in serialized
+    assert payload["diagnostics"]["photo_candidates_count"] == 2
+    assert payload["diagnostics"]["annotated_photo_candidates_count"] == 2
+    assert payload["diagnostics"]["unannotated_photo_candidates_count"] == 0
+    assert payload["diagnostics"]["date_range_query_column"] == "taken_at"
+    assert payload["diagnostics"]["date_range_query_status"] == "ok"
+    assert payload["diagnostics"]["nearby_month_counts"]["current_month_photo_count"] == 2
 
 
 def test_temporal_insufficient_evidence_returns_unknown(tmp_path):
@@ -238,6 +248,10 @@ def test_temporal_diagnostics_recommend_timestamp_backfill_when_taken_at_missing
     assert result.diagnostics["media_items_missing_taken_at_count"] == 1
     assert result.diagnostics["timestamp_backfill_recommended"] is True
     assert result.diagnostics["parsed_date_range"]["start"] == "2025-12-01"
+    assert result.diagnostics["parsed_date_range_start"] == "2025-12-01"
+    assert result.diagnostics["parsed_date_range_end"] == "2026-01-01"
+    assert result.diagnostics["date_range_query_status"] == "missing_taken_at"
+    assert result.diagnostics["photo_candidates_count"] == 0
 
 
 def test_daily_clustering_groups_by_day_and_keeps_weak_candidates_separate(tmp_path):
@@ -288,6 +302,8 @@ def test_chat_console_temporal_payload_separates_used_candidate_rejected_evidenc
     )
 
     assert payload["trace"]["temporal_event"] is True
+    assert payload["trace"]["temporal_diagnostics"]["parsed_date_range_start"] == "2025-12-01"
+    assert payload["trace"]["temporal_diagnostics"]["photo_candidates_count"] == 2
     assert payload["temporal_event"]["query"]["query_type"] == "temporal_event_search"
     used = next(item for item in payload["evidence"] if item["evidence_id"] == f"media_items:{used_id}")
     rejected = next(item for item in payload["evidence"] if item["evidence_id"] == f"media_items:{rejected_id}")
@@ -316,6 +332,7 @@ def test_pma_query_temporal_output_is_privacy_safe(capsys, tmp_path):
             "2025年12月で出かけたのはいつ？",
             "--db",
             str(db_path),
+            "--temporal-diagnostics",
         ],
     )
     output = capsys.readouterr().out
@@ -325,3 +342,89 @@ def test_pma_query_temporal_output_is_privacy_safe(capsys, tmp_path):
     assert f"media_items:{media_id}" in output
     assert "/private/cli-secret.jpg" not in output
     assert "駅とレストラン" not in output
+
+
+def test_temporal_line_notes_fallback_finds_support_when_photos_missing(tmp_path):
+    db_path = tmp_path / "temporal.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        line_id = _insert_line(
+            storage,
+            sent_at="2025-12-12T18:00:00",
+            text="PRIVATE LINE 外出 駅 食事",
+        )
+        note_id = _insert_note(
+            storage,
+            updated_at="2025-12-12T20:00:00",
+            body="PRIVATE NOTE 旅行 予定",
+        )
+    finally:
+        storage.close()
+
+    result = answer_temporal_event_query("2025年12月で出かけたのはいつ？", db_path=db_path)
+    payload = result.to_dict(show_answer=True)
+    serialized = json.dumps(payload, ensure_ascii=False)
+
+    assert result.ok is True
+    assert payload["answer"]["dates"][0]["date"] == "2025-12-12"
+    assert f"line_messages:{line_id}" in payload["answer"]["evidence_references"]
+    assert f"notes:{note_id}" in payload["answer"]["evidence_references"]
+    assert payload["answer"]["confidence"] < 0.45
+    assert payload["diagnostics"]["photo_candidates_count"] == 0
+    assert payload["diagnostics"]["line_date_support_count"] == 1
+    assert payload["diagnostics"]["notes_date_support_count"] == 1
+    assert payload["diagnostics"]["fallback_sources_used"] == ["line", "notes"]
+    fallback_evidence = next(item for item in payload["evidence"] if item["evidence_id"] == f"line_messages:{line_id}")
+    assert fallback_evidence["specificity"] == "weak"
+    assert fallback_evidence["should_use"] is True
+    assert "写真候補は見つかりませんでした" in payload["answer"]["conclusion"]
+    assert "PRIVATE LINE" not in serialized
+    assert "PRIVATE NOTE" not in serialized
+
+
+def test_temporal_line_notes_fallback_terms_are_configurable(tmp_path):
+    db_path = tmp_path / "temporal.sqlite3"
+    storage = initialize_database(db_path)
+    try:
+        line_id = _insert_line(
+            storage,
+            sent_at="2025-12-12T18:00:00",
+            text="PRIVATE LINE 美術館",
+        )
+    finally:
+        storage.close()
+
+    default_result = answer_temporal_event_query(
+        "2025年12月で出かけたのはいつ？",
+        db_path=db_path,
+    )
+    custom_result = answer_temporal_event_query(
+        "2025年12月で出かけたのはいつ？",
+        db_path=db_path,
+        fallback_terms=("美術館",),
+    )
+
+    assert default_result is not None
+    assert default_result.ok is False
+    assert custom_result is not None
+    payload = custom_result.to_dict(show_answer=True)
+    serialized = json.dumps(payload, ensure_ascii=False)
+    assert custom_result.ok is True
+    assert f"line_messages:{line_id}" in payload["answer"]["evidence_references"]
+    assert "PRIVATE LINE" not in serialized
+
+
+def test_temporal_all_sources_missing_reports_clear_unknown(tmp_path):
+    db_path = tmp_path / "temporal.sqlite3"
+    initialize_database(db_path).close()
+
+    result = answer_temporal_event_query("2025年12月で出かけたのはいつ？", db_path=db_path)
+    payload = result.to_dict(show_answer=True)
+
+    assert result.ok is False
+    assert payload["answer"]["confidence"] == 0.0
+    assert payload["answer"]["evidence_references"] == []
+    assert payload["diagnostics"]["photo_candidates_count"] == 0
+    assert payload["diagnostics"]["line_date_support_count"] == 0
+    assert payload["diagnostics"]["notes_date_support_count"] == 0
+    assert "写真、LINE、ノート" in payload["answer"]["unknowns"][0]

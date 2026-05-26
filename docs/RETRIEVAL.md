@@ -563,7 +563,7 @@ retrieval:
 
 1. Parse the date range deterministically for forms such as `2025年12月`,
    `2025/12`, `2025-12`, `去年12月`, `先月`, and `去年の夏`.
-2. Query `media_items` by `taken_at` or `modified_at` in that range.
+2. Query `media_items` by capture timestamp in `taken_at` in that range.
 3. Score outing likelihood from safe metadata and local photo annotation text.
 4. Group candidates by day and add same-day LINE/notes support counts.
 5. Return candidate dates with confidence and privacy-safe evidence IDs.
@@ -582,11 +582,41 @@ CLI smoke:
 
 ```bash
 pma query "2025年12月で出かけたのはいつ？" --config configs/paths.local.yaml
+pma query "2025年12月で出かけたのはいつ？" \
+  --config configs/paths.local.yaml \
+  --temporal-diagnostics
 ```
 
 Default output includes dates, counts, confidence, reason categories, and
 evidence IDs only. It does not print filenames, full paths, GPS coordinates,
 raw LINE text, note bodies, OCR text, or full photo captions.
+
+Phase 9-C adds count-only diagnostics for temporal failures. The result reports
+the parsed date range (`parsed_date_range_start`, `parsed_date_range_end`), the
+parser source, the temporal expression, timezone label, the query column
+(`taken_at`), timestamp coverage counts, photo candidate counts before and after
+media/annotation filters, removal reason counts, and nearby previous/current/next
+month photo counts. These fields make it possible to tell whether a temporal
+answer is unknown because photos truly are absent, because `taken_at` is missing,
+or because candidates were filtered out.
+
+If photo candidates are missing or weak, PMA searches LINE and notes in the same
+date range for configurable outing/event terms such as `出かけ`, `外出`, `駅`,
+`旅行`, `食事`, and `予定`. This fallback returns counts and safe evidence IDs
+only:
+
+```bash
+pma query "2025年12月で出かけたのはいつ？" \
+  --config configs/paths.local.yaml \
+  --temporal-diagnostics \
+  --temporal-fallback-term 外出 \
+  --temporal-fallback-term 旅行
+```
+
+When photos are absent but LINE/notes support exists, the answer says that photo
+evidence was not found and marks the date candidates as weaker text-support
+evidence. If all sources are empty, the answer remains unknown and says that no
+photos, LINE records, or notes were found in the parsed range.
 
 Temporal photo search depends on `media_items.taken_at`. If imported media rows
 do not have capture timestamps yet, run the timestamp audit:

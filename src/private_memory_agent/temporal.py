@@ -92,6 +92,24 @@ OUTING_INTENT_TERMS = (
     "屋外",
 )
 
+TEMPORAL_FALLBACK_TERMS = (
+    "行った",
+    "行く",
+    "出かけ",
+    "外出",
+    "会った",
+    "店",
+    "駅",
+    "旅行",
+    "集合",
+    "食事",
+    "予定",
+    "レストラン",
+    "カフェ",
+    "電車",
+    "移動",
+)
+
 
 @dataclass(frozen=True)
 class TemporalDateRange:
@@ -100,12 +118,18 @@ class TemporalDateRange:
     start: date
     end: date
     label: str
+    source: str = "deterministic"
+    expression: str | None = None
+    timezone: str | None = "local"
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "start": self.start.isoformat(),
             "end": self.end.isoformat(),
             "label": self.label,
+            "source": self.source,
+            "expression": self.expression or self.label,
+            "timezone": self.timezone,
             "end_exclusive": True,
         }
 
@@ -124,6 +148,9 @@ class TemporalEventQuery:
         return {
             "query_type": self.query_type,
             "date_range": self.date_range.to_dict(),
+            "date_range_source": self.date_range.source,
+            "parsed_temporal_expression": self.date_range.expression or self.date_range.label,
+            "timezone": self.date_range.timezone,
             "event_type": self.event_type,
             "preferred_sources": list(self.preferred_sources),
             "primary_tool": self.primary_tool,
@@ -294,6 +321,7 @@ def answer_temporal_event_query(
     top_days: int = DEFAULT_TOP_DAYS,
     max_photos: int = DEFAULT_MAX_PHOTOS,
     outing_threshold: float = DEFAULT_OUTING_THRESHOLD,
+    fallback_terms: tuple[str, ...] | None = None,
 ) -> TemporalEventResult | None:
     """Run the temporal outing workflow if the question matches."""
 
@@ -302,6 +330,7 @@ def answer_temporal_event_query(
         return None
     db = Path(db_path).expanduser()
     if not db.exists():
+        parsed_range = parsed.date_range.to_dict()
         answer = TemporalAnswer(
             answer_succeeded=True,
             conclusion="対象期間のローカルDBが見つからないため、不明です。",
@@ -317,10 +346,23 @@ def answer_temporal_event_query(
             answer=answer,
             evidence=(),
             candidate_dates=(),
-            diagnostics={"db_exists": False},
+            diagnostics={
+                "db_exists": False,
+                "parsed_date_range": parsed_range,
+                "parsed_date_range_start": parsed_range["start"],
+                "parsed_date_range_end": parsed_range["end"],
+                "date_range_source": parsed_range["source"],
+                "parsed_temporal_expression": parsed_range["expression"],
+                "timezone": parsed_range["timezone"],
+            },
             warnings=("SQLite DB does not exist",),
         )
 
+    photo_diagnostics = photo_date_range_diagnostics(
+        db,
+        start=parsed.date_range.start,
+        end=parsed.date_range.end,
+    )
     photos = search_photos_by_date_range(
         db,
         start=parsed.date_range.start,
@@ -339,33 +381,60 @@ def answer_temporal_event_query(
             key=lambda item: (-item.confidence, item.date),
         )[:top_days],
     )
-    used_clusters = tuple(item for item in ranked_clusters if item.confidence >= outing_threshold)
-    evidence = _build_temporal_evidence(photos, ranked_clusters, used_clusters)
-    answer = _build_temporal_answer(parsed, used_clusters, ranked_clusters)
+    photo_used_clusters = tuple(item for item in ranked_clusters if item.confidence >= outing_threshold)
+    fallback = _line_note_support_for_range(
+        db,
+        start=parsed.date_range.start,
+        end=parsed.date_range.end,
+        terms=fallback_terms or TEMPORAL_FALLBACK_TERMS,
+        limit=20,
+    )
+    fallback_clusters = (
+        _fallback_clusters_from_support(fallback)
+        if not photo_used_clusters or not photos
+        else ()
+    )
+    used_clusters = photo_used_clusters or fallback_clusters
+    candidate_clusters = _dedupe_clusters((*ranked_clusters, *fallback_clusters))[:top_days]
+    evidence = _build_temporal_evidence(photos, candidate_clusters, used_clusters)
+    answer = _build_temporal_answer(parsed, used_clusters, candidate_clusters)
     coverage = timestamp_coverage(db)
+    parsed_range = parsed.date_range.to_dict()
     diagnostics = {
         "db_exists": True,
         **coverage,
-        "parsed_date_range": parsed.date_range.to_dict(),
+        **photo_diagnostics,
+        "parsed_date_range": parsed_range,
+        "parsed_date_range_start": parsed_range["start"],
+        "parsed_date_range_end": parsed_range["end"],
+        "date_range_source": parsed_range["source"],
+        "parsed_temporal_expression": parsed_range["expression"],
+        "timezone": parsed_range["timezone"],
         "photo_candidates_examined": len(photos),
-        "candidate_day_count": len(ranked_clusters),
+        "candidate_day_count": len(candidate_clusters),
         "used_day_count": len(used_clusters),
         "rejected_photo_evidence_count": sum(1 for item in evidence if item.evidence_role == "rejected"),
         "candidate_photo_evidence_count": sum(1 for item in evidence if item.evidence_role == "candidate"),
         "used_evidence_count": len(answer.evidence_references),
         "weak_evidence_separated": True,
+        "line_date_support_count": fallback["line_date_support_count"],
+        "notes_date_support_count": fallback["notes_date_support_count"],
+        "support_evidence_ids": list(fallback["support_evidence_ids"]),
+        "fallback_sources_used": list(fallback["fallback_sources_used"]),
     }
     warnings: list[str] = []
-    if photos and not used_clusters:
+    if photos and not photo_used_clusters and not fallback_clusters:
         warnings.append("photo candidates were found, but outing evidence was weak")
-    if not photos:
+    if not photos and not fallback_clusters:
         warnings.append("no photos were found in the parsed date range")
+    if not photos and fallback_clusters:
+        warnings.append("no photos were found in the parsed date range; line/notes fallback found support")
     return TemporalEventResult(
         ok=bool(used_clusters),
         query=parsed,
         answer=answer,
         evidence=evidence,
-        candidate_dates=ranked_clusters,
+        candidate_dates=candidate_clusters,
         diagnostics=diagnostics,
         warnings=tuple(warnings),
     )
@@ -379,7 +448,7 @@ def search_photos_by_date_range(
     limit: int = DEFAULT_MAX_PHOTOS,
     outing_threshold: float = DEFAULT_OUTING_THRESHOLD,
 ) -> tuple[PhotoCandidate, ...]:
-    """Search photos by taken/modified timestamp without exposing private paths."""
+    """Search photos by capture timestamp without exposing private paths."""
 
     connection = _connect(db_path)
     try:
@@ -409,16 +478,17 @@ def search_photos_by_date_range(
                 LIMIT 1
               )
             WHERE m.is_excluded = 0
-              AND COALESCE(m.taken_at, m.modified_at) >= ?
-              AND COALESCE(m.taken_at, m.modified_at) < ?
-            ORDER BY COALESCE(m.taken_at, m.modified_at), m.id
+              AND m.media_type IN ('image', 'video')
+              AND m.taken_at >= ?
+              AND m.taken_at < ?
+            ORDER BY m.taken_at, m.id
             LIMIT ?
             """,
             (start.isoformat(), end.isoformat(), int(limit)),
         ).fetchall()
         candidates: list[PhotoCandidate] = []
         for row in rows:
-            occurred_at = str(row["taken_at"] or row["modified_at"] or "")
+            occurred_at = str(row["taken_at"] or "")
             if not occurred_at:
                 continue
             annotation_text = media_annotation_search_text(row["value_text"], row["data_json"])
@@ -447,6 +517,99 @@ def search_photos_by_date_range(
                 ),
             )
         return tuple(candidates)
+    finally:
+        connection.close()
+
+
+def photo_date_range_diagnostics(
+    db_path: Path | str,
+    *,
+    start: date,
+    end: date,
+) -> dict[str, Any]:
+    """Return count-only diagnostics for photo date-range search."""
+
+    connection = _connect(db_path)
+    try:
+        if not _table_exists(connection, "media_items"):
+            return {
+                "date_range_query_column": "taken_at",
+                "date_range_query_status": "media_items_table_missing",
+                "photo_candidates_count": 0,
+                "annotated_photo_candidates_count": 0,
+                "unannotated_photo_candidates_count": 0,
+                "candidates_before_media_type_filter": 0,
+                "candidates_after_media_type_filter": 0,
+                "candidates_before_annotation_filter": 0,
+                "candidates_after_annotation_filter": 0,
+                "removed_reason_counts": {},
+                "nearby_month_counts": {},
+            }
+        start_text = start.isoformat()
+        end_text = end.isoformat()
+        before_media_type = _count(
+            connection,
+            """
+            SELECT COUNT(*) AS count
+            FROM media_items
+            WHERE is_excluded = 0
+              AND taken_at >= ?
+              AND taken_at < ?
+            """,
+            (start_text, end_text),
+        )
+        after_media_type = _count(
+            connection,
+            """
+            SELECT COUNT(*) AS count
+            FROM media_items
+            WHERE is_excluded = 0
+              AND media_type IN ('image', 'video')
+              AND taken_at >= ?
+              AND taken_at < ?
+            """,
+            (start_text, end_text),
+        )
+        annotated = _count(
+            connection,
+            """
+            SELECT COUNT(DISTINCT m.id) AS count
+            FROM media_items m
+            JOIN media_annotations a ON a.media_item_id = m.id
+            WHERE m.is_excluded = 0
+              AND a.is_excluded = 0
+              AND a.annotation_type = 'vision'
+              AND m.media_type IN ('image', 'video')
+              AND m.taken_at >= ?
+              AND m.taken_at < ?
+            """,
+            (start_text, end_text),
+        )
+        unannotated = max(0, after_media_type - annotated)
+        coverage = timestamp_coverage(db_path)
+        status = "ok"
+        if coverage["media_items_total_count"] and coverage["media_items_with_taken_at_count"] == 0:
+            status = "missing_taken_at"
+        elif before_media_type == 0:
+            status = "no_rows_in_date_range"
+        elif after_media_type == 0:
+            status = "all_removed_by_media_type_filter"
+        removed = {}
+        if before_media_type > after_media_type:
+            removed["unsupported_media_type"] = before_media_type - after_media_type
+        return {
+            "date_range_query_column": "taken_at",
+            "date_range_query_status": status,
+            "photo_candidates_count": after_media_type,
+            "annotated_photo_candidates_count": annotated,
+            "unannotated_photo_candidates_count": unannotated,
+            "candidates_before_media_type_filter": before_media_type,
+            "candidates_after_media_type_filter": after_media_type,
+            "candidates_before_annotation_filter": after_media_type,
+            "candidates_after_annotation_filter": after_media_type,
+            "removed_reason_counts": removed,
+            "nearby_month_counts": _nearby_month_counts(connection, start=start, end=end),
+        }
     finally:
         connection.close()
 
@@ -556,7 +719,7 @@ def _build_temporal_answer(
                 "写真だけでは外出目的は断定できません。",
             )
             if candidate_clusters
-            else ("対象期間に写真候補が見つかりませんでした。",),
+            else ("対象期間に写真、LINE、ノートの外出関連候補が見つかりませんでした。",),
         )
     display_dates = tuple(sorted(used_clusters, key=lambda item: item.date))
     date_text = "、".join(_format_japanese_month_day(item.date) for item in display_dates)
@@ -569,16 +732,28 @@ def _build_temporal_answer(
         ),
     )
     sources = _sources_for_ids(evidence_ids)
+    photo_backed = any(cluster.photo_count > 0 for cluster in display_dates)
+    if photo_backed:
+        conclusion = f"{query.date_range.label}に外出していた可能性がある日は、{date_text}です。"
+        unknowns = ("写真と注釈からの推定であり、外出目的までは断定できません。",)
+    else:
+        conclusion = (
+            f"{query.date_range.label}の写真候補は見つかりませんでしたが、"
+            f"LINE/ノートには外出に関係しそうな記録候補がある日は、{date_text}です。"
+        )
+        confidence = min(confidence, 0.42)
+        unknowns = (
+            "写真では確認できていません。",
+            "LINE/ノートの語句一致による弱い推定であり、外出事実は断定できません。",
+        )
     return TemporalAnswer(
         answer_succeeded=True,
-        conclusion=(
-            f"{query.date_range.label}に外出していた可能性がある日は、{date_text}です。"
-        ),
+        conclusion=conclusion,
         confidence=confidence,
         dates=display_dates,
         evidence_references=evidence_ids,
         used_sources=sources,
-        unknowns=("写真と注釈からの推定であり、外出目的までは断定できません。",),
+        unknowns=unknowns,
     )
 
 
@@ -617,14 +792,14 @@ def _build_temporal_evidence(
         photo = photo_by_id.get(evidence_id)
         is_used = evidence_id in used_set
         role = "used" if is_used else ("candidate" if evidence_id in candidate_set else "rejected")
-        score = photo.outing_score if photo is not None else 0.6
+        score = photo.outing_score if photo is not None else 0.35
         evidence.append(
             TemporalEvidenceItem(
                 evidence_id=evidence_id,
                 source_type=_source_from_evidence_id(evidence_id),
                 should_use=is_used,
                 evidence_role=role,
-                specificity="specific" if is_used else ("weak" if role == "candidate" else "weak"),
+                specificity="specific" if is_used and photo is not None else "weak",
                 relevance_score=score if is_used else min(score, 0.35),
                 reason_category=_reason_category(photo, role),
                 occurred_at=photo.taken_at if photo is not None else None,
@@ -677,26 +852,149 @@ def _line_note_support_for_day(db_path: Path | str, day: str, *, limit: int) -> 
         connection.close()
 
 
+def _line_note_support_for_range(
+    db_path: Path | str,
+    *,
+    start: date,
+    end: date,
+    terms: tuple[str, ...],
+    limit: int,
+) -> dict[str, Any]:
+    connection = _connect(db_path)
+    try:
+        start_text = start.isoformat()
+        end_text = end.isoformat()
+        normalized_terms = tuple(normalize_text(term) for term in terms if normalize_text(term))
+        line_ids: list[str] = []
+        note_ids: list[str] = []
+        by_day: dict[str, dict[str, Any]] = {}
+        if _table_exists(connection, "line_messages"):
+            rows = connection.execute(
+                """
+                SELECT id, sent_at, COALESCE(normalized_text, body_text, '') AS searchable_text
+                FROM line_messages
+                WHERE is_excluded = 0
+                  AND sent_at >= ?
+                  AND sent_at < ?
+                ORDER BY sent_at, id
+                LIMIT 2000
+                """,
+                (start_text, end_text),
+            ).fetchall()
+            for row in rows:
+                if not _text_has_any_term(row["searchable_text"], normalized_terms):
+                    continue
+                evidence_id = f"line_messages:{int(row['id'])}"
+                line_ids.append(evidence_id)
+                _add_support_day(by_day, _date_part(str(row["sent_at"])), evidence_id, source="line")
+                if len(line_ids) >= limit:
+                    break
+        if _table_exists(connection, "notes"):
+            rows = connection.execute(
+                """
+                SELECT id,
+                       COALESCE(updated_at_source, created_at_source, updated_at) AS occurred_at,
+                       COALESCE(normalized_text, title, '') || ' ' || COALESCE(body_text, '') AS searchable_text
+                FROM notes
+                WHERE is_excluded = 0
+                  AND COALESCE(updated_at_source, created_at_source, updated_at) >= ?
+                  AND COALESCE(updated_at_source, created_at_source, updated_at) < ?
+                ORDER BY COALESCE(updated_at_source, created_at_source, updated_at), id
+                LIMIT 2000
+                """,
+                (start_text, end_text),
+            ).fetchall()
+            for row in rows:
+                if not _text_has_any_term(row["searchable_text"], normalized_terms):
+                    continue
+                evidence_id = f"notes:{int(row['id'])}"
+                note_ids.append(evidence_id)
+                _add_support_day(by_day, _date_part(str(row["occurred_at"])), evidence_id, source="notes")
+                if len(note_ids) >= limit:
+                    break
+        source_used: list[str] = []
+        if line_ids:
+            source_used.append("line")
+        if note_ids:
+            source_used.append("notes")
+        return {
+            "line_date_support_count": len(line_ids),
+            "notes_date_support_count": len(note_ids),
+            "support_evidence_ids": _unique_ids(tuple((*line_ids, *note_ids))),
+            "fallback_sources_used": tuple(source_used),
+            "support_by_day": by_day,
+        }
+    finally:
+        connection.close()
+
+
+def _fallback_clusters_from_support(support: dict[str, Any]) -> tuple[DailyEventCluster, ...]:
+    clusters: list[DailyEventCluster] = []
+    for day, payload in sorted(support.get("support_by_day", {}).items()):
+        ids = tuple(payload.get("evidence_ids", ()))[:4]
+        if not ids:
+            continue
+        line_count = int(payload.get("line", 0))
+        note_count = int(payload.get("notes", 0))
+        confidence = 0.34 + (0.04 if line_count else 0.0) + (0.04 if note_count else 0.0)
+        clusters.append(
+            DailyEventCluster(
+                date=day,
+                photo_count=0,
+                annotated_photo_count=0,
+                outing_score=0.0,
+                confidence=_clamp(confidence),
+                top_evidence_ids=ids,
+                candidate_evidence_ids=(),
+                rejected_evidence_ids=(),
+                line_support_count=line_count,
+                notes_support_count=note_count,
+                support_evidence_ids=ids,
+                reason="temporal_line_notes_fallback_support",
+            ),
+        )
+    clusters.sort(key=lambda item: (-item.confidence, item.date))
+    return tuple(clusters[:DEFAULT_TOP_DAYS])
+
+
 def _parse_date_range(text: str, *, today: date) -> TemporalDateRange | None:
     year_month = re.search(r"(?P<year>\d{4})\s*年\s*(?P<month>\d{1,2})\s*月", text)
     if year_month:
-        return _month_range(int(year_month.group("year")), int(year_month.group("month")))
+        return _month_range(
+            int(year_month.group("year")),
+            int(year_month.group("month")),
+            expression=_clean_expression(year_month.group(0)),
+        )
     slash_month = re.search(r"(?P<year>\d{4})\s*[-/]\s*(?P<month>\d{1,2})(?!\s*[-/]\s*\d)", text)
     if slash_month:
-        return _month_range(int(slash_month.group("year")), int(slash_month.group("month")))
+        return _month_range(
+            int(slash_month.group("year")),
+            int(slash_month.group("month")),
+            expression=_clean_expression(slash_month.group(0)),
+        )
     last_year_month = re.search(r"去年(?:の)?\s*(?P<month>\d{1,2})\s*月", text)
     if last_year_month:
-        return _month_range(today.year - 1, int(last_year_month.group("month")), label_prefix="去年")
+        return _month_range(
+            today.year - 1,
+            int(last_year_month.group("month")),
+            label_prefix="去年",
+            expression=_clean_expression(last_year_month.group(0)),
+        )
     if "先月" in text:
         year = today.year
         month = today.month - 1
         if month <= 0:
             year -= 1
             month = 12
-        return _month_range(year, month, label="先月")
+        return _month_range(year, month, label="先月", expression="先月")
     if "去年" in text and "夏" in text:
         year = today.year - 1
-        return TemporalDateRange(date(year, 6, 1), date(year, 9, 1), f"{year}年夏")
+        return TemporalDateRange(
+            date(year, 6, 1),
+            date(year, 9, 1),
+            f"{year}年夏",
+            expression="去年の夏",
+        )
     return None
 
 
@@ -706,6 +1004,7 @@ def _month_range(
     *,
     label: str | None = None,
     label_prefix: str | None = None,
+    expression: str | None = None,
 ) -> TemporalDateRange | None:
     if month < 1 or month > 12:
         return None
@@ -715,11 +1014,95 @@ def _month_range(
     rendered = label or f"{year}年{month}月"
     if label_prefix:
         rendered = f"{label_prefix}{month}月"
-    return TemporalDateRange(start=start, end=end, label=rendered)
+    return TemporalDateRange(start=start, end=end, label=rendered, expression=expression or rendered)
 
 
 def _empty_support() -> dict[str, Any]:
     return {"line_support_count": 0, "notes_support_count": 0, "support_evidence_ids": ()}
+
+
+def _add_support_day(
+    by_day: dict[str, dict[str, Any]],
+    day: str,
+    evidence_id: str,
+    *,
+    source: str,
+) -> None:
+    payload = by_day.setdefault(day, {"line": 0, "notes": 0, "evidence_ids": []})
+    payload[source] = int(payload.get(source, 0)) + 1
+    if evidence_id not in payload["evidence_ids"]:
+        payload["evidence_ids"].append(evidence_id)
+
+
+def _text_has_any_term(value: Any, terms: tuple[str, ...]) -> bool:
+    text = normalize_text(str(value or ""))
+    if not text:
+        return False
+    return any(term in text for term in terms)
+
+
+def _dedupe_clusters(clusters: tuple[DailyEventCluster, ...]) -> tuple[DailyEventCluster, ...]:
+    by_day: dict[str, DailyEventCluster] = {}
+    for cluster in clusters:
+        existing = by_day.get(cluster.date)
+        if existing is None or cluster.confidence > existing.confidence:
+            by_day[cluster.date] = cluster
+    return tuple(sorted(by_day.values(), key=lambda item: (-item.confidence, item.date)))
+
+
+def _clean_expression(value: str) -> str:
+    return re.sub(r"\s+", "", value.strip())
+
+
+def _count(connection: sqlite3.Connection, sql: str, params: tuple[Any, ...]) -> int:
+    row = connection.execute(sql, params).fetchone()
+    return int(row["count"] or 0)
+
+
+def _nearby_month_counts(
+    connection: sqlite3.Connection,
+    *,
+    start: date,
+    end: date,
+) -> dict[str, Any]:
+    previous_start = _add_months(_month_start(start), -1)
+    previous_end = _month_start(start)
+    next_start = _month_start(end)
+    next_end = _add_months(next_start, 1)
+    return {
+        "previous_month": previous_start.strftime("%Y-%m"),
+        "previous_month_photo_count": _photo_count_between(connection, previous_start, previous_end),
+        "current_range": f"{start.isoformat()}..{end.isoformat()}",
+        "current_month_photo_count": _photo_count_between(connection, start, end),
+        "next_month": next_start.strftime("%Y-%m"),
+        "next_month_photo_count": _photo_count_between(connection, next_start, next_end),
+    }
+
+
+def _photo_count_between(connection: sqlite3.Connection, start: date, end: date) -> int:
+    return _count(
+        connection,
+        """
+        SELECT COUNT(*) AS count
+        FROM media_items
+        WHERE is_excluded = 0
+          AND media_type IN ('image', 'video')
+          AND taken_at >= ?
+          AND taken_at < ?
+        """,
+        (start.isoformat(), end.isoformat()),
+    )
+
+
+def _month_start(value: date) -> date:
+    return date(value.year, value.month, 1)
+
+
+def _add_months(value: date, months: int) -> date:
+    month_index = (value.year * 12 + value.month - 1) + months
+    year = month_index // 12
+    month = month_index % 12 + 1
+    return date(year, month, 1)
 
 
 def _cluster_reason(

@@ -269,6 +269,7 @@ def _maybe_temporal_console_payload(options: ChatConsoleOptions) -> dict[str, An
             "semantic_candidate_count": 0,
             "reranked_candidate_count": 0,
             "retrieval_stage_counts": result.diagnostics,
+            "temporal_diagnostics": result.diagnostics,
             "repair_attempted": False,
             "repair_improved": False,
             "retrieval_repair_count": 0,
