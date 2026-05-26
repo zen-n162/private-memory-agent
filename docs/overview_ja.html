@@ -752,9 +752,13 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           9-E では chat UI の evidence viewer を改善しました。長い evidence ID は折り返し可能な chip/list として表示し、
           temporal event query の candidate date は展開可能な card で表示します。card には date、confidence、
           photo count、annotation count、LINE/notes support count、reason summary、supporting evidence を出します。
+          展開後は Photos、LINE、Notes、Rejected / Weak evidence の local tab で確認できます。
+          <code>outing_annotation_keyword</code> のような machine reason code は内部に残しつつ、
+          UI では「外出を示す可能性のある注釈があります」のような日本語 label も表示します。
           写真 evidence は <code>media_item_id</code> だけを受け付ける localhost thumbnail endpoint から小さな preview を表示できます。
           backend は任意の filesystem path を受け取らず、thumbnail response に filename、full path、GPS、EXIF、OCR を含めません。
-          LINE/notes snippet と photo annotation summary は <code>show_snippets</code> を明示した場合だけ truncated 表示されます。
+          LINE/notes snippet と photo annotation summary は <code>show_snippets</code> を明示した場合だけ truncated 表示され、
+          read-more で local に展開できます。
           <code>show_full_text</code> と raw model output は既定 OFF です。
         </p>
         <p>
@@ -818,7 +822,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
       <section id="history">
         <h2>更新履歴</h2>
         <ul>
-          <li>2026-05-26: local chat UI の evidence viewer を改善し、candidate date card、path-free thumbnail、source 別 evidence group を追加。</li>
+          <li>2026-05-26: local chat UI の evidence viewer を改善し、candidate date accordion、source tab、reason label、path-free thumbnail を追加。</li>
           <li>2026-05-26: timestamp backfill の実書き込みを <code>--apply</code> で明示し、dry-run/apply message を追加。</li>
           <li>2026-05-26: timestamp audit/backfill が <code>storage.sqlite_path</code> を使うようにし、期待 DB へ書き込む経路を修正。</li>
           <li>2026-05-26: timestamp backfill の apply mode に <code>--commit-interval</code> を追加し、長時間実行中の commit を明示。</li>

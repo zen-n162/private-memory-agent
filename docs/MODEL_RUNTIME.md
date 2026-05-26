@@ -767,7 +767,8 @@ Answer text may contain private evidence-derived content even when raw evidence
 is hidden. The local console shows it by default for usability. Use the
 `show_answer` toggle to hide it for metadata-only checks. Keep
 `show_snippets` off unless you explicitly need truncated local evidence
-snippets. Photo thumbnails are served only by indexed `media_item_id` through a
-local endpoint and do not reveal paths. The console never prints raw LINE
-messages, note bodies, captions, filenames, full paths, GPS, EXIF, OCR, or raw
-model output by default.
+snippets. Candidate-date cards use local source tabs and show Japanese reason
+labels for machine reason codes. Photo thumbnails are served only by indexed
+`media_item_id` through a local endpoint and do not reveal paths. The console
+never prints raw LINE messages, note bodies, captions, filenames, full paths,
+GPS, EXIF, OCR, or raw model output by default.

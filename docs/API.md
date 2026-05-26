@@ -59,8 +59,10 @@ generation and evidence snippets remain explicit choices. It displays:
 - used sources
 - evidence references
 - grouped candidate-date cards for temporal event answers
+- source tabs inside candidate-date cards
 - path-free photo thumbnails for selected evidence items
 - truncated LINE/note snippets only when explicitly enabled
+- human-readable reason labels alongside machine reason codes
 - evidence ids
 - source coverage
 - per-evidence relevance metadata
@@ -71,10 +73,10 @@ generation and evidence snippets remain explicit choices. It displays:
 
 Snippets are hidden by default. Photo thumbnails can be shown in the local UI,
 but are served by indexed `media_item_id` only and never by arbitrary path. If
-`show_snippets` is enabled, the API returns truncated/redacted snippets only.
-Raw model output is not returned by the console endpoint. Answer text may still
-contain private evidence-derived information, so do not paste local answer
-output into public chats when it is private.
+`show_snippets` is enabled, the API returns truncated/redacted snippets with
+read-more preview metadata only. Raw model output is not returned by the console
+endpoint. Answer text may still contain private evidence-derived information,
+so do not paste local answer output into public chats when it is private.
 
 ## Chat Query Endpoint
 
@@ -106,9 +108,10 @@ include raw LINE text, note bodies, captions, file names, paths, GPS, EXIF, OCR,
 raw model output, full retrieval plans, or full evidence snippets.
 
 `GET /api/evidence/media/{media_item_id}/thumbnail` returns a resized JPEG
-preview for an indexed image evidence item. It accepts only the database ID and
-returns safe errors; it does not expose the original filename, full path, GPS,
-EXIF, or OCR.
+preview for an indexed image evidence item. The shorter alias
+`GET /api/media/{media_item_id}/thumbnail` is also available. The route accepts
+only the database ID and returns safe errors; it does not expose the original
+filename, full path, GPS, EXIF, or OCR.
 
 ## System Status Endpoint
 

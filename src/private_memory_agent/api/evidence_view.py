@@ -14,8 +14,29 @@ from private_memory_agent.retrieval.text import media_annotation_search_text
 DISPLAY_SOURCES = ("photos", "line", "notes", "unknown")
 DEFAULT_THUMBNAIL_MAX_SIDE = 320
 MAX_THUMBNAIL_MAX_SIDE = 1024
+DEFAULT_CANDIDATE_THUMBNAIL_LIMIT = 6
 _PATH_LIKE_RE = re.compile(r"(?:/[^\s]+)+|[A-Za-z]:\\[^\s]+")
 _PRECISE_DECIMAL_RE = re.compile(r"(?<!\d)-?\d{2,3}\.\d{4,}(?!\d)")
+REASON_LABELS_JA: dict[str, str] = {
+    "image_media": "写真メディアが存在します",
+    "annotation_available": "画像注釈が利用可能です",
+    "location_metadata_present": "位置情報の有無が手がかりになります",
+    "outing_annotation_keyword": "外出を示す可能性のある注釈があります",
+    "same_day_line_support": "同日のLINE記録があります",
+    "same_day_note_support": "同日のノート記録があります",
+    "weak_photo_annotation_or_metadata": "写真・メタデータだけでは根拠が弱いです",
+    "no_plan_concept_match": "質問意図と強く一致しないため弱い根拠です",
+    "low_outing_document_or_screenshot_keyword": "画面・文書系の写真らしく外出根拠として弱いです",
+    "weak_metadata_only": "メタデータだけでは判断材料が不足しています",
+    "temporal_line_notes_fallback_support": "写真以外の同日記録から弱く補助されています",
+    "temporal_outing_photo_match": "外出らしい写真注釈と一致しています",
+    "temporal_outing_day_support": "同日の記録が外出候補を補助しています",
+    "examined_candidate_not_used": "確認しましたが回答根拠には使っていません",
+    "weak_or_rejected_temporal_candidate": "弱い候補として退けています",
+    "generic_only_match": "一般的な語だけが一致しており根拠として弱いです",
+    "weak_match": "一致が弱く、回答根拠としては慎重に扱います",
+    "unrelated": "質問との関連が低いと判断されています",
+}
 
 
 @dataclass(frozen=True)
@@ -28,6 +49,8 @@ class EvidenceDisplayOptions:
     snippet_chars: int = 160
     full_text_chars: int = 1000
     thumbnail_prefix: str = "/api/evidence/media"
+    expanded_snippet_chars: int = 420
+    thumbnail_initial_limit: int = DEFAULT_CANDIDATE_THUMBNAIL_LIMIT
 
 
 class EvidenceThumbnailError(RuntimeError):
@@ -92,6 +115,7 @@ def build_evidence_display_payload(
             "gps_hidden": True,
             "exif_hidden": True,
             "raw_model_output_hidden": True,
+            "thumbnail_initial_limit": active_options.thumbnail_initial_limit,
         },
     }
 
@@ -186,6 +210,7 @@ def _photo_detail(
     if row is None:
         return _fallback_detail(evidence_id, base)
     annotation_summary: str | None = None
+    annotation_summary_full: str | None = None
     if options.show_snippets and _table_exists(connection, "media_annotations"):
         annotation = connection.execute(
             """
@@ -200,10 +225,12 @@ def _photo_detail(
             (media_item_id,),
         ).fetchone()
         if annotation is not None:
+            annotation_text = media_annotation_search_text(annotation["value_text"], annotation["data_json"])
             annotation_summary = _safe_truncate(
-                media_annotation_search_text(annotation["value_text"], annotation["data_json"]),
-                _text_limit(options),
+                annotation_text,
+                options.snippet_chars,
             )
+            annotation_summary_full = _safe_truncate(annotation_text, _expanded_text_limit(options))
     detail = _base_detail(evidence_id, "photos", base)
     detail.update(
         {
@@ -217,6 +244,8 @@ def _photo_detail(
             if options.show_photo_thumbnails
             else None,
             "annotation_summary": annotation_summary,
+            "annotation_summary_full_preview": annotation_summary_full,
+            "annotation_summary_has_more": bool(annotation_summary_full and annotation_summary_full != annotation_summary),
             "annotation_summary_hidden": annotation_summary is None,
         },
     )
@@ -244,8 +273,11 @@ def _line_detail(
     if row is None:
         return _fallback_detail(evidence_id, base)
     snippet = None
+    full_preview = None
     if options.show_snippets:
-        snippet = _safe_truncate(row["body_text"] or row["normalized_text"] or "", _text_limit(options))
+        raw_text = row["body_text"] or row["normalized_text"] or ""
+        snippet = _safe_truncate(raw_text, options.snippet_chars)
+        full_preview = _safe_truncate(raw_text, _expanded_text_limit(options))
     detail = _base_detail(evidence_id, "line", base)
     detail.update(
         {
@@ -254,6 +286,10 @@ def _line_detail(
             "speaker": _safe_truncate(row["sender_id"] or "", 80) if options.show_snippets else None,
             "speaker_hidden": not options.show_snippets,
             "snippet": snippet,
+            "snippet_preview": snippet,
+            "snippet_full_preview": full_preview,
+            "snippet_has_more": bool(full_preview and full_preview != snippet),
+            "snippet_chars": options.snippet_chars,
             "snippet_hidden": snippet is None,
         },
     )
@@ -282,9 +318,12 @@ def _note_detail(
         return _fallback_detail(evidence_id, base)
     title = None
     snippet = None
+    full_preview = None
     if options.show_snippets:
         title = _safe_truncate(row["title"] or "", 120)
-        snippet = _safe_truncate(row["body_text"] or row["normalized_text"] or "", _text_limit(options))
+        raw_text = row["body_text"] or row["normalized_text"] or ""
+        snippet = _safe_truncate(raw_text, options.snippet_chars)
+        full_preview = _safe_truncate(raw_text, _expanded_text_limit(options))
     detail = _base_detail(evidence_id, "notes", base)
     detail.update(
         {
@@ -293,6 +332,10 @@ def _note_detail(
             "title_hidden": title is None,
             "timestamp": row["updated_at_source"] or row["created_at_source"],
             "snippet": snippet,
+            "snippet_preview": snippet,
+            "snippet_full_preview": full_preview,
+            "snippet_has_more": bool(full_preview and full_preview != snippet),
+            "snippet_chars": options.snippet_chars,
             "snippet_hidden": snippet is None,
         },
     )
@@ -300,16 +343,26 @@ def _note_detail(
 
 
 def _base_detail(evidence_id: str, source: str, base: dict[str, Any]) -> dict[str, Any]:
+    should_use = base.get("should_use")
+    used_by_answer = bool(base.get("used_by_answer")) and should_use is not False
+    role = str(base.get("evidence_role") or "")
+    if should_use is False:
+        role = "rejected"
+        used_by_answer = False
+    elif not role:
+        role = "used" if used_by_answer else "candidate"
+    reason_category = base.get("reason_category")
     return {
         "evidence_id": evidence_id,
         "source": source,
         "source_type": source,
-        "evidence_role": base.get("evidence_role") or ("used" if base.get("used_by_answer") else "candidate"),
-        "should_use": base.get("should_use"),
+        "evidence_role": role,
+        "should_use": should_use,
         "specificity": base.get("specificity"),
         "relevance_score": base.get("relevance_score"),
-        "reason_category": base.get("reason_category"),
-        "used_by_answer": bool(base.get("used_by_answer")),
+        "reason_category": reason_category,
+        "reason_label": reason_label_for_code(reason_category),
+        "used_by_answer": used_by_answer,
         "occurred_at": base.get("occurred_at"),
     }
 
@@ -332,10 +385,22 @@ def _render_candidate_date(
     candidate_details = _details_for_ids(candidate_ids, details_by_id)
     rejected_details = _details_for_ids(rejected_ids, details_by_id)
     grouped_used = _group_details_by_source(used_details)
+    grouped_candidate = _group_details_by_source(candidate_details)
+    reason_codes = _reason_codes(candidate_date.get("reason"))
+    reason_labels = [reason_label_for_code(code) for code in reason_codes]
+    used_evidence = used_details
+    candidate_evidence = candidate_details
+    rejected_evidence = rejected_details
+    photos = [*grouped_used["photos"], *grouped_candidate["photos"]]
+    line_snippets = [*grouped_used["line"], *grouped_candidate["line"]]
+    note_snippets = [*grouped_used["notes"], *grouped_candidate["notes"]]
     return {
         "date": candidate_date.get("date"),
         "confidence": candidate_date.get("confidence"),
         "reason": candidate_date.get("reason"),
+        "reason_codes": reason_codes,
+        "reason_labels": reason_labels,
+        "reason_summary": " / ".join(reason_labels) if reason_labels else candidate_date.get("reason"),
         "photo_count": candidate_date.get("photo_count", 0),
         "annotated_photo_count": candidate_date.get("annotated_photo_count", 0),
         "line_support_count": candidate_date.get("line_support_count", 0),
@@ -344,8 +409,13 @@ def _render_candidate_date(
         "supporting_photos": grouped_used["photos"],
         "supporting_line_snippets": grouped_used["line"],
         "supporting_note_snippets": grouped_used["notes"],
-        "candidate_evidence": candidate_details,
-        "rejected_evidence": rejected_details,
+        "used_evidence": used_evidence,
+        "candidate_evidence": candidate_evidence,
+        "rejected_evidence": rejected_evidence,
+        "photos": photos,
+        "line_snippets": line_snippets,
+        "note_snippets": note_snippets,
+        "thumbnail_initial_limit": DEFAULT_CANDIDATE_THUMBNAIL_LIMIT,
         "evidence_ids": {
             "used": used_ids,
             "candidate": candidate_ids,
@@ -373,6 +443,27 @@ def _group_ids_by_source(evidence_ids: list[str] | tuple[str, ...]) -> dict[str,
     for evidence_id in evidence_ids:
         groups.setdefault(_source_from_evidence_id(evidence_id), []).append(evidence_id)
     return groups
+
+
+def reason_label_for_code(value: Any) -> str | None:
+    """Return a human-readable Japanese reason label for UI display."""
+
+    code = str(value or "").strip()
+    if not code:
+        return None
+    return REASON_LABELS_JA.get(code, code.replace("_", " "))
+
+
+def _reason_codes(value: Any) -> list[str]:
+    if not value:
+        return []
+    return _unique_strings(
+        [
+            part.strip()
+            for part in str(value).split(",")
+            if part.strip()
+        ],
+    )
 
 
 def _candidate_date_evidence_ids(candidate_date: dict[str, Any]) -> list[str]:
@@ -436,8 +527,10 @@ def _safe_truncate(value: Any, max_chars: int) -> str:
     return text[: max_chars - 3].rstrip() + "..."
 
 
-def _text_limit(options: EvidenceDisplayOptions) -> int:
-    return options.full_text_chars if options.show_full_text else options.snippet_chars
+def _expanded_text_limit(options: EvidenceDisplayOptions) -> int:
+    if options.show_full_text:
+        return options.full_text_chars
+    return max(options.snippet_chars, min(options.expanded_snippet_chars, options.full_text_chars))
 
 
 def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:

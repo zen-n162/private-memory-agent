@@ -551,20 +551,25 @@ Phase 9-E adds a richer evidence viewer to the same local UI. Long evidence ID
 lists render as wrapping chips instead of a single overflowing line. Temporal
 candidate dates render as expandable cards. Each card groups supporting photos,
 LINE messages, and notes, and separates supporting evidence from inspected but
-unused and rejected/weak evidence.
+unused and rejected/weak evidence. Inside each expanded date, simple local tabs
+separate Photos, LINE, Notes, and Rejected / Weak evidence. Machine reason codes
+such as `outing_annotation_keyword` are preserved for diagnostics but displayed
+with Japanese labels such as "外出を示す可能性のある注釈があります".
 
 Photo thumbnails are served through a constrained local endpoint:
 
 ```text
 GET /api/evidence/media/{media_item_id}/thumbnail
+GET /api/media/{media_item_id}/thumbnail
 ```
 
 The endpoint accepts only an indexed `media_item_id`, never a filesystem path.
 It resizes and re-encodes the local image as a small JPEG thumbnail and does not
 return filenames, full paths, GPS, EXIF, or OCR. LINE and note snippets remain
 hidden unless `show_snippets` is explicitly enabled; when enabled they are
-truncated for local inspection. `show_full_text` is a separate explicit control
-and should be treated as private output.
+truncated and can be expanded locally through read-more preview metadata.
+`show_full_text` is a separate explicit control and should be treated as private
+output.
 
 ## Temporal Event Queries
 

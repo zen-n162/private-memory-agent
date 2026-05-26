@@ -149,6 +149,7 @@ def create_app(
             raise HTTPException(status_code=400, detail=_safe_error(str(exc))) from exc
 
     @app.get("/api/evidence/media/{media_item_id}/thumbnail", include_in_schema=False)
+    @app.get("/api/media/{media_item_id}/thumbnail", include_in_schema=False)
     def media_thumbnail(
         media_item_id: int,
         request: Request,

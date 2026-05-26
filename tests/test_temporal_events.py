@@ -307,6 +307,8 @@ def test_chat_console_temporal_payload_separates_used_candidate_rejected_evidenc
     assert payload["temporal_event"]["query"]["query_type"] == "temporal_event_search"
     assert payload["evidence_display"]["candidate_dates"]
     assert payload["evidence_display"]["candidate_dates"][0]["supporting_photos"]
+    assert payload["evidence_display"]["candidate_dates"][0]["reason_labels"]
+    assert payload["evidence_display"]["candidate_dates"][0]["photos"]
     used = next(item for item in payload["evidence"] if item["evidence_id"] == f"media_items:{used_id}")
     rejected = next(item for item in payload["evidence"] if item["evidence_id"] == f"media_items:{rejected_id}")
     assert used["evidence_role"] == "used"

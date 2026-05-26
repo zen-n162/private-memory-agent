@@ -102,9 +102,9 @@ This document outlines the development roadmap for private-memory-agent.
   counts/evidence IDs when photo candidates are missing or weak.
 - Phase 9-E improves the local chat evidence viewer:
   `/ui` now wraps long evidence IDs, renders expandable candidate-date cards,
-  groups supporting evidence by source, and can show local photo thumbnails by
-  evidence ID. LINE/note snippets and fuller text remain explicit privacy
-  controls.
+  groups supporting evidence by source tabs, maps machine reason codes to
+  Japanese labels, and can show local photo thumbnails by evidence ID. LINE/note
+  snippets and fuller text remain explicit privacy controls.
 
 ## 実データE2E smokeの実行手順
 

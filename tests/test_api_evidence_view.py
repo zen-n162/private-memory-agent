@@ -9,6 +9,7 @@ from private_memory_agent.api.evidence_view import (
     EvidenceThumbnailError,
     build_evidence_display_payload,
     create_media_thumbnail,
+    reason_label_for_code,
 )
 from private_memory_agent.storage import initialize_database
 
@@ -87,16 +88,16 @@ def test_evidence_display_payload_groups_candidate_date_without_default_snippets
     payload = build_evidence_display_payload(
         db_path,
         evidence=[
-            {"evidence_id": media_evidence_id, "source_type": "photos", "evidence_role": "used", "used_by_answer": True},
-            {"evidence_id": line_evidence_id, "source_type": "line", "evidence_role": "used", "used_by_answer": True},
-            {"evidence_id": note_evidence_id, "source_type": "notes", "evidence_role": "candidate", "used_by_answer": False},
+            {"evidence_id": media_evidence_id, "source_type": "photos", "evidence_role": "used", "used_by_answer": True, "reason_category": "outing_annotation_keyword"},
+            {"evidence_id": line_evidence_id, "source_type": "line", "evidence_role": "used", "used_by_answer": True, "reason_category": "same_day_line_support"},
+            {"evidence_id": note_evidence_id, "source_type": "notes", "evidence_role": "candidate", "used_by_answer": False, "reason_category": "same_day_note_support"},
         ],
         answer_evidence_references=(media_evidence_id, line_evidence_id),
         candidate_dates=[
             {
                 "date": "2025-12-03",
                 "confidence": 0.82,
-                "reason": "synthetic outing support",
+                "reason": "outing_annotation_keyword,same_day_line_support",
                 "photo_count": 1,
                 "annotated_photo_count": 1,
                 "line_support_count": 1,
@@ -116,6 +117,14 @@ def test_evidence_display_payload_groups_candidate_date_without_default_snippets
     )
     assert payload["candidate_dates"][0]["supporting_line_snippets"][0]["snippet_hidden"] is True
     assert payload["candidate_dates"][0]["candidate_evidence"][0]["title_hidden"] is True
+    assert payload["candidate_dates"][0]["reason_codes"] == [
+        "outing_annotation_keyword",
+        "same_day_line_support",
+    ]
+    assert "外出を示す可能性" in payload["candidate_dates"][0]["reason_labels"][0]
+    assert payload["candidate_dates"][0]["photos"][0]["evidence_id"] == media_evidence_id
+    assert payload["candidate_dates"][0]["line_snippets"][0]["evidence_id"] == line_evidence_id
+    assert payload["candidate_dates"][0]["note_snippets"][0]["evidence_id"] == note_evidence_id
     assert payload["evidence_reference_groups"]["photos"] == [media_evidence_id]
     assert "PRIVATE LINE BODY" not in serialized
     assert "PRIVATE NOTE BODY" not in serialized
@@ -148,11 +157,39 @@ def test_evidence_display_payload_shows_truncated_snippets_only_when_requested(t
     line = payload["groups"]["line"][0]
     note = payload["groups"]["notes"][0]
     photo = payload["groups"]["photos"][0]
-    assert line["snippet"].startswith("PRIVATE LINE BODY")
-    assert len(line["snippet"]) <= 40
+    assert line["snippet_preview"].startswith("PRIVATE LINE BODY")
+    assert len(line["snippet_preview"]) <= 40
+    assert line["snippet_has_more"] is True
+    assert line["snippet_full_preview"].startswith("PRIVATE LINE BODY")
     assert note["title"] == "PRIVATE NOTE TITLE"
-    assert len(note["snippet"]) <= 40
+    assert len(note["snippet_preview"]) <= 40
+    assert note["snippet_has_more"] is True
     assert photo["annotation_summary"].startswith("SECRET CAPTION")
+
+
+def test_reason_mapping_and_rejected_evidence_role_are_safe(tmp_path):
+    db_path = tmp_path / "evidence.sqlite3"
+    initialize_database(db_path).close()
+
+    payload = build_evidence_display_payload(
+        db_path,
+        evidence=[
+            {
+                "evidence_id": "line_messages:123",
+                "source_type": "line",
+                "should_use": False,
+                "used_by_answer": True,
+                "reason_category": "no_plan_concept_match",
+            },
+        ],
+        answer_evidence_references=(),
+    )
+    item = payload["groups"]["line"][0]
+
+    assert reason_label_for_code("image_media") == "写真メディアが存在します"
+    assert item["evidence_role"] == "rejected"
+    assert item["used_by_answer"] is False
+    assert "質問意図" in item["reason_label"]
 
 
 def test_create_media_thumbnail_validates_indexed_media_id_and_hides_paths(tmp_path):

@@ -230,6 +230,32 @@ def agent_console_html() -> str:
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: 10px;
     }
+    .source-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 7px;
+    }
+    .tab-button {
+      min-height: 32px;
+      padding: 0 10px;
+      background: #eef5ef;
+      color: var(--ink);
+      border: 1px solid var(--line);
+      font-weight: 700;
+    }
+    .tab-button.active {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+    .tab-panel {
+      display: grid;
+      gap: 10px;
+      min-width: 0;
+    }
+    .tab-panel.hidden, .hidden { display: none; }
     .thumbnail-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
@@ -255,6 +281,19 @@ def agent_console_html() -> str:
       color: var(--muted);
       font-size: 0.82rem;
       overflow-wrap: anywhere;
+    }
+    .reason-label {
+      margin-top: 6px;
+      color: #334139;
+      font-size: 0.9rem;
+      overflow-wrap: anywhere;
+    }
+    .secondary-button {
+      justify-self: start;
+      min-height: 32px;
+      background: #eef5ef;
+      color: var(--accent);
+      border: 1px solid var(--line);
     }
     .detail-modal {
       position: fixed;
@@ -555,23 +594,54 @@ def agent_console_html() -> str:
         tags.appendChild(pill(`LINE=${item.line_support_count ?? 0}`));
         tags.appendChild(pill(`notes=${item.notes_support_count ?? 0}`));
         tags.appendChild(pill(`used_evidence=${item.used_evidence_count ?? 0}`));
+        if (item.reason_summary) tags.appendChild(pill(item.reason_summary, "warn"));
         summary.appendChild(tags);
         details.appendChild(summary);
         const body = document.createElement("div");
         body.className = "candidate-body";
-        body.appendChild(el("div", item.reason || "No reason summary returned.", "status-line"));
+        body.appendChild(el("div", item.reason_summary || item.reason || "No reason summary returned.", "reason-label"));
+        if ((item.reason_codes || []).length) body.appendChild(el("div", `reason_codes=${item.reason_codes.join(", ")}`, "muted-small"));
         renderEvidenceIdList(body, "Used evidence IDs", item.evidence_ids?.used || []);
-        const grid = document.createElement("div");
-        grid.className = "candidate-grid";
-        appendSourceEvidence(grid, "Photos", item.supporting_photos || []);
-        appendSourceEvidence(grid, "LINE", item.supporting_line_snippets || []);
-        appendSourceEvidence(grid, "Notes", item.supporting_note_snippets || []);
-        body.appendChild(grid);
-        if ((item.candidate_evidence || []).length) appendSourceEvidence(body, "Inspected but not used", item.candidate_evidence || []);
-        if ((item.rejected_evidence || []).length) appendSourceEvidence(body, "Rejected / weak evidence", item.rejected_evidence || []);
+        renderCandidateSourceTabs(body, item, index);
         details.appendChild(body);
         datesPanel.appendChild(details);
       });
+    }
+    function renderCandidateSourceTabs(target, item, index) {
+      const tabs = [
+        ["photos", `Photos (${(item.photos || []).length})`, item.photos || []],
+        ["line", `LINE (${(item.line_snippets || []).length})`, item.line_snippets || []],
+        ["notes", `Notes (${(item.note_snippets || []).length})`, item.note_snippets || []],
+        ["rejected", `Rejected / Weak evidence (${(item.rejected_evidence || []).length})`, item.rejected_evidence || []]
+      ];
+      const shell = document.createElement("div");
+      shell.className = "source-block";
+      const buttonRow = document.createElement("div");
+      buttonRow.className = "source-tabs";
+      const panels = document.createElement("div");
+      panels.className = "stack";
+      tabs.forEach(([key, label, items], tabIndex) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = `tab-button ${tabIndex === 0 ? "active" : ""}`.trim();
+        button.textContent = label;
+        button.dataset.target = `candidate-${index}-${key}`;
+        const panel = document.createElement("div");
+        panel.id = `candidate-${index}-${key}`;
+        panel.className = `tab-panel ${tabIndex === 0 ? "" : "hidden"}`.trim();
+        appendSourceEvidence(panel, label, items, {thumbnailLimit: item.thumbnail_initial_limit || 6});
+        button.addEventListener("click", () => {
+          buttonRow.querySelectorAll(".tab-button").forEach((node) => node.classList.remove("active"));
+          panels.querySelectorAll(".tab-panel").forEach((node) => node.classList.add("hidden"));
+          button.classList.add("active");
+          panel.classList.remove("hidden");
+        });
+        buttonRow.appendChild(button);
+        panels.appendChild(panel);
+      });
+      shell.appendChild(buttonRow);
+      shell.appendChild(panels);
+      target.appendChild(shell);
     }
     function renderEvidenceIdList(target, label, ids) {
       if (!ids.length) return;
@@ -598,7 +668,7 @@ def agent_console_html() -> str:
         evidencePanel.appendChild(block);
       });
     }
-    function appendSourceEvidence(target, label, items) {
+    function appendSourceEvidence(target, label, items, options = {}) {
       if (!items.length) {
         target.appendChild(el("div", `${label}: none`, "status-line"));
         return;
@@ -609,8 +679,34 @@ def agent_console_html() -> str:
       if (items.some((item) => item.thumbnail_url)) {
         const grid = document.createElement("div");
         grid.className = "thumbnail-grid";
-        items.filter((item) => item.thumbnail_url).forEach((item) => grid.appendChild(renderPhotoCard(item)));
+        const thumbnailItems = items.filter((item) => item.thumbnail_url);
+        const limit = options.thumbnailLimit || 6;
+        thumbnailItems.forEach((item, index) => {
+          const card = renderPhotoCard(item);
+          if (index >= limit) card.classList.add("hidden");
+          grid.appendChild(card);
+        });
         block.appendChild(grid);
+        if (thumbnailItems.length > limit) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "secondary-button";
+          button.textContent = `Show ${thumbnailItems.length - limit} more thumbnails`;
+          button.addEventListener("click", () => {
+            const hidden = Array.from(grid.querySelectorAll(".thumbnail-card.hidden"));
+            const shouldExpand = hidden.length > 0;
+            if (shouldExpand) {
+              hidden.forEach((node) => node.classList.remove("hidden"));
+              button.textContent = "Show fewer thumbnails";
+            } else {
+              Array.from(grid.querySelectorAll(".thumbnail-card")).forEach((node, index) => {
+                if (index >= limit) node.classList.add("hidden");
+              });
+              button.textContent = `Show ${thumbnailItems.length - limit} more thumbnails`;
+            }
+          });
+          block.appendChild(button);
+        }
       }
       items.filter((item) => !item.thumbnail_url).forEach((item) => block.appendChild(renderSnippetCard(item)));
       target.appendChild(block);
@@ -626,7 +722,7 @@ def agent_console_html() -> str:
       card.appendChild(image);
       card.appendChild(renderEvidenceTags(item));
       if (item.taken_at) card.appendChild(el("div", `taken_at=${item.taken_at}`, "muted-small"));
-      if (item.annotation_summary) card.appendChild(el("div", item.annotation_summary, "snippet"));
+      if (item.annotation_summary) card.appendChild(renderExpandableText(item.annotation_summary, item.annotation_summary_full_preview, Boolean(item.annotation_summary_has_more)));
       else card.appendChild(el("div", "annotation summary hidden", "muted-small"));
       return card;
     }
@@ -636,9 +732,28 @@ def agent_console_html() -> str:
       card.appendChild(renderEvidenceTags(item));
       if (item.timestamp) card.appendChild(el("div", `timestamp=${item.timestamp}`, "muted-small"));
       if (item.title) card.appendChild(el("div", item.title, "muted-small"));
-      if (item.snippet) card.appendChild(el("div", item.snippet, "snippet"));
+      if (item.snippet_preview || item.snippet) card.appendChild(renderExpandableText(item.snippet_preview || item.snippet, item.snippet_full_preview, Boolean(item.snippet_has_more)));
       else card.appendChild(el("div", "snippet hidden", "muted-small"));
       return card;
+    }
+    function renderExpandableText(preview, fullPreview, hasMore) {
+      const wrapper = document.createElement("div");
+      const text = el("div", preview || "", "snippet");
+      wrapper.appendChild(text);
+      if (hasMore && fullPreview) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "secondary-button";
+        button.textContent = "Read more";
+        button.addEventListener("click", () => {
+          const expanded = button.dataset.expanded === "true";
+          button.dataset.expanded = expanded ? "false" : "true";
+          text.textContent = expanded ? preview : fullPreview;
+          button.textContent = expanded ? "Read more" : "Collapse";
+        });
+        wrapper.appendChild(button);
+      }
+      return wrapper;
     }
     function renderEvidenceTags(item) {
       const tags = document.createElement("div");
@@ -650,7 +765,8 @@ def agent_console_html() -> str:
       tags.appendChild(pill(`specificity=${item.specificity || "n/a"}`));
       tags.appendChild(pill(`relevance=${item.relevance_score ?? "n/a"}`));
       tags.appendChild(pill(`used_by_answer=${Boolean(item.used_by_answer)}`));
-      if (item.reason_category) tags.appendChild(pill(`reason=${item.reason_category}`));
+      if (item.reason_label) tags.appendChild(pill(item.reason_label, "warn"));
+      if (item.reason_category) tags.appendChild(pill(`reason_code=${item.reason_category}`));
       return tags;
     }
     function openPreview(src, caption) {

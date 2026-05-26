@@ -41,6 +41,10 @@ def test_agent_console_html_is_self_contained_and_points_to_chat_api():
     assert 'id="show-full-text" type="checkbox"> show_full_text' in html
     assert 'id="candidate-dates-panel"' in html
     assert "thumbnail-grid" in html
+    assert "source-tabs" in html
+    assert "tab-button" in html
+    assert "Read more" in html
+    assert "Show fewer thumbnails" in html
     assert "overflow-wrap: anywhere" in html
     assert "Temporal Diagnostics" in html
     assert "parsed_date_range_start" in html
