@@ -72,6 +72,7 @@ def agent_console_html() -> str:
       border-radius: 8px;
       padding: 14px;
       min-width: 0;
+      overflow-wrap: anywhere;
     }
     .stack { display: grid; gap: 12px; }
     label { display: grid; gap: 5px; font-weight: 650; }
@@ -129,6 +130,7 @@ def agent_console_html() -> str:
     }
     button:disabled { opacity: 0.65; cursor: wait; }
     .status-line { color: var(--muted); font-size: 0.9rem; }
+    .status-line, li { overflow-wrap: anywhere; }
     .error { color: var(--danger); }
     .ok { color: var(--ok); }
     .panels {
@@ -183,6 +185,104 @@ def agent_console_html() -> str:
       white-space: pre-wrap;
       overflow-wrap: anywhere;
       color: #303832;
+    }
+    .conclusion {
+      font-size: 1.04rem;
+      padding: 9px 0;
+      overflow-wrap: anywhere;
+    }
+    .chip-list, .evidence-id-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 6px;
+      min-width: 0;
+    }
+    .source-block {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+    }
+    .candidate-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      overflow: hidden;
+      min-width: 0;
+    }
+    .candidate-card summary {
+      cursor: pointer;
+      padding: 10px 12px;
+      background: #fbfcf8;
+      overflow-wrap: anywhere;
+    }
+    .candidate-body {
+      padding: 12px;
+      display: grid;
+      gap: 12px;
+      min-width: 0;
+    }
+    .candidate-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 10px;
+    }
+    .thumbnail-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+      gap: 10px;
+    }
+    .thumbnail-card, .snippet-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      background: #fbfcf8;
+      min-width: 0;
+    }
+    .thumbnail-card img {
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      object-fit: cover;
+      border-radius: 6px;
+      border: 1px solid var(--line);
+      background: var(--code);
+      cursor: zoom-in;
+    }
+    .muted-small {
+      color: var(--muted);
+      font-size: 0.82rem;
+      overflow-wrap: anywhere;
+    }
+    .detail-modal {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.62);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      z-index: 20;
+    }
+    .detail-modal[aria-hidden="false"] { display: flex; }
+    .modal-content {
+      width: min(900px, 96vw);
+      max-height: 92vh;
+      background: #fff;
+      border-radius: 8px;
+      padding: 12px;
+      display: grid;
+      gap: 10px;
+      overflow: auto;
+    }
+    .modal-content img {
+      max-width: 100%;
+      max-height: 72vh;
+      object-fit: contain;
+      margin: 0 auto;
+      display: block;
     }
     pre {
       margin: 0;
@@ -250,6 +350,9 @@ def agent_console_html() -> str:
           <label class="inline"><input id="strict" type="checkbox"> strict relevance</label>
           <label class="inline"><input id="show-answer" type="checkbox" checked> show_answer</label>
           <label class="inline"><input id="show-snippets" type="checkbox"> show_snippets</label>
+          <label class="inline"><input id="show-photo-thumbnails" type="checkbox" checked> show_photo_thumbnails</label>
+          <label class="inline"><input id="show-full-text" type="checkbox"> show_full_text</label>
+          <label class="inline"><input id="show-raw-model-output" type="checkbox"> show_raw_model_output</label>
         </fieldset>
 
         <div class="grid-2">
@@ -305,6 +408,11 @@ def agent_console_html() -> str:
         </section>
 
         <section class="full">
+          <h2>Candidate Dates</h2>
+          <div id="candidate-dates-panel" class="stack"><div class="status-line">No candidate dates yet.</div></div>
+        </section>
+
+        <section class="full">
           <h2>Evidence</h2>
           <div id="evidence-panel" class="evidence-list"><div class="status-line">No evidence yet.</div></div>
         </section>
@@ -320,6 +428,13 @@ def agent_console_html() -> str:
         </section>
       </div>
     </div>
+    <div id="preview-modal" class="detail-modal" aria-hidden="true">
+      <div class="modal-content">
+        <button id="close-preview" type="button">Close preview</button>
+        <img id="preview-image" alt="Selected local evidence thumbnail preview">
+        <div id="preview-caption" class="muted-small"></div>
+      </div>
+    </div>
   </main>
 
   <script>
@@ -327,11 +442,16 @@ def agent_console_html() -> str:
     const statusNode = document.querySelector("#request-status");
     const runButton = document.querySelector("#run");
     const answerPanel = document.querySelector("#answer-panel");
+    const datesPanel = document.querySelector("#candidate-dates-panel");
     const evidencePanel = document.querySelector("#evidence-panel");
     const tracePanel = document.querySelector("#trace-panel");
     const privacyPanel = document.querySelector("#privacy-panel");
     const systemPanel = document.querySelector("#system-panel");
     const systemSummary = document.querySelector("#system-summary");
+    const previewModal = document.querySelector("#preview-modal");
+    const previewImage = document.querySelector("#preview-image");
+    const previewCaption = document.querySelector("#preview-caption");
+    const closePreview = document.querySelector("#close-preview");
 
     function value(id) { return document.querySelector(id).value; }
     function checked(id) { return document.querySelector(id).checked; }
@@ -366,6 +486,7 @@ def agent_console_html() -> str:
     function renderAnswer(payload) {
       clear(answerPanel);
       const answer = payload.answer || {};
+      const display = payload.evidence_display || {};
       const row = document.createElement("div");
       row.className = "metric-row";
       row.appendChild(pill(`answer_succeeded=${Boolean(answer.answer_succeeded)}`, answer.answer_succeeded ? "strong" : "warn"));
@@ -381,82 +502,170 @@ def agent_console_html() -> str:
       } else if (answer.conclusion) {
         const heading = answer.answer_state === "unknown" ? "Conclusion (unknown / insufficient evidence)" : "Conclusion";
         answerPanel.appendChild(el("h3", heading));
-        answerPanel.appendChild(el("div", answer.conclusion));
+        answerPanel.appendChild(el("div", answer.conclusion, "conclusion"));
       } else {
         answerPanel.appendChild(el("div", "No answer text was returned.", "status-line"));
       }
       renderKv(answerPanel, {
         used_sources: (answer.used_sources || []).join(", ") || "none",
-        evidence_references: (answer.evidence_references || []).join(", ") || "none",
+        evidence_reference_count: (answer.evidence_references || []).length,
+        candidate_date_count: (display.candidate_dates || []).length,
         unknowns_count: (answer.unknowns || []).length,
         error_class: answer.error_class || "none"
       });
+      renderEvidenceReferenceGroups(answerPanel, display.evidence_reference_groups || {});
       if ((answer.unknowns || []).length) {
         answerPanel.appendChild(el("h3", "Unknowns"));
         answerPanel.appendChild(renderList(answer.unknowns));
       }
-      renderTemporalDates(payload);
     }
-    function renderTemporalDates(payload) {
-      const temporal = payload.temporal_event || {};
-      const dates = temporal.candidate_dates || [];
-      if (!dates.length) return;
-      answerPanel.appendChild(el("h3", "Candidate Dates"));
-      dates.forEach((item) => {
-        const row = document.createElement("article");
-        row.className = "evidence-item";
+    function renderEvidenceReferenceGroups(target, groups) {
+      const entries = Object.entries(groups).filter(([, ids]) => (ids || []).length);
+      if (!entries.length) return;
+      target.appendChild(el("h3", "Evidence References"));
+      entries.forEach(([source, ids]) => {
+        const block = document.createElement("div");
+        block.className = "source-block";
+        block.appendChild(pill(`${source}: ${ids.length}`, "strong"));
+        const list = document.createElement("div");
+        list.className = "evidence-id-list";
+        ids.forEach((id) => list.appendChild(pill(id)));
+        block.appendChild(list);
+        target.appendChild(block);
+      });
+    }
+    function renderCandidateDates(payload) {
+      clear(datesPanel);
+      const dates = payload.evidence_display?.candidate_dates || [];
+      if (!dates.length) {
+        datesPanel.appendChild(el("div", "No candidate dates returned.", "status-line"));
+        return;
+      }
+      dates.forEach((item, index) => {
+        const details = document.createElement("details");
+        details.className = "candidate-card";
+        if (index === 0) details.open = true;
+        const summary = document.createElement("summary");
         const tags = document.createElement("div");
         tags.className = "tag-row";
         tags.appendChild(pill(item.date || "unknown", "strong"));
         tags.appendChild(pill(`confidence=${item.confidence ?? "n/a"}`));
         tags.appendChild(pill(`photos=${item.photo_count ?? 0}`));
         tags.appendChild(pill(`annotated=${item.annotated_photo_count ?? 0}`));
-        tags.appendChild(pill(`line_support=${item.line_support_count ?? 0}`));
-        tags.appendChild(pill(`notes_support=${item.notes_support_count ?? 0}`));
-        row.appendChild(tags);
-        row.appendChild(el("div", `reason=${item.reason || "n/a"}`, "status-line"));
-        row.appendChild(el("div", `evidence=${(item.top_evidence_ids || []).join(", ") || "none"}`, "status-line"));
-        answerPanel.appendChild(row);
+        tags.appendChild(pill(`LINE=${item.line_support_count ?? 0}`));
+        tags.appendChild(pill(`notes=${item.notes_support_count ?? 0}`));
+        tags.appendChild(pill(`used_evidence=${item.used_evidence_count ?? 0}`));
+        summary.appendChild(tags);
+        details.appendChild(summary);
+        const body = document.createElement("div");
+        body.className = "candidate-body";
+        body.appendChild(el("div", item.reason || "No reason summary returned.", "status-line"));
+        renderEvidenceIdList(body, "Used evidence IDs", item.evidence_ids?.used || []);
+        const grid = document.createElement("div");
+        grid.className = "candidate-grid";
+        appendSourceEvidence(grid, "Photos", item.supporting_photos || []);
+        appendSourceEvidence(grid, "LINE", item.supporting_line_snippets || []);
+        appendSourceEvidence(grid, "Notes", item.supporting_note_snippets || []);
+        body.appendChild(grid);
+        if ((item.candidate_evidence || []).length) appendSourceEvidence(body, "Inspected but not used", item.candidate_evidence || []);
+        if ((item.rejected_evidence || []).length) appendSourceEvidence(body, "Rejected / weak evidence", item.rejected_evidence || []);
+        details.appendChild(body);
+        datesPanel.appendChild(details);
       });
+    }
+    function renderEvidenceIdList(target, label, ids) {
+      if (!ids.length) return;
+      target.appendChild(el("h3", label));
+      const list = document.createElement("div");
+      list.className = "evidence-id-list";
+      ids.forEach((id) => list.appendChild(pill(id)));
+      target.appendChild(list);
     }
     function renderEvidence(payload) {
       clear(evidencePanel);
-      const evidence = payload.evidence || [];
-      if (!evidence.length) {
+      const display = payload.evidence_display || {};
+      const groupsBySource = display.groups || {};
+      const groupedItems = Object.entries(groupsBySource).filter(([, items]) => (items || []).length);
+      if (!groupedItems.length) {
         evidencePanel.appendChild(el("div", "No evidence returned.", "status-line"));
         return;
       }
-      const groups = [
-        ["used", "Used Evidence"],
-        ["candidate", "Examined Candidate Evidence"],
-        ["rejected", "Rejected / Weak Evidence"]
-      ];
-      groups.forEach(([role, label]) => {
-        const items = evidence.filter((item) => (item.evidence_role || (item.used_by_answer ? "used" : "candidate")) === role);
-        if (!items.length) return;
-        evidencePanel.appendChild(el("h3", label));
-        items.forEach((item) => renderEvidenceItem(item));
+      groupedItems.forEach(([source, items]) => {
+        const block = document.createElement("div");
+        block.className = "source-block";
+        block.appendChild(el("h3", `${source} (${items.length})`));
+        appendSourceEvidence(block, source, items || []);
+        evidencePanel.appendChild(block);
       });
-      const ungrouped = evidence.filter((item) => !["used", "candidate", "rejected"].includes(item.evidence_role || ""));
-      ungrouped.forEach((item) => renderEvidenceItem(item));
     }
-    function renderEvidenceItem(item) {
-        const row = document.createElement("article");
-        row.className = "evidence-item";
-        const tags = document.createElement("div");
-        tags.className = "tag-row";
-        tags.appendChild(pill(item.evidence_id || "unknown", "strong"));
-        tags.appendChild(pill(`source=${item.source_type || "unknown"}`));
-        tags.appendChild(pill(`role=${item.evidence_role || "candidate"}`));
-        tags.appendChild(pill(`should_use=${item.should_use ?? "n/a"}`, item.should_use ? "strong" : "warn"));
-        tags.appendChild(pill(`specificity=${item.specificity || "n/a"}`));
-        tags.appendChild(pill(`relevance=${item.relevance_score ?? "n/a"}`));
-        tags.appendChild(pill(`used_by_answer=${Boolean(item.used_by_answer)}`));
-        row.appendChild(tags);
-        row.appendChild(el("div", `reason=${item.reason_category || "n/a"}`, "status-line"));
-        if (item.snippet) row.appendChild(el("div", item.snippet, "snippet"));
-        evidencePanel.appendChild(row);
+    function appendSourceEvidence(target, label, items) {
+      if (!items.length) {
+        target.appendChild(el("div", `${label}: none`, "status-line"));
+        return;
+      }
+      const block = document.createElement("div");
+      block.className = "source-block";
+      block.appendChild(el("h3", `${label} (${items.length})`));
+      if (items.some((item) => item.thumbnail_url)) {
+        const grid = document.createElement("div");
+        grid.className = "thumbnail-grid";
+        items.filter((item) => item.thumbnail_url).forEach((item) => grid.appendChild(renderPhotoCard(item)));
+        block.appendChild(grid);
+      }
+      items.filter((item) => !item.thumbnail_url).forEach((item) => block.appendChild(renderSnippetCard(item)));
+      target.appendChild(block);
     }
+    function renderPhotoCard(item) {
+      const card = document.createElement("article");
+      card.className = "thumbnail-card";
+      const image = document.createElement("img");
+      image.src = item.thumbnail_url;
+      image.alt = item.evidence_id || "photo evidence thumbnail";
+      image.loading = "lazy";
+      image.addEventListener("click", () => openPreview(item.thumbnail_url, item.evidence_id || "photo evidence"));
+      card.appendChild(image);
+      card.appendChild(renderEvidenceTags(item));
+      if (item.taken_at) card.appendChild(el("div", `taken_at=${item.taken_at}`, "muted-small"));
+      if (item.annotation_summary) card.appendChild(el("div", item.annotation_summary, "snippet"));
+      else card.appendChild(el("div", "annotation summary hidden", "muted-small"));
+      return card;
+    }
+    function renderSnippetCard(item) {
+      const card = document.createElement("article");
+      card.className = "snippet-card";
+      card.appendChild(renderEvidenceTags(item));
+      if (item.timestamp) card.appendChild(el("div", `timestamp=${item.timestamp}`, "muted-small"));
+      if (item.title) card.appendChild(el("div", item.title, "muted-small"));
+      if (item.snippet) card.appendChild(el("div", item.snippet, "snippet"));
+      else card.appendChild(el("div", "snippet hidden", "muted-small"));
+      return card;
+    }
+    function renderEvidenceTags(item) {
+      const tags = document.createElement("div");
+      tags.className = "tag-row";
+      tags.appendChild(pill(item.evidence_id || "unknown", "strong"));
+      tags.appendChild(pill(`source=${item.source || item.source_type || "unknown"}`));
+      tags.appendChild(pill(`role=${item.evidence_role || "candidate"}`));
+      tags.appendChild(pill(`should_use=${item.should_use ?? "n/a"}`, item.should_use ? "strong" : "warn"));
+      tags.appendChild(pill(`specificity=${item.specificity || "n/a"}`));
+      tags.appendChild(pill(`relevance=${item.relevance_score ?? "n/a"}`));
+      tags.appendChild(pill(`used_by_answer=${Boolean(item.used_by_answer)}`));
+      if (item.reason_category) tags.appendChild(pill(`reason=${item.reason_category}`));
+      return tags;
+    }
+    function openPreview(src, caption) {
+      previewImage.src = src;
+      previewCaption.textContent = caption;
+      previewModal.setAttribute("aria-hidden", "false");
+    }
+    closePreview.addEventListener("click", () => {
+      previewModal.setAttribute("aria-hidden", "true");
+      previewImage.removeAttribute("src");
+      previewCaption.textContent = "";
+    });
+    previewModal.addEventListener("click", (event) => {
+      if (event.target === previewModal) closePreview.click();
+    });
     function renderTrace(payload) {
       clear(tracePanel);
       const trace = payload.trace || {};
@@ -514,12 +723,15 @@ def agent_console_html() -> str:
       row.className = "tag-row";
       row.appendChild(pill(`local_only=${Boolean(privacy.local_only)}`, "strong"));
       row.appendChild(pill(`snippets_hidden=${Boolean(privacy.snippets_hidden)}`));
+      row.appendChild(pill(`photo_thumbnails_hidden=${Boolean(privacy.photo_thumbnails_hidden)}`));
+      row.appendChild(pill(`full_text_hidden=${Boolean(privacy.full_text_hidden)}`));
       row.appendChild(pill(`answer_hidden=${Boolean(privacy.answer_hidden)}`));
       row.appendChild(pill(`raw_model_output_hidden=${Boolean(privacy.raw_model_output_hidden)}`));
       row.appendChild(pill(`external_network_disabled=${Boolean(privacy.external_network_disabled)}`));
       privacyPanel.appendChild(row);
       privacyPanel.appendChild(el("div", "Answer text is shown by default in this local-only console. It may still contain private evidence-derived information.", "status-line"));
-      privacyPanel.appendChild(el("div", "Raw evidence snippets remain hidden unless Show snippets is enabled. Snippets may contain private LINE messages, note text, captions, OCR, filenames, or other sensitive data.", "status-line"));
+      privacyPanel.appendChild(el("div", "Photo thumbnails are local-only and path-free. Raw evidence snippets remain hidden unless Show snippets is enabled.", "status-line"));
+      privacyPanel.appendChild(el("div", "Snippets may contain private LINE messages, note text, captions, OCR, filenames, or other sensitive data. Full text and raw model output stay off by default.", "status-line"));
       privacyPanel.appendChild(el("div", "Do not paste local answer or snippet output into public chats if it contains private information.", "status-line"));
       const warnings = payload.warnings || [];
       if (warnings.length) {
@@ -557,6 +769,9 @@ def agent_console_html() -> str:
         strict_relevance: checked("#strict"),
         show_answer: checked("#show-answer"),
         show_snippets: checked("#show-snippets"),
+        show_photo_thumbnails: checked("#show-photo-thumbnails"),
+        show_full_text: checked("#show-full-text"),
+        show_raw_model_output: checked("#show-raw-model-output"),
         limit: Number(value("#limit")),
         timeout_seconds: timeoutValue > 0 ? timeoutValue : null,
         max_tokens: Number(value("#max-tokens"))
@@ -570,6 +785,7 @@ def agent_console_html() -> str:
         const result = await response.json();
         if (!response.ok) throw new Error(result.detail || "query failed");
         renderAnswer(result);
+        renderCandidateDates(result);
         renderEvidence(result);
         renderTrace(result);
         renderPrivacy(result);

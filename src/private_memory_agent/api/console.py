@@ -17,6 +17,10 @@ from private_memory_agent.agent import (
     RetrievalPlan,
 )
 from private_memory_agent.agent.retrieval_planner import plan_metadata_for_error
+from private_memory_agent.api.evidence_view import (
+    EvidenceDisplayOptions,
+    build_evidence_display_payload,
+)
 from private_memory_agent.config import ConfigBundle, load_config
 from private_memory_agent.e2e import (
     DEFAULT_E2E_REAL_MODEL_MAX_TOKENS,
@@ -80,6 +84,9 @@ class ChatConsoleOptions:
     minimum_relevance_score: float = 0.6
     show_answer: bool = True
     show_snippets: bool = False
+    show_photo_thumbnails: bool = True
+    show_full_text: bool = False
+    show_raw_model_output: bool = False
     snippet_chars: int = 160
     limit: int = 5
     timeout_seconds: float | None = None
@@ -140,11 +147,19 @@ def run_chat_console_query(options: ChatConsoleOptions) -> dict[str, Any]:
         ok = ok and bool(result.answer_succeeded)
 
     privacy = _privacy_payload(options)
+    answer = _answer_payload(result, show_answer=options.show_answer)
+    evidence = _evidence_payload(result, show_snippets=options.show_snippets)
     return {
         "ok": ok,
         "mode": options.mode,
-        "answer": _answer_payload(result, show_answer=options.show_answer),
-        "evidence": _evidence_payload(result, show_snippets=options.show_snippets),
+        "answer": answer,
+        "evidence": evidence,
+        "evidence_display": build_evidence_display_payload(
+            options.db_path,
+            evidence=evidence,
+            answer_evidence_references=answer["evidence_references"],
+            options=_evidence_display_options(options),
+        ),
         "trace": _trace_payload(
             result,
             report=report,
@@ -230,6 +245,8 @@ def _validate_options(options: ChatConsoleOptions) -> None:
         raise ValueError("max_tokens must be positive")
     if options.timeout_seconds is not None and options.timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
+    if options.snippet_chars <= 0:
+        raise ValueError("snippet_chars must be positive")
 
 
 def _maybe_temporal_console_payload(options: ChatConsoleOptions) -> dict[str, Any] | None:
@@ -245,13 +262,21 @@ def _maybe_temporal_console_payload(options: ChatConsoleOptions) -> dict[str, An
     privacy = _privacy_payload(options)
     answer = result.answer.to_dict(show_answer=options.show_answer)
     temporal_event = result.to_dict(show_answer=options.show_answer)
+    evidence = [item.to_dict() for item in result.evidence]
     warnings = _unique_strings((*result.warnings, *privacy["warnings"]))
     should_use_count = len(result.answer.evidence_references)
     return {
         "ok": result.ok,
         "mode": options.mode,
         "answer": answer,
-        "evidence": [item.to_dict() for item in result.evidence],
+        "evidence": evidence,
+        "evidence_display": build_evidence_display_payload(
+            options.db_path,
+            evidence=evidence,
+            answer_evidence_references=answer["evidence_references"],
+            candidate_dates=temporal_event["candidate_dates"],
+            options=_evidence_display_options(options),
+        ),
         "temporal_event": temporal_event,
         "trace": {
             "query_type": result.query.query_type,
@@ -562,17 +587,35 @@ def _privacy_payload(options: ChatConsoleOptions) -> dict[str, Any]:
     warnings = []
     if options.show_snippets:
         warnings.append("show_snippets is enabled; snippets may contain private local content")
+    if options.show_full_text:
+        warnings.append("show_full_text is enabled; local evidence text may be less truncated")
+    if options.show_raw_model_output:
+        warnings.append("show_raw_model_output is requested, but raw model output is not returned by this API")
     if options.show_answer:
         warnings.append("show_answer is enabled; answer text may contain private local content")
     return {
         "local_only": True,
         "snippets_hidden": not options.show_snippets,
+        "photo_thumbnails_hidden": not options.show_photo_thumbnails,
+        "full_text_hidden": not options.show_full_text,
         "answer_hidden": not options.show_answer,
         "raw_model_output_hidden": True,
         "external_network_disabled": not options.allow_remote,
         "raw_private_content_hidden_by_default": True,
+        "paths_hidden": True,
+        "gps_hidden": True,
+        "exif_hidden": True,
         "warnings": warnings,
     }
+
+
+def _evidence_display_options(options: ChatConsoleOptions) -> EvidenceDisplayOptions:
+    return EvidenceDisplayOptions(
+        show_snippets=options.show_snippets,
+        show_photo_thumbnails=options.show_photo_thumbnails,
+        show_full_text=options.show_full_text,
+        snippet_chars=options.snippet_chars,
+    )
 
 
 def _repair_status(

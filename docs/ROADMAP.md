@@ -100,6 +100,11 @@ This document outlines the development roadmap for private-memory-agent.
   temporal query results now expose parsed date ranges, `taken_at` coverage,
   photo filter-stage counts, nearby month counts, and safe LINE/notes fallback
   counts/evidence IDs when photo candidates are missing or weak.
+- Phase 9-E improves the local chat evidence viewer:
+  `/ui` now wraps long evidence IDs, renders expandable candidate-date cards,
+  groups supporting evidence by source, and can show local photo thumbnails by
+  evidence ID. LINE/note snippets and fuller text remain explicit privacy
+  controls.
 
 ## 実データE2E smokeの実行手順
 
@@ -315,10 +320,13 @@ Recommended order:
 3. Use `real-model` only after `pma models ping leader` succeeds.
 
 The UI shows answer text by default because it is a local-only chat console.
-Evidence snippets remain hidden by default. Disable `show_answer` when you want
-a metadata-only run; enable `show_snippets` only when you need truncated local
-evidence snippets. Answer and snippet output may contain private
-evidence-derived content and should not be pasted into public chats.
+Evidence snippets remain hidden by default, while path-free photo thumbnails can
+be shown for evidence items selected by retrieval. Disable `show_answer` when
+you want a metadata-only run; enable `show_snippets` only when you need
+truncated local LINE/note/photo-annotation snippets. `show_full_text` and raw
+model output controls remain off by default. Answer and snippet output may
+contain private evidence-derived content and should not be pasted into public
+chats.
 
 ## Temporal Event Queries
 
@@ -334,9 +342,11 @@ candidates by day, and optionally counts same-day LINE/notes support. It returns
 candidate dates and evidence IDs, not filenames, full paths, GPS, raw LINE text,
 note bodies, OCR text, or full captions.
 
-In the local UI, candidate dates appear in the answer panel. Evidence is grouped
-as used, examined candidate, or rejected/weak. Evidence with `should_use=false`
-is never marked as `used_by_answer=true`.
+In the local UI, candidate dates appear as expandable cards with photo count,
+annotation count, LINE/note support counts, reason summary, and grouped
+supporting evidence. Evidence is grouped as used, examined candidate, or
+rejected/weak. Evidence with `should_use=false` is never marked as
+`used_by_answer=true`.
 
 Use temporal diagnostics when a result is unknown:
 

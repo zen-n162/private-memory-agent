@@ -753,10 +753,11 @@ Use the console in this order:
    configs/paths.local.yaml` succeeds.
 
 The console can toggle leader planning, plan-aware rerank, semantic retrieval,
-reranker use, retrieval repair, strict relevance, answer display, and snippet
-display. Defaults stay local and cheap: retrieval-only, leader-plan metadata,
-retrieval repair enabled, answer text visible, snippets hidden, and raw model
-output unavailable.
+reranker use, retrieval repair, strict relevance, answer display, local photo
+thumbnail display, snippet display, fuller text display, and raw model output
+visibility. Defaults stay local and cheap: retrieval-only, leader-plan metadata,
+retrieval repair enabled, answer text visible, path-free photo thumbnails
+available, snippets hidden, fuller text hidden, and raw model output unavailable.
 
 `GET /api/system/status` returns DB/index counts and configured endpoint
 metadata without model prompts. `POST /api/chat/query` uses the existing E2E
@@ -766,5 +767,7 @@ Answer text may contain private evidence-derived content even when raw evidence
 is hidden. The local console shows it by default for usability. Use the
 `show_answer` toggle to hide it for metadata-only checks. Keep
 `show_snippets` off unless you explicitly need truncated local evidence
-snippets. The console never prints raw LINE messages, note bodies, captions,
-filenames, full paths, GPS, EXIF, OCR, or raw model output by default.
+snippets. Photo thumbnails are served only by indexed `media_item_id` through a
+local endpoint and do not reveal paths. The console never prints raw LINE
+messages, note bodies, captions, filenames, full paths, GPS, EXIF, OCR, or raw
+model output by default.

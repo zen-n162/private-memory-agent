@@ -305,12 +305,20 @@ def test_chat_console_temporal_payload_separates_used_candidate_rejected_evidenc
     assert payload["trace"]["temporal_diagnostics"]["parsed_date_range_start"] == "2025-12-01"
     assert payload["trace"]["temporal_diagnostics"]["photo_candidates_count"] == 2
     assert payload["temporal_event"]["query"]["query_type"] == "temporal_event_search"
+    assert payload["evidence_display"]["candidate_dates"]
+    assert payload["evidence_display"]["candidate_dates"][0]["supporting_photos"]
     used = next(item for item in payload["evidence"] if item["evidence_id"] == f"media_items:{used_id}")
     rejected = next(item for item in payload["evidence"] if item["evidence_id"] == f"media_items:{rejected_id}")
     assert used["evidence_role"] == "used"
     assert used["used_by_answer"] is True
     assert rejected["evidence_role"] == "rejected"
     assert rejected["used_by_answer"] is False
+    rejected_display = [
+        item
+        for date_item in payload["evidence_display"]["candidate_dates"]
+        for item in date_item["rejected_evidence"]
+    ]
+    assert any(item["evidence_id"] == f"media_items:{rejected_id}" for item in rejected_display)
 
 
 def test_pma_query_temporal_output_is_privacy_safe(capsys, tmp_path):

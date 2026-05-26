@@ -547,6 +547,25 @@ shows answer text by default so the console behaves like a chat interface.
 remains off by default; snippets are truncated/redacted and remain local-only
 debugging output.
 
+Phase 9-E adds a richer evidence viewer to the same local UI. Long evidence ID
+lists render as wrapping chips instead of a single overflowing line. Temporal
+candidate dates render as expandable cards. Each card groups supporting photos,
+LINE messages, and notes, and separates supporting evidence from inspected but
+unused and rejected/weak evidence.
+
+Photo thumbnails are served through a constrained local endpoint:
+
+```text
+GET /api/evidence/media/{media_item_id}/thumbnail
+```
+
+The endpoint accepts only an indexed `media_item_id`, never a filesystem path.
+It resizes and re-encodes the local image as a small JPEG thumbnail and does not
+return filenames, full paths, GPS, EXIF, or OCR. LINE and note snippets remain
+hidden unless `show_snippets` is explicitly enabled; when enabled they are
+truncated for local inspection. `show_full_text` is a separate explicit control
+and should be treated as private output.
+
 ## Temporal Event Queries
 
 Phase 9-B adds a structured temporal event path for questions such as:
@@ -576,7 +595,9 @@ The output separates evidence roles:
 
 Evidence with `should_use=false` is not counted as answer evidence. The UI shows
 used, candidate, and rejected evidence separately so weak photo candidates do
-not look like grounded answer support.
+not look like grounded answer support. Expanded candidate cards show date,
+confidence, photo/annotation counts, LINE/note support counts, reason summary,
+and grouped supporting evidence.
 
 CLI smoke:
 

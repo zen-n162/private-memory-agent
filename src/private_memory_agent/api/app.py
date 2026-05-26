@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from private_memory_agent import __version__
 from private_memory_agent.agent import (
@@ -39,6 +39,7 @@ from private_memory_agent.api.console import (
     build_system_status,
     run_chat_console_query,
 )
+from private_memory_agent.api.evidence_view import EvidenceThumbnailError, create_media_thumbnail
 from private_memory_agent.api.ui import agent_console_html
 from private_memory_agent.config import load_config
 from private_memory_agent.entities import list_entities
@@ -132,6 +133,9 @@ def create_app(
                     minimum_relevance_score=payload.minimum_relevance_score,
                     show_answer=payload.show_answer,
                     show_snippets=payload.show_snippets,
+                    show_photo_thumbnails=payload.show_photo_thumbnails,
+                    show_full_text=payload.show_full_text,
+                    show_raw_model_output=payload.show_raw_model_output,
                     snippet_chars=payload.snippet_chars,
                     limit=payload.limit,
                     timeout_seconds=payload.timeout_seconds,
@@ -143,6 +147,27 @@ def create_app(
             )
         except (RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=_safe_error(str(exc))) from exc
+
+    @app.get("/api/evidence/media/{media_item_id}/thumbnail", include_in_schema=False)
+    def media_thumbnail(
+        media_item_id: int,
+        request: Request,
+        db_path: Path | None = None,
+        max_side: int = Query(default=320, ge=32, le=1024),
+    ) -> Response:
+        try:
+            content, media_type = create_media_thumbnail(
+                _request_db_path(request, db_path),
+                media_item_id,
+                max_side=max_side,
+            )
+        except EvidenceThumbnailError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        return Response(
+            content=content,
+            media_type=media_type,
+            headers={"Cache-Control": "private, max-age=300"},
+        )
 
     @app.get("/api/system/status", response_model=SystemStatusResponse)
     def system_status(request: Request, db_path: Path | None = None) -> dict[str, Any]:

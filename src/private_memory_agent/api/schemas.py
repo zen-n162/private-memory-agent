@@ -80,6 +80,9 @@ class ChatQueryRequest(APIModel):
     minimum_relevance_score: float = Field(default=0.6, ge=0.0, le=1.0)
     show_answer: bool = True
     show_snippets: bool = False
+    show_photo_thumbnails: bool = True
+    show_full_text: bool = False
+    show_raw_model_output: bool = False
     snippet_chars: int = Field(default=160, gt=0, le=500)
     limit: int = Field(default=5, gt=0, le=20)
     timeout_seconds: float | None = Field(default=None, gt=0)
@@ -93,6 +96,7 @@ class ChatQueryResponse(APIModel):
     mode: ChatConsoleMode
     answer: dict[str, Any]
     evidence: list[dict[str, Any]]
+    evidence_display: dict[str, Any] | None = None
     temporal_event: dict[str, Any] | None = None
     trace: dict[str, Any]
     privacy: dict[str, Any]

@@ -58,6 +58,9 @@ generation and evidence snippets remain explicit choices. It displays:
 - unknowns
 - used sources
 - evidence references
+- grouped candidate-date cards for temporal event answers
+- path-free photo thumbnails for selected evidence items
+- truncated LINE/note snippets only when explicitly enabled
 - evidence ids
 - source coverage
 - per-evidence relevance metadata
@@ -66,11 +69,12 @@ generation and evidence snippets remain explicit choices. It displays:
 - retrieval repair status
 - privacy status
 
-Snippets are hidden by default. If `show_snippets` is enabled, the API returns
-truncated/redacted snippets only. Raw model output is not returned by the
-console endpoint. Answer text may still contain private evidence-derived
-information, so do not paste local answer output into public chats when it is
-private.
+Snippets are hidden by default. Photo thumbnails can be shown in the local UI,
+but are served by indexed `media_item_id` only and never by arbitrary path. If
+`show_snippets` is enabled, the API returns truncated/redacted snippets only.
+Raw model output is not returned by the console endpoint. Answer text may still
+contain private evidence-derived information, so do not paste local answer
+output into public chats when it is private.
 
 ## Chat Query Endpoint
 
@@ -90,13 +94,21 @@ Useful request fields:
 - `strict_relevance`
 - `show_answer`
 - `show_snippets`
+- `show_photo_thumbnails`
+- `show_full_text`
+- `show_raw_model_output`
 - `timeout_seconds`
 - `max_tokens`
 
 Default UI output contains the answer text plus counts, ids, source labels,
-relevance metadata, and status. It does not include raw LINE text, note bodies,
-captions, file names, paths, GPS, EXIF, OCR, raw model output, full retrieval
-plans, or full evidence snippets.
+relevance metadata, grouped evidence display metadata, and status. It does not
+include raw LINE text, note bodies, captions, file names, paths, GPS, EXIF, OCR,
+raw model output, full retrieval plans, or full evidence snippets.
+
+`GET /api/evidence/media/{media_item_id}/thumbnail` returns a resized JPEG
+preview for an indexed image evidence item. It accepts only the database ID and
+returns safe errors; it does not expose the original filename, full path, GPS,
+EXIF, or OCR.
 
 ## System Status Endpoint
 

@@ -37,6 +37,11 @@ def test_agent_console_html_is_self_contained_and_points_to_chat_api():
     assert "show_snippets" in html
     assert 'id="show-answer" type="checkbox" checked' in html
     assert 'id="show-snippets" type="checkbox"> show_snippets' in html
+    assert 'id="show-photo-thumbnails" type="checkbox" checked' in html
+    assert 'id="show-full-text" type="checkbox"> show_full_text' in html
+    assert 'id="candidate-dates-panel"' in html
+    assert "thumbnail-grid" in html
+    assert "overflow-wrap: anywhere" in html
     assert "Temporal Diagnostics" in html
     assert "parsed_date_range_start" in html
     assert "Answer was generated but hidden because Show answer is off." in html
@@ -50,6 +55,9 @@ def test_chat_query_schema_defaults_to_show_answer_for_ui():
 
     assert request.show_answer is True
     assert request.show_snippets is False
+    assert request.show_photo_thumbnails is True
+    assert request.show_full_text is False
+    assert request.show_raw_model_output is False
 
 
 def test_chat_console_default_response_shows_answer_but_not_raw_evidence(
@@ -77,6 +85,8 @@ def test_chat_console_default_response_shows_answer_but_not_raw_evidence(
     assert payload["answer"]["answer_state"] == "visible"
     assert payload["privacy"]["answer_hidden"] is False
     assert payload["privacy"]["snippets_hidden"] is True
+    assert payload["privacy"]["photo_thumbnails_hidden"] is False
+    assert payload["evidence_display"]["privacy"]["snippets_hidden"] is True
     assert payload["evidence"]
     assert payload["trace"]["plan_created"] is True
     assert "raw private console body" not in serialized
@@ -105,6 +115,7 @@ def test_chat_console_show_answer_displays_fake_answer_without_snippets(
     assert "Retrieved local evidence is sufficient" in payload["answer"]["conclusion"]
     assert "raw evidence remains hidden" not in serialized
     assert all("snippet" not in item for item in payload["evidence"])
+    assert payload["evidence_display"]["groups"]["line"][0]["snippet_hidden"] is True
     assert any("show_answer is enabled" in warning for warning in payload["warnings"])
 
 
@@ -179,6 +190,7 @@ def test_chat_console_show_snippets_is_explicit_and_truncated(
     assert snippets
     assert len(snippets[0]) <= 60
     assert payload["privacy"]["snippets_hidden"] is False
+    assert payload["evidence_display"]["groups"]["line"][0]["snippet"]
     assert any("show_snippets is enabled" in warning for warning in payload["warnings"])
 
 
