@@ -133,6 +133,34 @@ def agent_console_html() -> str:
     .status-line, li { overflow-wrap: anywhere; }
     .error { color: var(--danger); }
     .ok { color: var(--ok); }
+    .current-status-bar {
+      border: 1px solid #c5d7cd;
+      border-radius: 8px;
+      background: #f9fcf8;
+      padding: 10px;
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    .current-status-head {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .current-status-message {
+      font-weight: 750;
+      color: var(--ink);
+      overflow-wrap: anywhere;
+    }
+    .recent-steps {
+      display: grid;
+      gap: 4px;
+      color: var(--muted);
+      font-size: 0.84rem;
+    }
     .panels {
       display: grid;
       grid-template-columns: minmax(0, 1fr) minmax(280px, 0.72fr);
@@ -492,6 +520,16 @@ def agent_console_html() -> str:
 
         <button id="run" type="submit">Run</button>
         <div id="request-status" class="status-line" role="status" aria-live="polite"></div>
+        <div id="current-status-bar" class="current-status-bar" aria-live="polite">
+          <div class="current-status-head">
+            <span class="status-badge skipped">idle</span>
+            <span class="muted-small">Step 0 / 0</span>
+          </div>
+          <div class="current-status-message">Run を押すとローカル agent workflow を開始します。</div>
+          <div class="muted-small">DeepSeek/tools/model usage は実行中に安全な metadata として更新されます。</div>
+          <div id="current-model-chips" class="tag-row"></div>
+          <div id="recent-steps" class="recent-steps"></div>
+        </div>
       </form>
 
       <div class="panels">
@@ -538,6 +576,9 @@ def agent_console_html() -> str:
   <script>
     const form = document.querySelector("#chat-form");
     const statusNode = document.querySelector("#request-status");
+    const currentStatusBar = document.querySelector("#current-status-bar");
+    const currentModelChips = document.querySelector("#current-model-chips");
+    const recentStepsNode = document.querySelector("#recent-steps");
     const runButton = document.querySelector("#run");
     const answerPanel = document.querySelector("#answer-panel");
     const datesPanel = document.querySelector("#candidate-dates-panel");
@@ -892,10 +933,39 @@ def agent_console_html() -> str:
         tracePanel.appendChild(el("div", "No runtime trace events were returned.", "status-line"));
         return;
       }
-      const timeline = document.createElement("div");
-      timeline.className = "runtime-trace";
-      events.forEach((event) => timeline.appendChild(renderTraceEvent(event)));
-      tracePanel.appendChild(timeline);
+      const grouped = groupTraceEvents(events);
+      Object.entries(grouped).forEach(([group, groupEvents]) => {
+        const details = document.createElement("details");
+        details.className = "trace-row";
+        const summary = document.createElement("summary");
+        summary.appendChild(el("div", `${group} (${groupEvents.length})`, "trace-title"));
+        details.appendChild(summary);
+        const timeline = document.createElement("div");
+        timeline.className = "runtime-trace trace-detail";
+        groupEvents.forEach((event) => timeline.appendChild(renderTraceEvent(event)));
+        details.appendChild(timeline);
+        tracePanel.appendChild(details);
+      });
+    }
+    function groupTraceEvents(events) {
+      const groups = {};
+      events.forEach((event) => {
+        const group = stageGroup(event.stage || "");
+        if (!groups[group]) groups[group] = [];
+        groups[group].push(event);
+      });
+      return groups;
+    }
+    function stageGroup(stage) {
+      if (["query_received", "configuration", "run_queue"].includes(stage)) return "Input";
+      if (stage.includes("planning") || stage.includes("date_range") || stage.includes("temporal_event_detection")) return "Planning";
+      if (stage.includes("retrieval") || stage.includes("search") || stage.includes("support") || stage.includes("photo")) return "Retrieval";
+      if (stage.includes("relevance") || stage.includes("acceptance")) return "Evidence Judging";
+      if (stage.includes("repair")) return "Repair";
+      if (stage.includes("answer_synthesis")) return "Answer";
+      if (stage.includes("validation")) return "Validation";
+      if (stage.includes("privacy") || stage.includes("ui_response")) return "Privacy";
+      return "Other";
     }
     function appendSummaryGroup(target, title, summary) {
       const node = document.createElement("div");
@@ -1077,6 +1147,67 @@ def agent_console_html() -> str:
         privacyPanel.appendChild(renderList(warnings));
       }
     }
+    function renderCurrentStatus(statusPayload) {
+      clear(currentStatusBar);
+      const head = document.createElement("div");
+      head.className = "current-status-head";
+      head.appendChild(el("span", statusPayload.status || "idle", `status-badge ${statusPayload.status === "running" ? "succeeded" : statusPayload.status || "skipped"}`));
+      const step = statusPayload.current_step || {};
+      const stepText = `Step ${step.step_index || 0} / ${step.step_total || 0}`;
+      head.appendChild(el("span", stepText, "muted-small"));
+      head.appendChild(el("span", `elapsed=${formatElapsed(statusPayload.elapsed_ms || 0)}`, "muted-small"));
+      currentStatusBar.appendChild(head);
+      currentStatusBar.appendChild(el("div", step.display_message || "Run を押すとローカル agent workflow を開始します。", "current-status-message"));
+      const meta = document.createElement("div");
+      meta.className = "tag-row";
+      if (step.actor_name) meta.appendChild(pill(step.actor_name, "strong"));
+      if (step.action) meta.appendChild(pill(`action=${step.action}`));
+      if (step.stage) meta.appendChild(pill(`stage=${step.stage}`));
+      if (step.model_id) meta.appendChild(pill(`model=${step.model_id}`));
+      if (statusPayload.next_step_hint) meta.appendChild(pill(statusPayload.next_step_hint, "warn"));
+      currentStatusBar.appendChild(meta);
+      const chips = document.createElement("div");
+      chips.id = "current-model-chips";
+      chips.className = "tag-row";
+      appendUsageChips(chips, statusPayload.model_usage_summary || {});
+      appendUsageChips(chips, statusPayload.tool_usage_summary || {});
+      currentStatusBar.appendChild(chips);
+      const recent = document.createElement("div");
+      recent.id = "recent-steps";
+      recent.className = "recent-steps";
+      (statusPayload.recent_steps || []).forEach((item) => {
+        recent.appendChild(el("div", `${item.status}: ${item.actor_name || "Agent"} - ${item.display_message || item.action || ""}`));
+      });
+      currentStatusBar.appendChild(recent);
+    }
+    function appendUsageChips(target, summary) {
+      Object.entries(summary || {}).slice(0, 8).forEach(([name, value]) => {
+        const status = value.status || (value.succeeded ? "used" : "not_used");
+        const parts = [];
+        if (value.live_calls) parts.push("live");
+        if (value.fake_calls) parts.push("fake");
+        if (value.cached_artifacts) parts.push("cached");
+        if (value.not_used) parts.push("not_used");
+        target.appendChild(pill(`${name}: ${parts.join("/") || status}`));
+      });
+    }
+    function formatElapsed(ms) {
+      if (ms < 1000) return `${ms}ms`;
+      return `${(ms / 1000).toFixed(1)}s`;
+    }
+    async function pollRun(runId) {
+      let lastStatus = null;
+      for (let i = 0; i < 900; i += 1) {
+        const response = await fetch(`/api/chat/runs/${runId}/status`);
+        const statusPayload = await response.json();
+        if (!response.ok) throw new Error(statusPayload.detail || "status polling failed");
+        lastStatus = statusPayload;
+        renderCurrentStatus(statusPayload);
+        if (["succeeded", "failed"].includes(statusPayload.status)) break;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      return lastStatus;
+    }
     async function loadSystemStatus() {
       try {
         const response = await fetch("/api/system/status");
@@ -1115,13 +1246,26 @@ def agent_console_html() -> str:
         max_tokens: Number(value("#max-tokens"))
       };
       try {
-        const response = await fetch("/api/chat/query", {
+        renderCurrentStatus({
+          status: "queued",
+          current_step: {display_message: "実行を開始しています...", step_index: 0, step_total: 0},
+          recent_steps: [],
+          elapsed_ms: 0,
+          model_usage_summary: {},
+          tool_usage_summary: {}
+        });
+        const startResponse = await fetch("/api/chat/query/start", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify(payload)
         });
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.detail || "query failed");
+        const started = await startResponse.json();
+        if (!startResponse.ok) throw new Error(started.detail || "query start failed");
+        renderCurrentStatus(started);
+        const finalStatus = await pollRun(started.run_id);
+        const resultResponse = await fetch(`/api/chat/runs/${started.run_id}/result`);
+        const result = await resultResponse.json();
+        if (!resultResponse.ok) throw new Error(result.detail || "query result failed");
         renderAnswer(result);
         renderCandidateDates(result);
         renderEvidence(result);
@@ -1129,9 +1273,22 @@ def agent_console_html() -> str:
         renderPrivacy(result);
         statusNode.textContent = result.ok ? "Done" : "Done; review warnings";
         statusNode.className = result.ok ? "status-line ok" : "status-line";
+        if (finalStatus) renderCurrentStatus(finalStatus);
       } catch (error) {
         statusNode.className = "status-line error";
         statusNode.textContent = error instanceof Error ? error.message : "query failed";
+        renderCurrentStatus({
+          status: "failed",
+          current_step: {
+            display_message: error instanceof Error ? error.message : "query failed",
+            step_index: 0,
+            step_total: 0
+          },
+          recent_steps: [],
+          elapsed_ms: 0,
+          model_usage_summary: {},
+          tool_usage_summary: {}
+        });
       } finally {
         runButton.disabled = false;
       }

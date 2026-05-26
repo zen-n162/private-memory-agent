@@ -548,6 +548,7 @@
             <tr><td>9-F2</td><td><code>2025年10月から12月</code> のような日本語月範囲と月別 coverage/pruning 診断。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-G</td><td>EventIntentPlan で dining_out などの意図を推定し、event-specific な写真/LINE/ノート検索を行う。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-H</td><td>Agent Runtime Trace で DeepSeek、tools、specialist model、cached artifact、fallback を可視化。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>9-H2</td><td>Current Status Bar と polling API で、実行中の actor/action、elapsed time、recent steps を表示。</td><td class="status">基本実装済み</td></tr>
           </tbody>
         </table>
       </section>
@@ -848,6 +849,15 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           timeline 表示します。raw prompt、chain-of-thought、raw model output、LINE 本文、ノート本文、
           caption、path、GPS、EXIF、OCR は既定で表示しません。
         </p>
+        <p>
+          9-H2 では Run ボタンの近くに <strong>Current Status Bar</strong> を追加しました。
+          <code>/api/chat/query/start</code> で run id を発行し、
+          <code>/api/chat/runs/{run_id}/status</code>、<code>/events</code>、<code>/result</code> を
+          polling することで、実行中の actor、action、日本語の状態メッセージ、step index、elapsed time、
+          最近完了した step、次に見るべき hint、model/tool usage chip を表示します。
+          詳細 timeline は Input、Planning、Retrieval、Evidence Judging、Repair、Answer、Validation、
+          Privacy に grouping し、既定では折りたたんで表示します。
+        </p>
       </section>
 
       <section id="limitations">
@@ -865,6 +875,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
       <section id="history">
         <h2>更新履歴</h2>
         <ul>
+          <li>2026-05-26: Current Status Bar と polling run API を追加し、実行中の actor/action と compact timeline を表示。</li>
           <li>2026-05-26: Agent Runtime Trace を追加し、DeepSeek/tools/specialist model/cached artifact/fallback を UI で安全に可視化。</li>
           <li>2026-05-26: EventIntentPlan による dining_out などの event-specific temporal retrieval と UI 診断を追加。</li>
           <li>2026-05-26: 日本語の月範囲 parsing と月別 temporal coverage/pruning 診断を追加。</li>

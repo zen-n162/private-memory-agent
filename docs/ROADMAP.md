@@ -126,6 +126,12 @@ This document outlines the development roadmap for private-memory-agent.
   cached Qwen3-VL annotations, LINE/notes search, semantic/reranker status,
   evidence acceptance, answer validation, and privacy filtering. Raw prompts,
   chain-of-thought, model output, and raw evidence stay hidden by default.
+- Phase 9-H2 adds a Current Status Bar and polling run API:
+  `/api/chat/query/start` returns a `run_id`, while
+  `/api/chat/runs/{run_id}/status`, `/events`, and `/result` let the UI update
+  the current actor/action, elapsed time, recent completed steps, and compact
+  model/tool chips while a local query runs. The detailed runtime timeline is
+  grouped by stage and collapsed by default.
 
 ## 実データE2E smokeの実行手順
 

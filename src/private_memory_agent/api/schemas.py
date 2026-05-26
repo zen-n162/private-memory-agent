@@ -109,6 +109,32 @@ class ChatQueryResponse(APIModel):
     warnings: list[str]
 
 
+class ChatRunStartResponse(APIModel):
+    run_id: str
+    status: str
+    current_step: dict[str, Any] | None = None
+    recent_steps: list[dict[str, Any]] = Field(default_factory=list)
+    next_step_hint: str | None = None
+    elapsed_ms: int = 0
+    warnings: list[str] = Field(default_factory=list)
+    model_usage_summary: dict[str, Any] = Field(default_factory=dict)
+    tool_usage_summary: dict[str, Any] = Field(default_factory=dict)
+    fallback_summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class ChatRunStatusResponse(ChatRunStartResponse):
+    pass
+
+
+class ChatRunEventsResponse(APIModel):
+    run_id: str
+    status: str
+    trace_events: list[dict[str, Any]] = Field(default_factory=list)
+    model_usage_summary: dict[str, Any] = Field(default_factory=dict)
+    tool_usage_summary: dict[str, Any] = Field(default_factory=dict)
+    fallback_summary: dict[str, Any] = Field(default_factory=dict)
+
+
 class SystemStatusResponse(APIModel):
     ok: bool
     localhost_only: bool

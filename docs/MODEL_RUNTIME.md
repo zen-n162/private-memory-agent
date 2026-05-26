@@ -778,6 +778,15 @@ outputs, raw LINE text, note bodies, captions, filenames, paths, GPS, EXIF, and
 OCR by default. It exposes only safe input/output summaries, decisions,
 statuses, counts, model IDs, and artifact types.
 
+Phase 9-H2 makes the trace easier to follow during execution. The UI now starts
+chat runs through a local polling API and shows a Current Status Bar near the
+Run button. The bar displays the current run status, current actor/action,
+Japanese status message, step index, elapsed time, recent completed steps,
+next-step hint, and compact chips for model/tool usage. The detailed runtime
+timeline is still available after completion, but it is grouped and collapsed
+by stage. This is not chain-of-thought streaming; it remains a privacy-safe
+metadata view.
+
 `GET /api/system/status` returns DB/index counts and configured endpoint
 metadata without model prompts. `POST /api/chat/query` uses the existing E2E
 retrieval/answer path directly rather than shelling out to the CLI.

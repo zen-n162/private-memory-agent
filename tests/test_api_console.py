@@ -1,15 +1,17 @@
 import json
+import time
 
 from private_memory_agent.api.console import (
     ChatConsoleOptions,
     build_system_status,
     run_chat_console_query,
 )
+from private_memory_agent.api.runs import ChatRunRegistry
 from private_memory_agent.api.schemas import ChatQueryRequest
 from private_memory_agent.api.ui import agent_console_html
 from private_memory_agent.retrieval import index_text
 from private_memory_agent.storage import initialize_database
-from private_memory_agent.tracing import AgentTraceRecorder, summarize_model_usage
+from private_memory_agent.tracing import AgentTraceRecorder, build_current_status, summarize_model_usage
 
 
 def _insert_synthetic_line(db_path, text="研究 synthetic private evidence"):
@@ -51,6 +53,10 @@ def test_agent_console_html_is_self_contained_and_points_to_chat_api():
     assert "Agent Runtime Trace" in html
     assert "Runtime Timeline" in html
     assert "Model / Tool Summary" in html
+    assert 'id="current-status-bar"' in html
+    assert "/api/chat/query/start" in html
+    assert "/api/chat/runs/${runId}/status" in html
+    assert "groupTraceEvents" in html
     assert "status-badge" in html
     assert "parsed_date_range_start" in html
     assert "Answer was generated but hidden because Show answer is off." in html
@@ -260,6 +266,67 @@ def test_trace_recorder_failed_stage_uses_safe_error_message():
     assert events[0]["safe_error_message"] == "model endpoint request timed out"
     assert "private prompt hidden" in events[0]["safe_input_summary"]
     assert summarize_model_usage(events)["DeepSeek Leader"]["failed"] == 1
+
+
+def test_current_status_from_trace_is_privacy_safe():
+    recorder = AgentTraceRecorder(run_id="status-run")
+    step_id = recorder.start(
+        actor_type="leader_model",
+        actor_name="DeepSeek Leader",
+        stage="retrieval_planning",
+        action="create_retrieval_plan",
+        invocation_type="live_call",
+        safe_input_summary="raw question hidden",
+    )
+    status = build_current_status(
+        run_id="status-run",
+        status="running",
+        events=recorder.to_list(),
+        elapsed_ms=1250,
+    )
+
+    assert status["status"] == "running"
+    assert status["current_step"]["actor_name"] == "DeepSeek Leader"
+    assert "検索計画" in status["current_step"]["display_message"]
+    assert status["elapsed_ms"] == 1250
+    assert "PRIVATE_SECRET" not in json.dumps(status, ensure_ascii=False)
+    recorder.finish(step_id)
+
+
+def test_chat_run_registry_returns_status_events_and_result(
+    temp_config_factory,
+    tmp_path,
+):
+    db_path = tmp_path / "console.sqlite3"
+    _insert_synthetic_line(db_path, text="研究 registry private evidence")
+    registry = ChatRunRegistry()
+
+    started = registry.start(
+        ChatConsoleOptions(
+            config_dir=temp_config_factory(),
+            db_path=db_path,
+            question="研究",
+            mode="fake-model",
+            sources=("line",),
+        ),
+    )
+    run_id = started["run_id"]
+    final_status = started
+    for _ in range(100):
+        final_status = registry.status(run_id)
+        if final_status["status"] in {"succeeded", "failed"}:
+            break
+        time.sleep(0.02)
+    events = registry.events(run_id)
+    result = registry.result(run_id)
+    serialized = json.dumps({"status": final_status, "events": events, "result": result}, ensure_ascii=False)
+
+    assert final_status["status"] == "succeeded"
+    assert final_status["current_step"]
+    assert events["trace_events"]
+    assert result["answer"]["answer_succeeded"] is True
+    assert "FakeLeaderModel" in events["model_usage_summary"]
+    assert "registry private evidence" not in serialized
 
 
 def test_chat_console_system_status_is_privacy_safe(temp_config_factory, tmp_path):

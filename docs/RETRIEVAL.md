@@ -694,6 +694,23 @@ filenames, paths, GPS, EXIF, OCR, or full retrieval plans by default. The UI
 renders the same trace as an `Agent Runtime Trace` timeline and a simple
 DeepSeek/tools/specialist-model summary.
 
+Phase 9-H2 adds a lightweight polling run API for the UI:
+
+```text
+POST /api/chat/query/start
+GET  /api/chat/runs/{run_id}/status
+GET  /api/chat/runs/{run_id}/events
+GET  /api/chat/runs/{run_id}/result
+```
+
+`/status` returns a compact `CurrentStatus` object: run status, current
+actor/action, Japanese display message, step index/total, elapsed time, recent
+completed steps, next-step hint, model/tool usage chips, and fallback summary.
+This is intentionally not raw chain-of-thought. The detailed timeline remains
+available but is grouped by stage (`Input`, `Planning`, `Retrieval`,
+`Evidence Judging`, `Repair`, `Answer`, `Validation`, `Privacy`) and collapsed
+by default in `/ui`.
+
 Phase 9-C adds count-only diagnostics for temporal failures. The result reports
 the parsed date range (`parsed_date_range_start`, `parsed_date_range_end`), the
 parser source, the temporal expression, timezone label, the query column

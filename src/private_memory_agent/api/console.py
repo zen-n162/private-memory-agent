@@ -104,11 +104,15 @@ class ChatConsoleOptions:
     allow_remote: bool = False
 
 
-def run_chat_console_query(options: ChatConsoleOptions) -> dict[str, Any]:
+def run_chat_console_query(
+    options: ChatConsoleOptions,
+    *,
+    trace_recorder: AgentTraceRecorder | None = None,
+) -> dict[str, Any]:
     """Run one privacy-safe console query."""
 
     _validate_options(options)
-    trace_recorder = AgentTraceRecorder()
+    trace_recorder = trace_recorder or AgentTraceRecorder()
     trace_recorder.event(
         actor_type="tool",
         actor_name="ChatConsoleRequest",

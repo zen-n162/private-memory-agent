@@ -4,11 +4,54 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from threading import RLock
 from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
 TRACE_PRIVACY_LEVEL = "safe_metadata_only"
+
+RUN_STATUSES = {"idle", "queued", "running", "succeeded", "failed"}
+
+ACTION_DISPLAY_MESSAGES = {
+    "queue_chat_run": "実行をキューに入れています...",
+    "receive_local_query": "ローカル質問を受け取りました。",
+    "preflight_event_intent_planner": "DeepSeek Leader の接続を確認しています...",
+    "parse_temporal_expression": "日付範囲を解析しています...",
+    "create_event_intent_plan": "DeepSeek Leader がイベント意図と検索方針を作成しています...",
+    "use_supplied_event_intent_plan": "既存のイベント意図計画を使用しています...",
+    "load_local_config": "ローカル設定を読み込んでいます...",
+    "create_retrieval_plan": "DeepSeek Leader が検索計画を作成しています...",
+    "fallback_query_path": "決定的 fallback の検索経路に切り替えています...",
+    "detect_temporal_event_query": "temporal event query か確認しています...",
+    "count_photos_in_date_range": "対象期間の写真 coverage を数えています...",
+    "search_photos_by_date_range": "PhotoDateSearchTool で対象期間の写真を検索しています...",
+    "use_cached_photo_annotations": "Qwen3-VL の既存 annotation を確認しています...",
+    "search_same_range_text_support": "LINE とノートの同期間サポートを検索しています...",
+    "check_cached_text_annotations": "Qwen3 Swallow の text annotation 状態を確認しています...",
+    "semantic_search": "semantic retrieval の候補を確認しています...",
+    "rerank_candidates": "reranker で候補順序を確認しています...",
+    "judge_candidate_evidence": "evidence judge が候補の有用性を評価しています...",
+    "separate_used_candidate_rejected_evidence": "使用 evidence と弱い候補を分離しています...",
+    "event_intent_repair": "retrieval repair が必要か確認しています...",
+    "build_temporal_answer": "候補日から temporal answer を組み立てています...",
+    "generate_structured_answer": "DeepSeek Leader が構造化回答を生成しています...",
+    "validate_answer_payload": "回答 schema と evidence reference を検証しています...",
+    "verify_safe_console_payload": "PrivacyGuard が出力を安全化しています...",
+    "assemble_console_payload": "UI 表示用の結果を組み立てています...",
+}
+
+NEXT_STEP_HINTS = {
+    "query_received": "次に query type と検索経路を判定します。",
+    "event_intent_planning": "次に source-specific retrieval を実行します。",
+    "photo_date_search": "次に cached annotation と日別候補を確認します。",
+    "line_notes_temporal_support": "次に candidate date の根拠を評価します。",
+    "semantic_retrieval": "次に候補を merge/rerank します。",
+    "reranking": "次に evidence judge または回答生成へ進みます。",
+    "answer_synthesis": "次に回答検証と privacy filter を行います。",
+    "answer_validation": "次に UI 用 payload を作成します。",
+    "privacy_filtering": "まもなく結果を表示します。",
+}
 
 
 @dataclass
@@ -79,6 +122,7 @@ class AgentTraceRecorder:
         self._events: list[AgentTraceEvent] = []
         self._starts: dict[str, float] = {}
         self._counter = 0
+        self._lock = RLock()
 
     def start(
         self,
@@ -98,31 +142,32 @@ class AgentTraceRecorder:
         artifact_model_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> str:
-        step_id = self._next_step_id()
-        self._starts[step_id] = perf_counter()
-        self._events.append(
-            AgentTraceEvent(
-                run_id=self.run_id,
-                step_id=step_id,
-                parent_step_id=parent_step_id,
-                timestamp=_timestamp(),
-                actor_type=actor_type,
-                actor_name=actor_name,
-                model_id=model_id,
-                provider=provider,
-                stage=stage,
-                action=action,
-                status="running",
-                safe_input_summary=safe_input_summary,
-                reasoning_summary=reasoning_summary,
-                decision_summary=decision_summary,
-                invocation_type=invocation_type,
-                artifact_type=artifact_type,
-                artifact_model_id=artifact_model_id,
-                metadata=_safe_metadata(metadata or {}),
-            ),
-        )
-        return step_id
+        with self._lock:
+            step_id = self._next_step_id()
+            self._starts[step_id] = perf_counter()
+            self._events.append(
+                AgentTraceEvent(
+                    run_id=self.run_id,
+                    step_id=step_id,
+                    parent_step_id=parent_step_id,
+                    timestamp=_timestamp(),
+                    actor_type=actor_type,
+                    actor_name=actor_name,
+                    model_id=model_id,
+                    provider=provider,
+                    stage=stage,
+                    action=action,
+                    status="running",
+                    safe_input_summary=safe_input_summary,
+                    reasoning_summary=reasoning_summary,
+                    decision_summary=decision_summary,
+                    invocation_type=invocation_type,
+                    artifact_type=artifact_type,
+                    artifact_model_id=artifact_model_id,
+                    metadata=_safe_metadata(metadata or {}),
+                ),
+            )
+            return step_id
 
     def finish(
         self,
@@ -138,29 +183,30 @@ class AgentTraceRecorder:
         token_output_count: int | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        event = self._find(step_id)
-        if event is None:
-            return
-        started = self._starts.pop(step_id, None)
-        if started is not None:
-            event.duration_ms = max(0, int((perf_counter() - started) * 1000))
-        event.status = status
-        if safe_output_summary is not None:
-            event.safe_output_summary = safe_output_summary
-        if reasoning_summary is not None:
-            event.reasoning_summary = reasoning_summary
-        if decision_summary is not None:
-            event.decision_summary = decision_summary
-        if error_class is not None:
-            event.error_class = error_class
-        if safe_error_message is not None:
-            event.safe_error_message = safe_error_message
-        if token_input_count is not None:
-            event.token_input_count = token_input_count
-        if token_output_count is not None:
-            event.token_output_count = token_output_count
-        if metadata:
-            event.metadata.update(_safe_metadata(metadata))
+        with self._lock:
+            event = self._find(step_id)
+            if event is None:
+                return
+            started = self._starts.pop(step_id, None)
+            if started is not None:
+                event.duration_ms = max(0, int((perf_counter() - started) * 1000))
+            event.status = status
+            if safe_output_summary is not None:
+                event.safe_output_summary = safe_output_summary
+            if reasoning_summary is not None:
+                event.reasoning_summary = reasoning_summary
+            if decision_summary is not None:
+                event.decision_summary = decision_summary
+            if error_class is not None:
+                event.error_class = error_class
+            if safe_error_message is not None:
+                event.safe_error_message = safe_error_message
+            if token_input_count is not None:
+                event.token_input_count = token_input_count
+            if token_output_count is not None:
+                event.token_output_count = token_output_count
+            if metadata:
+                event.metadata.update(_safe_metadata(metadata))
 
     def event(
         self,
@@ -185,41 +231,44 @@ class AgentTraceRecorder:
         artifact_model_id: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> str:
-        step_id = self._next_step_id()
-        self._events.append(
-            AgentTraceEvent(
-                run_id=self.run_id,
-                step_id=step_id,
-                parent_step_id=parent_step_id,
-                timestamp=_timestamp(),
-                actor_type=actor_type,
-                actor_name=actor_name,
-                model_id=model_id,
-                provider=provider,
-                stage=stage,
-                action=action,
-                status=status,
-                safe_input_summary=safe_input_summary,
-                safe_output_summary=safe_output_summary,
-                reasoning_summary=reasoning_summary,
-                decision_summary=decision_summary,
-                error_class=error_class,
-                safe_error_message=safe_error_message,
-                duration_ms=duration_ms,
-                invocation_type=invocation_type,
-                artifact_type=artifact_type,
-                artifact_model_id=artifact_model_id,
-                metadata=_safe_metadata(metadata or {}),
-            ),
-        )
-        return step_id
+        with self._lock:
+            step_id = self._next_step_id()
+            self._events.append(
+                AgentTraceEvent(
+                    run_id=self.run_id,
+                    step_id=step_id,
+                    parent_step_id=parent_step_id,
+                    timestamp=_timestamp(),
+                    actor_type=actor_type,
+                    actor_name=actor_name,
+                    model_id=model_id,
+                    provider=provider,
+                    stage=stage,
+                    action=action,
+                    status=status,
+                    safe_input_summary=safe_input_summary,
+                    safe_output_summary=safe_output_summary,
+                    reasoning_summary=reasoning_summary,
+                    decision_summary=decision_summary,
+                    error_class=error_class,
+                    safe_error_message=safe_error_message,
+                    duration_ms=duration_ms,
+                    invocation_type=invocation_type,
+                    artifact_type=artifact_type,
+                    artifact_model_id=artifact_model_id,
+                    metadata=_safe_metadata(metadata or {}),
+                ),
+            )
+            return step_id
 
     def to_list(self) -> list[dict[str, Any]]:
-        return [event.to_dict() for event in self._events]
+        with self._lock:
+            return [event.to_dict() for event in self._events]
 
     @property
     def events(self) -> tuple[AgentTraceEvent, ...]:
-        return tuple(self._events)
+        with self._lock:
+            return tuple(self._events)
 
     def _next_step_id(self) -> str:
         self._counter += 1
@@ -310,6 +359,71 @@ def summarize_fallbacks(events: list[dict[str, Any]] | tuple[dict[str, Any], ...
     }
 
 
+def build_current_status(
+    *,
+    run_id: str,
+    status: str,
+    events: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    elapsed_ms: int = 0,
+    warnings: tuple[str, ...] | list[str] = (),
+) -> dict[str, Any]:
+    """Build a compact current-status payload from trace events."""
+
+    safe_status = status if status in RUN_STATUSES else "running"
+    event_list = list(events)
+    running = [event for event in event_list if event.get("status") == "running"]
+    failed = [event for event in event_list if event.get("status") == "failed"]
+    current = running[-1] if running else (failed[-1] if failed else (event_list[-1] if event_list else None))
+    if failed and safe_status not in {"failed", "succeeded"}:
+        safe_status = "failed"
+    completed = [
+        event
+        for event in event_list
+        if event.get("status") in {"succeeded", "failed", "skipped", "fallback_used"}
+    ]
+    current_step = (
+        _current_step_payload(current, index=event_list.index(current) + 1, total=len(event_list))
+        if current is not None
+        else None
+    )
+    recent_steps = [
+        _recent_step_payload(event, index=event_list.index(event) + 1)
+        for event in completed[-3:]
+    ]
+    next_step_hint = _next_step_hint(current, safe_status=safe_status)
+    return {
+        "run_id": run_id,
+        "status": safe_status,
+        "current_step": current_step,
+        "recent_steps": recent_steps,
+        "next_step_hint": next_step_hint,
+        "elapsed_ms": max(0, int(elapsed_ms)),
+        "warnings": list(warnings),
+        "model_usage_summary": summarize_model_usage(event_list),
+        "tool_usage_summary": summarize_tool_usage(event_list),
+        "fallback_summary": summarize_fallbacks(event_list),
+    }
+
+
+def trace_display_message(event: dict[str, Any] | None) -> str:
+    """Return a privacy-safe Japanese display message for a trace event."""
+
+    if not event:
+        return "待機中です。"
+    action = str(event.get("action") or "")
+    status = str(event.get("status") or "")
+    actor = str(event.get("actor_name") or "Agent")
+    if status == "failed":
+        message = str(event.get("safe_error_message") or "安全なエラー情報を確認してください。")
+        return f"{actor} の処理で失敗しました。{message}"
+    if status == "skipped":
+        return f"{actor} はこの実行では使用されませんでした。"
+    if status == "fallback_used":
+        base = ACTION_DISPLAY_MESSAGES.get(action, f"{actor} が fallback を使用しました。")
+        return f"{base} fallback を使用しています。"
+    return ACTION_DISPLAY_MESSAGES.get(action, f"{actor} が {action or '処理'} を実行しています...")
+
+
 def _summary_status(item: dict[str, Any]) -> str:
     if item.get("failed"):
         return "failed"
@@ -318,6 +432,45 @@ def _summary_status(item: dict[str, Any]) -> str:
     if item.get("not_used"):
         return "not_used"
     return "not_used"
+
+
+def _current_step_payload(event: dict[str, Any], *, index: int, total: int) -> dict[str, Any]:
+    return {
+        "actor_type": event.get("actor_type"),
+        "actor_name": event.get("actor_name"),
+        "model_id": event.get("model_id"),
+        "action": event.get("action"),
+        "stage": event.get("stage"),
+        "status": event.get("status"),
+        "display_message": trace_display_message(event),
+        "step_index": index,
+        "step_total": total,
+        "started_at": event.get("timestamp"),
+        "duration_ms": event.get("duration_ms"),
+        "safe_error_message": event.get("safe_error_message"),
+    }
+
+
+def _recent_step_payload(event: dict[str, Any], *, index: int) -> dict[str, Any]:
+    return {
+        "step_index": index,
+        "actor_name": event.get("actor_name"),
+        "action": event.get("action"),
+        "stage": event.get("stage"),
+        "status": event.get("status"),
+        "display_message": trace_display_message(event),
+        "duration_ms": event.get("duration_ms"),
+    }
+
+
+def _next_step_hint(event: dict[str, Any] | None, *, safe_status: str) -> str | None:
+    if safe_status == "succeeded":
+        return "結果を表示できます。必要なら snippets を明示的に有効化して根拠を確認してください。"
+    if safe_status == "failed":
+        return "retrieval-only で候補を確認するか、timeout / model endpoint / 入力範囲を確認してください。"
+    if event is None:
+        return "Run を押すとローカル検索を開始します。"
+    return NEXT_STEP_HINTS.get(str(event.get("stage") or ""))
 
 
 def _append_unique(values: list[Any], value: Any) -> None:

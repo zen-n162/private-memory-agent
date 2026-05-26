@@ -20,6 +20,9 @@ from private_memory_agent.agent import (
 from private_memory_agent.api.schemas import (
     ChatQueryRequest,
     ChatQueryResponse,
+    ChatRunEventsResponse,
+    ChatRunStartResponse,
+    ChatRunStatusResponse,
     EntitiesResponse,
     EntityType,
     EventsResponse,
@@ -40,6 +43,7 @@ from private_memory_agent.api.console import (
     run_chat_console_query,
 )
 from private_memory_agent.api.evidence_view import EvidenceThumbnailError, create_media_thumbnail
+from private_memory_agent.api.runs import ChatRunRegistry
 from private_memory_agent.api.ui import agent_console_html
 from private_memory_agent.config import load_config
 from private_memory_agent.entities import list_entities
@@ -68,6 +72,7 @@ def create_app(
     app.state.db_path = Path(db_path).expanduser()
     app.state.config_dir = None if config_dir is None else Path(config_dir).expanduser()
     app.state.paths_config = None if paths_config is None else Path(paths_config).expanduser()
+    app.state.chat_runs = ChatRunRegistry()
 
     @app.get("/", include_in_schema=False)
     def root() -> RedirectResponse:
@@ -112,43 +117,37 @@ def create_app(
     @app.post("/api/chat/query", response_model=ChatQueryResponse)
     def chat_query(payload: ChatQueryRequest, request: Request) -> dict[str, Any]:
         try:
-            return run_chat_console_query(
-                ChatConsoleOptions(
-                    question=payload.question,
-                    config_dir=request.app.state.config_dir,
-                    paths_config=request.app.state.paths_config,
-                    db_path=_request_db_path(request, payload.db_path),
-                    mode=payload.mode,
-                    sources=tuple(payload.sources),
-                    leader_plan=payload.leader_plan,
-                    leader_rerank=payload.leader_rerank,
-                    semantic=payload.semantic,
-                    semantic_model=payload.semantic_model,
-                    semantic_top_k=payload.semantic_top_k,
-                    semantic_weight=payload.semantic_weight,
-                    reranker=payload.reranker,
-                    rerank_top_k=payload.rerank_top_k,
-                    retrieval_repair=payload.retrieval_repair,
-                    strict_relevance=payload.strict_relevance,
-                    minimum_relevance_score=payload.minimum_relevance_score,
-                    show_answer=payload.show_answer,
-                    show_snippets=payload.show_snippets,
-                    show_photo_thumbnails=payload.show_photo_thumbnails,
-                    show_full_text=payload.show_full_text,
-                    show_raw_model_output=payload.show_raw_model_output,
-                    snippet_chars=payload.snippet_chars,
-                    limit=payload.limit,
-                    temporal_top_candidate_dates=payload.temporal_top_candidate_dates,
-                    temporal_top_evidence_per_date=payload.temporal_top_evidence_per_date,
-                    timeout_seconds=payload.timeout_seconds,
-                    max_tokens=payload.max_tokens,
-                    model_key=payload.model_key,
-                    embedding_device=payload.embedding_device,
-                    allow_remote=False,
-                ),
-            )
+            return run_chat_console_query(_chat_options_from_payload(payload, request))
         except (RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=_safe_error(str(exc))) from exc
+
+    @app.post("/api/chat/query/start", response_model=ChatRunStartResponse)
+    def chat_query_start(payload: ChatQueryRequest, request: Request) -> dict[str, Any]:
+        try:
+            return request.app.state.chat_runs.start(_chat_options_from_payload(payload, request))
+        except (RuntimeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=_safe_error(str(exc))) from exc
+
+    @app.get("/api/chat/runs/{run_id}/status", response_model=ChatRunStatusResponse)
+    def chat_run_status(run_id: str, request: Request) -> dict[str, Any]:
+        try:
+            return request.app.state.chat_runs.status(run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="run not found") from exc
+
+    @app.get("/api/chat/runs/{run_id}/events", response_model=ChatRunEventsResponse)
+    def chat_run_events(run_id: str, request: Request) -> dict[str, Any]:
+        try:
+            return request.app.state.chat_runs.events(run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="run not found") from exc
+
+    @app.get("/api/chat/runs/{run_id}/result")
+    def chat_run_result(run_id: str, request: Request) -> dict[str, Any]:
+        try:
+            return request.app.state.chat_runs.result(run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="run not found") from exc
 
     @app.get("/api/evidence/media/{media_item_id}/thumbnail", include_in_schema=False)
     @app.get("/api/media/{media_item_id}/thumbnail", include_in_schema=False)
@@ -266,6 +265,42 @@ def _request_db_path(request: Request, db_path: Path | None) -> Path:
     if db_path is not None:
         return Path(db_path).expanduser()
     return Path(request.app.state.db_path).expanduser()
+
+
+def _chat_options_from_payload(payload: ChatQueryRequest, request: Request) -> ChatConsoleOptions:
+    return ChatConsoleOptions(
+        question=payload.question,
+        config_dir=request.app.state.config_dir,
+        paths_config=request.app.state.paths_config,
+        db_path=_request_db_path(request, payload.db_path),
+        mode=payload.mode,
+        sources=tuple(payload.sources),
+        leader_plan=payload.leader_plan,
+        leader_rerank=payload.leader_rerank,
+        semantic=payload.semantic,
+        semantic_model=payload.semantic_model,
+        semantic_top_k=payload.semantic_top_k,
+        semantic_weight=payload.semantic_weight,
+        reranker=payload.reranker,
+        rerank_top_k=payload.rerank_top_k,
+        retrieval_repair=payload.retrieval_repair,
+        strict_relevance=payload.strict_relevance,
+        minimum_relevance_score=payload.minimum_relevance_score,
+        show_answer=payload.show_answer,
+        show_snippets=payload.show_snippets,
+        show_photo_thumbnails=payload.show_photo_thumbnails,
+        show_full_text=payload.show_full_text,
+        show_raw_model_output=payload.show_raw_model_output,
+        snippet_chars=payload.snippet_chars,
+        limit=payload.limit,
+        temporal_top_candidate_dates=payload.temporal_top_candidate_dates,
+        temporal_top_evidence_per_date=payload.temporal_top_evidence_per_date,
+        timeout_seconds=payload.timeout_seconds,
+        max_tokens=payload.max_tokens,
+        model_key=payload.model_key,
+        embedding_device=payload.embedding_device,
+        allow_remote=False,
+    )
 
 
 def _load_request_config(request: Request):
