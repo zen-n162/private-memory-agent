@@ -833,6 +833,13 @@ normalization, model/tool/fallback summaries are recomputed from trace events,
 successful final answers replace stale failed status payloads, and polling run
 status responses include `recovered_failure_count` and `recovered_failures`.
 
+Phase 9-H9b fixes the browser-side async lifecycle. The UI uses
+`POST /api/chat/query/start` only to create a run, `GET /status` only to update
+the Current Status Bar, and `GET /result` as the only source for final
+Answer/Candidate Dates/Evidence rendering. `ChatRunNotReady` is treated as a
+pending result handoff and retried briefly after status succeeds. The UI also
+validates that at least one source is selected before sending a request.
+
 `GET /api/system/status` returns DB/index counts and configured endpoint
 metadata without model prompts. `POST /api/chat/query` uses the existing E2E
 retrieval/answer path directly rather than shelling out to the CLI.

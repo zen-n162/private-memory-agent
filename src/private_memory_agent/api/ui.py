@@ -462,8 +462,8 @@ def agent_console_html() -> str:
 
         <fieldset>
           <legend>Sources</legend>
-          <label class="inline"><input type="checkbox" name="source" value="photos"> photos</label>
-          <label class="inline"><input type="checkbox" name="source" value="line"> line</label>
+          <label class="inline"><input type="checkbox" name="source" value="photos" checked> photos</label>
+          <label class="inline"><input type="checkbox" name="source" value="line" checked> line</label>
           <label class="inline"><input type="checkbox" name="source" value="notes"> notes</label>
         </fieldset>
 
@@ -591,11 +591,26 @@ def agent_console_html() -> str:
     const previewImage = document.querySelector("#preview-image");
     const previewCaption = document.querySelector("#preview-caption");
     const closePreview = document.querySelector("#close-preview");
+    const RESULT_FETCH_RETRY_COUNT = 5;
+    const RESULT_FETCH_RETRY_DELAY_MS = 200;
 
     function value(id) { return document.querySelector(id).value; }
     function checked(id) { return document.querySelector(id).checked; }
     function selectedSources() {
       return Array.from(document.querySelectorAll("input[name='source']:checked")).map((node) => node.value);
+    }
+    function safeConsoleState(eventName, data = {}) {
+      const safe = {
+        event: eventName,
+        run_id: data.run_id || null,
+        status: data.status || null,
+        source: data.source || null,
+        mode: data.mode || null,
+        ok: data.ok ?? null,
+        answer_succeeded: data.answer_succeeded ?? null,
+        error_class: data.error_class || null
+      };
+      console.info("[pma-ui]", safe);
     }
     function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
     function el(tag, text, className) {
@@ -701,6 +716,42 @@ def agent_console_html() -> str:
         throw error;
       }
       return payload;
+    }
+    function isChatRunNotReady(payload) {
+      return payload?.error_class === "ChatRunNotReady" || payload?.answer_error_class === "ChatRunNotReady";
+    }
+    function sleep(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+    function markRunPending(runId) {
+      statusNode.className = "status-line";
+      statusNode.textContent = `新しい実行中です。完了後に結果を更新します。 run_id=${runId || "pending"}`;
+    }
+    function renderFinalResult(result, finalStatus) {
+      result.rendered_payload_source = "result";
+      const missingField = validateChatResponseContract(result);
+      if (missingField) {
+        renderInvalidApiResponse(missingField, result);
+        statusNode.className = "status-line error";
+        statusNode.textContent = `Invalid API response: missing field ${missingField}`;
+        return;
+      }
+      renderAnswer(result);
+      renderCandidateDates(result);
+      renderEvidence(result);
+      renderTrace(result);
+      renderPrivacy(result);
+      statusNode.textContent = result.ok ? "Done" : "Done; review warnings";
+      statusNode.className = result.ok ? "status-line ok" : "status-line";
+      renderCurrentStatus(reconcileStatusWithResponse(result, finalStatus || result.current_status));
+      safeConsoleState("final render complete", {
+        run_id: result.run_id,
+        source: "result",
+        mode: result.mode,
+        ok: result.ok,
+        answer_succeeded: result.answer_succeeded,
+        status: result.current_status?.status
+      });
     }
     function buildClientFailureStatus(message, payload) {
       const failureStage = payload?.failure_stage || payload?.current_status?.failure_stage || "ui_response_rendering";
@@ -1446,12 +1497,50 @@ def agent_console_html() -> str:
         const response = await fetch(`/api/chat/runs/${runId}/status`);
         const statusPayload = await response.json();
         if (!response.ok) throw new Error(statusPayload.detail || "status polling failed");
+        statusPayload.rendered_payload_source = "status";
         lastStatus = statusPayload;
+        safeConsoleState(`status ${statusPayload.status}`, {
+          run_id: runId,
+          source: "status",
+          status: statusPayload.status,
+          mode: statusPayload.mode
+        });
         renderCurrentStatus(statusPayload);
         if (["succeeded", "failed"].includes(statusPayload.status)) break;
         await new Promise((resolve) => setTimeout(resolve, 500));
       }
       return lastStatus;
+    }
+    async function fetchFinalResult(runId, finalStatus) {
+      for (let attempt = 0; attempt < RESULT_FETCH_RETRY_COUNT; attempt += 1) {
+        const response = await fetch(`/api/chat/runs/${runId}/result`);
+        const result = await readJsonResponse(response, "query result failed");
+        result.rendered_payload_source = "result";
+        if (!isChatRunNotReady(result)) {
+          safeConsoleState("result fetched", {
+            run_id: runId,
+            source: "result",
+            mode: result.mode,
+            ok: result.ok,
+            answer_succeeded: result.answer_succeeded,
+            status: result.current_status?.status
+          });
+          return result;
+        }
+        if (finalStatus?.status === "queued" || finalStatus?.status === "running") {
+          markRunPending(runId);
+          await sleep(RESULT_FETCH_RETRY_DELAY_MS);
+          continue;
+        }
+        if (finalStatus?.status === "succeeded") {
+          statusNode.className = "status-line";
+          statusNode.textContent = "Run status succeeded but result is not ready. Retrying final result handoff...";
+          await sleep(RESULT_FETCH_RETRY_DELAY_MS);
+          continue;
+        }
+        return result;
+      }
+      throw new Error("Run status succeeded but result is not ready.");
     }
     async function loadSystemStatus() {
       try {
@@ -1463,17 +1552,31 @@ def agent_console_html() -> str:
         systemSummary.textContent = "System status unavailable.";
       }
     }
+    // Async lifecycle:
+    // /start and /status update only the Current Status Bar.
+    // /result is the only payload that renders Answer, Candidate Dates, Evidence, Trace, and Privacy.
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      runButton.disabled = true;
       statusNode.className = "status-line";
+      const sources = selectedSources();
+      if (!sources.length) {
+        statusNode.className = "status-line error";
+        statusNode.textContent = "少なくとも1つのsourceを選択してください。";
+        renderCurrentStatus(buildClientFailureStatus("少なくとも1つのsourceを選択してください。", {
+          mode: value("#mode"),
+          failure_stage: "request_validation",
+          failure_actor: "ChatConsoleUI"
+        }));
+        return;
+      }
+      runButton.disabled = true;
       statusNode.textContent = "Running local query...";
       const rerankerEnabled = checked("#reranker-enabled");
       const timeoutValue = Number(value("#timeout"));
       const payload = {
         question: value("#question"),
         mode: value("#mode"),
-        sources: selectedSources(),
+        sources: sources,
         leader_plan: checked("#leader-plan"),
         leader_rerank: checked("#leader-rerank"),
         semantic: checked("#semantic"),
@@ -1491,6 +1594,7 @@ def agent_console_html() -> str:
         max_tokens: Number(value("#max-tokens"))
       };
       try {
+        safeConsoleState("start requested", {source: "start", mode: payload.mode, status: "queued"});
         renderCurrentStatus({
           status: "queued",
           current_step: {display_message: "実行を開始しています...", step_index: 0, step_total: 0},
@@ -1505,25 +1609,30 @@ def agent_console_html() -> str:
           body: JSON.stringify(payload)
         });
         const started = await readJsonResponse(startResponse, "query start failed");
+        started.rendered_payload_source = "start";
+        safeConsoleState("run_id received", {
+          run_id: started.run_id,
+          source: "start",
+          status: started.status,
+          mode: started.mode
+        });
+        markRunPending(started.run_id);
         renderCurrentStatus(started);
         const finalStatus = await pollRun(started.run_id);
-        const resultResponse = await fetch(`/api/chat/runs/${started.run_id}/result`);
-        const result = await readJsonResponse(resultResponse, "query result failed");
-        const missingField = validateChatResponseContract(result);
-        if (missingField) {
-          renderInvalidApiResponse(missingField, result);
+        if (!["succeeded", "failed"].includes(finalStatus?.status)) {
           statusNode.className = "status-line error";
-          statusNode.textContent = `Invalid API response: missing field ${missingField}`;
+          statusNode.textContent = "Run did not reach a terminal status before polling ended.";
+          renderCurrentStatus(buildClientFailureStatus("Run did not reach a terminal status before polling ended.", finalStatus));
           return;
         }
-        renderAnswer(result);
-        renderCandidateDates(result);
-        renderEvidence(result);
-        renderTrace(result);
-        renderPrivacy(result);
-        statusNode.textContent = result.ok ? "Done" : "Done; review warnings";
-        statusNode.className = result.ok ? "status-line ok" : "status-line";
-        renderCurrentStatus(reconcileStatusWithResponse(result, finalStatus || result.current_status));
+        const result = await fetchFinalResult(started.run_id, finalStatus);
+        if (isChatRunNotReady(result)) {
+          statusNode.className = "status-line error";
+          statusNode.textContent = "Run status succeeded but result is not ready.";
+          renderCurrentStatus(buildClientFailureStatus("Run status succeeded but result is not ready.", result));
+          return;
+        }
+        renderFinalResult(result, finalStatus);
       } catch (error) {
         const payload = error?.payload || null;
         statusNode.className = "status-line error";

@@ -99,6 +99,9 @@ def test_agent_console_html_is_self_contained_and_points_to_chat_api():
     assert "/api/system/status" in html
     assert "leader_plan" in html
     assert "show_snippets" in html
+    assert 'name="source" value="photos" checked' in html
+    assert 'name="source" value="line" checked' in html
+    assert 'name="source" value="notes"> notes' in html
     assert 'id="show-answer" type="checkbox" checked' in html
     assert 'id="show-snippets" type="checkbox"> show_snippets' in html
     assert 'id="show-photo-thumbnails" type="checkbox" checked' in html
@@ -129,6 +132,14 @@ def test_agent_console_html_is_self_contained_and_points_to_chat_api():
     assert "未使用のTool/Modelを表示" in html
     assert "/api/chat/query/start" in html
     assert "/api/chat/runs/${runId}/status" in html
+    assert "/api/chat/runs/${runId}/result" in html
+    assert "fetchFinalResult" in html
+    assert "renderFinalResult" in html
+    assert "isChatRunNotReady" in html
+    assert "rendered_payload_source" in html
+    assert "少なくとも1つのsourceを選択してください。" in html
+    assert "Run status succeeded but result is not ready." in html
+    assert "新しい実行中です。完了後に結果を更新します。" in html
     assert "groupTraceEvents" in html
     assert "status-badge" in html
     assert "parsed_date_range_start" in html

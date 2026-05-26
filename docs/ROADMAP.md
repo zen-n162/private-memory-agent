@@ -172,6 +172,12 @@ This document outlines the development roadmap for private-memory-agent.
   payloads: summaries are recomputed from trace events, stale failed
   `current_status` payloads are replaced when the final answer succeeded, and
   `recovered_failure_count` is included in the run status schema.
+- Phase 9-H9b fixes the frontend async handoff:
+  the chat UI treats `/api/chat/query/start` and `/status` as Current Status
+  updates only, fetches `/result` after terminal status, retries
+  `ChatRunNotReady` as pending, and renders Answer/Candidate Dates/Evidence
+  only from the final result payload. Source selection is validated before the
+  run starts.
 
 ## 実データE2E smokeの実行手順
 

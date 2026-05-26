@@ -555,6 +555,7 @@
             <tr><td>9-H6</td><td>evidence builder と answer synthesis を分離し、real-model 失敗時も候補日と evidence を保持。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-H8</td><td>fallback で復旧した中間失敗を final failure と区別し、Current Status は最終結果に合わせて Done/Failed を表示。</td><td class="status">基本実装済み</td></tr>
             <tr><td>9-H8b</td><td>成功レスポンスに古い failed status が混入しても、trace から再集計して final outcome invariant を維持。</td><td class="status">基本実装済み</td></tr>
+            <tr><td>9-H9b</td><td>UI の async polling で start/status を status 専用、result を最終描画専用に分離。</td><td class="status">基本実装済み</td></tr>
           </tbody>
         </table>
       </section>
@@ -919,6 +920,14 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
           polling status schema にも <code>recovered_failure_count</code> と
           <code>recovered_failures</code> を含めます。
         </p>
+        <p>
+          9-H9b では browser UI 側の async lifecycle を修正しました。
+          <code>/api/chat/query/start</code> と <code>/status</code> は Current Status Bar の更新だけに使い、
+          Answer、Candidate Dates、Evidence、Trace、Privacy の最終描画は <code>/result</code> の payload だけで行います。
+          <code>ChatRunNotReady</code> は failure ではなく result handoff 待ちとして短く retry し、
+          実行中は前回の final panel を 0 件表示で上書きしません。
+          また、source が 1 つも選択されていない場合は API を呼ばずに UI 側で止めます。
+        </p>
       </section>
 
       <section id="limitations">
@@ -936,6 +945,7 @@ pma retrieve audit --config configs/paths.local.yaml --json</code></pre>
       <section id="history">
         <h2>更新履歴</h2>
         <ul>
+          <li>2026-05-26: UI async polling を修正し、start/status を最終結果として描画せず result handoff を retry。</li>
           <li>2026-05-26: 成功レスポンスの final outcome invariant を強化し、stale failed status を trace 再集計で補正。</li>
           <li>2026-05-26: fallback で復旧した中間失敗を final failure と分離し、成功 run の Current Status を Done に修正。</li>
           <li>2026-05-26: evidence builder と answer synthesis を分離し、real-model 失敗時も candidate dates/evidence を保持。</li>
